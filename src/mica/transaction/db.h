@@ -70,7 +70,7 @@ struct BasicDBConfig {
   // The maximum backoff time (us).
   static constexpr double kBackoffMax = 1000.;
   // Print the current backoff status for debugging the adaptive backoff logic.
-  static constexpr bool kPrintBackoff = false;
+  static constexpr bool kPrintBackoff = true;
 
   // Use usleep() alternatively for backoff if this thread has a pair
   // hyperthread.  It is assumed that there are 2 hyperthreads per core, and the

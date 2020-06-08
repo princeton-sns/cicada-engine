@@ -335,7 +335,7 @@ void DB<StaticConfig>::update_backoff(uint16_t thread_id) {
   else if (gradient > 0)
     new_backoff += incr;
   else {
-    if ((now & 1) == 0)
+    if ((now & 2) == 0)
       new_backoff -= incr;
     else
       new_backoff += incr;

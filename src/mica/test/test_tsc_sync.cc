@@ -1,3 +1,4 @@
+#include <stdlib.h>
 #include <cstdio>
 #include <thread>
 #include "mica/util/lcore.h"

@@ -110,6 +110,9 @@ IF(LTO)
   ADD_EXECUTABLE(test_tx_index src/mica/test/test_tx_index.cc ${SOURCES})
   TARGET_LINK_LIBRARIES(test_tx_index ${LIBRARIES})
 
+  ADD_EXECUTABLE(test_logger src/mica/test/test_logger.cc ${SOURCES})
+  TARGET_LINK_LIBRARIES(test_logger ${LIBRARIES})
+
 ELSE(LTO)
 
   ADD_LIBRARY(common ${SOURCES})
@@ -125,5 +128,8 @@ ELSE(LTO)
 
   ADD_EXECUTABLE(test_tx_index src/mica/test/test_tx_index.cc ${SOURCES})
   TARGET_LINK_LIBRARIES(test_tx_index ${LIBRARIES})
+
+  ADD_EXECUTABLE(test_logger src/mica/test/test_logger.cc ${SOURCES})
+  TARGET_LINK_LIBRARIES(test_logger ${LIBRARIES})
 
 ENDIF(LTO)

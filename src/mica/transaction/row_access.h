@@ -123,7 +123,7 @@ class RowAccessHandle {
       return nullptr;
   }
 
-  uint64_t size() const { return access_item_->tbl->data_size(); }
+  uint64_t size() const { return access_item_->tbl->data_size_hint(cf_id()); }
 
   uint64_t rv_size() const {
     if (access_item_->write_rv != nullptr)
@@ -154,6 +154,8 @@ class RowAccessHandle {
 
  private:
   friend Transaction<StaticConfig>;
+
+  // friend FileLogger<StaticConfig>;
 
   Transaction<StaticConfig>* tx_;
 

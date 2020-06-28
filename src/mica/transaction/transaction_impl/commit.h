@@ -5,11 +5,13 @@
 #include <algorithm>  // For std::sort().
 #include <unistd.h>
 
+#include "mica/transaction/transaction.h"
+
 namespace mica {
 namespace transaction {
 template <class StaticConfig>
 bool Transaction<StaticConfig>::begin(bool peek_only,
-                                      const Timestamp* causally_after_ts) {
+                                      const Timestamp* with_ts) {
   Timing t(ctx_->timing_stack(), &Stats::timestamping);
 
   if (!ctx_->db_->is_active(ctx_->thread_id_)) return false;
@@ -36,14 +38,18 @@ bool Transaction<StaticConfig>::begin(bool peek_only,
 
   while (true) {
     ts_ = ctx_->generate_timestamp(peek_only);
-
-    // TODO: We should bump the clock instead of waiting for a high timestamp.
-    if (causally_after_ts != nullptr) {
-      if (ts_ <= *causally_after_ts) {
-        ::mica::util::pause();
-        continue;
-      }
+    if (with_ts != nullptr) {
+      ts_.t2 = with_ts->t2;
+      ctx_->wts_.write(ts_);
     }
+
+    // // TODO: We should bump the clock instead of waiting for a high timestamp.
+    // if (causally_after_ts != nullptr) {
+    //   if (ts_ <= *causally_after_ts) {
+    //     ::mica::util::pause();
+    //     continue;
+    //   }
+    // }
 
     if (!StaticConfig::kReserveAfterAbort) break;
 
@@ -344,7 +350,7 @@ bool Transaction<StaticConfig>::commit(Result* detail,
   {
     t.switch_to(&Stats::logging);
     if (StaticConfig::kVerbose) printf("logging: ts=%" PRIu64 "\n", ts_.t2);
-    if (!ctx_->db_->logger()->log(this)) {
+    if (!ctx_->db_->logger()->log(ctx_, this)) {
       if (StaticConfig::kCollectExtraCommitStats) {
         abort_reason_target_count_ = &ctx_->stats().aborted_by_logging_count;
         abort_reason_target_time_ = &ctx_->stats().aborted_by_logging_time;

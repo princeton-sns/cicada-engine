@@ -3,6 +3,7 @@
 #define MICA_TRANSACTION_BTREE_INDEX_H_
 
 #include "mica/common.h"
+#include "mica/transaction/transaction.h"
 #include "mica/util/type_traits.h"
 
 namespace mica {

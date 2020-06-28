@@ -88,6 +88,12 @@ struct BasicDBConfig {
   // The maximum number of numa nodes to support.
   static constexpr size_t kMaxNUMACount = 8;
 
+  // The maximum length of a table name
+  static constexpr uint16_t kMaxTableNameSize = 16;
+
+  // The maximum length of a hash index name
+  static constexpr uint16_t kMaxHashIndexNameSize = 16;
+
   // The maximum number of column families.
   static constexpr uint16_t kMaxColumnFamilyCount = 8;
 
@@ -236,9 +242,17 @@ class DB {
   bool create_table(std::string name, uint16_t cf_count,
                     const uint64_t* data_size_hints);
 
+  auto get_all_tables() {
+    return tables_;
+  }
+
   Table<StaticConfig>* get_table(std::string name) { return tables_[name]; }
   const Table<StaticConfig>* get_table(std::string name) const {
     return tables_[name];
+  }
+
+  auto get_all_hash_index_unique_u64() {
+    return hash_idxs_unique_u64_;
   }
 
   bool create_hash_index_unique_u64(std::string name,

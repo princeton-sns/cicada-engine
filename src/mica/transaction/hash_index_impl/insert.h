@@ -2,6 +2,8 @@
 #ifndef MICA_TRANSACTION_HASH_INDEX_IMPL_INSERT_H_
 #define MICA_TRANSACTION_HASH_INDEX_IMPL_INSERT_H_
 
+#include "mica/transaction/transaction.h"
+
 namespace mica {
 namespace transaction {
 template <class StaticConfig, bool UniqueKey, class Key, class Hash,

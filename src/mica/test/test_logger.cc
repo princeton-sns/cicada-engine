@@ -2,11 +2,10 @@
 #include <thread>
 #include <random>
 #include "mica/transaction/db.h"
-#include "mica/transaction/context.h"
-#include "mica/test/test_tx_conf.h"
 #include "mica/util/lcore.h"
 #include "mica/util/zipf.h"
 #include "mica/util/rand.h"
+#include "mica/test/test_logger_conf.h"
 
 typedef DBConfig::Alloc Alloc;
 typedef DBConfig::Logger Logger;
@@ -24,7 +23,6 @@ typedef ::mica::transaction::RowAccessHandlePeekOnly<DBConfig>
     RowAccessHandlePeekOnly;
 typedef ::mica::transaction::Transaction<DBConfig> Transaction;
 typedef ::mica::transaction::Result Result;
-typedef ::mica::transaction::Context<DBConfig> Context;
 
 static ::mica::util::Stopwatch sw;
 
@@ -67,58 +65,6 @@ struct Task {
   Timestamp* read_ts;
   Timestamp* write_ts;
 } __attribute__((aligned(64)));
-
-template <class StaticConfig>
-class VerificationLogger
-    : public ::mica::transaction::LoggerInterface<StaticConfig> {
- public:
-  VerificationLogger() : tasks(nullptr) {}
-
-  bool log(Context *ctx, const ::mica::transaction::Transaction<StaticConfig>* tx) {
-    if (tasks == nullptr) return true;
-
-    auto thread_id = ctx->thread_id();
-    auto task = &((*tasks)[thread_id]);
-    auto tx_i = task->tx_i;
-    auto req_i = task->req_i;
-    auto commit_i = task->commit_i;
-
-    task->commit_tx_i[commit_i] = tx_i;
-    task->commit_ts[tx_i] = tx->ts();
-
-    // XXX: Assume we have the same row ordering in the read/write set.
-    uint64_t req_j = 0;
-    for (auto j = 0; j < tx->access_size(); j++) {
-      if (tx->accesses()[j].state == ::mica::transaction::RowAccessState::kPeek)
-        continue;
-
-      assert(req_j < task->req_counts[tx_i]);
-
-      task->read_ts[req_i + req_j] = tx->accesses()[j].read_rv->wts;
-      if (tx->accesses()[j].write_rv != nullptr)
-        task->write_ts[req_i + req_j] = tx->accesses()[j].write_rv->wts;
-      else
-        task->write_ts[req_i + req_j] = task->read_ts[req_i + req_j];
-      req_j++;
-    }
-    assert(req_j == task->req_counts[tx_i]);
-    return true;
-  }
-
-  std::vector<Task>* tasks;
-};
-
-template <class Logger>
-void setup_logger(Logger* logger, std::vector<Task>* tasks) {
-  (void)logger;
-  (void)tasks;
-}
-
-template <>
-void setup_logger(VerificationLogger<DBConfig>* logger,
-                  std::vector<Task>* tasks) {
-  logger->tasks = tasks;
-}
 
 static volatile uint16_t running_threads;
 static volatile uint8_t stopping;
@@ -383,7 +329,7 @@ int main(int argc, const char* argv[]) {
     return EXIT_FAILURE;
   }
 
-  auto config = ::mica::util::Config::load_file("test_tx.json");
+  auto config = ::mica::util::Config::load_file("test_logger.json");
 
   uint64_t num_rows = static_cast<uint64_t>(atol(argv[1]));
   uint64_t reqs_per_tx = static_cast<uint64_t>(atol(argv[2]));
@@ -393,7 +339,7 @@ int main(int argc, const char* argv[]) {
   uint64_t num_threads = static_cast<uint64_t>(atol(argv[6]));
 
   Alloc alloc(config.get("alloc"));
-  auto page_pool_size = 24 * uint64_t(1073741824);
+  auto page_pool_size = 4 * uint64_t(1073741824);
   PagePool* page_pools[2];
   // if (num_threads == 1) {
   //   page_pools[0] = new PagePool(&alloc, page_pool_size, 0);
@@ -432,11 +378,9 @@ int main(int argc, const char* argv[]) {
 #endif
   printf("\n");
 
-  Logger logger;
-  DB db(page_pools, &logger, &sw, static_cast<uint16_t>(num_threads));
+  Logger logger{static_cast<uint16_t>(num_threads)};
 
-  const bool kVerify =
-      typeid(typename DBConfig::Logger) == typeid(VerificationLogger<DBConfig>);
+  DB db(page_pools, &logger, &sw, static_cast<uint16_t>(num_threads));
 
   const uint64_t data_sizes[] = {kDataSize};
   bool ret = db.create_table("main", 1, data_sizes);
@@ -583,7 +527,6 @@ int main(int argc, const char* argv[]) {
   }
 
   std::vector<Task> tasks(num_threads);
-  setup_logger(&logger, &tasks);
   {
     printf("generating workload\n");
 
@@ -625,30 +568,6 @@ int main(int argc, const char* argv[]) {
       tasks[thread_id].row_ids = row_ids;
       tasks[thread_id].column_ids = column_ids;
       tasks[thread_id].op_types = op_types;
-
-      if (kVerify) {
-        auto commit_tx_i = reinterpret_cast<uint64_t*>(
-            alloc.malloc_contiguous(sizeof(uint64_t) * tx_count, thread_id));
-        auto commit_ts = reinterpret_cast<Timestamp*>(
-            alloc.malloc_contiguous(sizeof(Timestamp) * tx_count, thread_id));
-        auto read_ts = reinterpret_cast<Timestamp*>(alloc.malloc_contiguous(
-            sizeof(Timestamp) * tx_count * reqs_per_tx, thread_id));
-        auto write_ts = reinterpret_cast<Timestamp*>(alloc.malloc_contiguous(
-            sizeof(Timestamp) * tx_count * reqs_per_tx, thread_id));
-        assert(commit_tx_i);
-        assert(commit_ts);
-        assert(read_ts);
-        ::mica::util::memset(commit_tx_i, 0, sizeof(uint64_t) * tx_count);
-        ::mica::util::memset(commit_ts, 0, sizeof(Timestamp) * tx_count);
-        ::mica::util::memset(read_ts, 0,
-                             sizeof(Timestamp) * tx_count * reqs_per_tx);
-        ::mica::util::memset(write_ts, 0,
-                             sizeof(Timestamp) * tx_count * reqs_per_tx);
-        tasks[thread_id].commit_tx_i = commit_tx_i;
-        tasks[thread_id].commit_ts = commit_ts;
-        tasks[thread_id].read_ts = read_ts;
-        tasks[thread_id].write_ts = write_ts;
-      }
     }
 
     std::vector<std::thread> threads;
@@ -733,18 +652,6 @@ int main(int argc, const char* argv[]) {
   std::vector<Timestamp> table_ts;
 
   for (auto phase = 0; phase < 2; phase++) {
-    // if (kVerify && phase == 0) {
-    //   printf("skipping warming up\n");
-    //   continue;
-    // }
-
-    if (kVerify && phase == 1) {
-      for (uint64_t row_id = 0; row_id < num_rows; row_id++) {
-        auto rv = tbl->latest_rv(0, row_id);
-        table_ts.push_back(rv->wts);
-      }
-    }
-
     if (phase == 0)
       printf("warming up\n");
     else {
@@ -814,118 +721,162 @@ int main(int argc, const char* argv[]) {
     if (btree_idx != nullptr) btree_idx->index_table()->print_table_status();
 
     if (kShowPoolStats) db.print_pool_status();
+
+    for (uint16_t thread_id = 0; thread_id < num_threads; thread_id++) {
+      db.logger()->flush_log(db.context(thread_id));
+    }
   }
 
-  if (kVerify) {
-    printf("verifying\n");
-    const bool print_verification = false;
-    // const bool print_verification = true;
+  {
+    printf("Copying log files\n");
 
-    if (kUseSnapshot)
-      printf(
-          "warning: verification currently does not support transactions using "
-          "snapshots\n");
-
-    uint64_t total_tx_i = 0;
-    uint64_t current_commit_i[num_threads];
-    for (uint64_t thread_id = 0; thread_id < num_threads; thread_id++)
-      current_commit_i[thread_id] = 0;
-
-    while (true) {
-      // Simple but slow way to find the next executed transaction.
-      uint64_t next_thread_id = static_cast<uint64_t>(-1);
-      Timestamp next_ts = Timestamp::make(0, 0, 0);
-      for (uint64_t thread_id = 0; thread_id < num_threads; thread_id++) {
-        Task* task = &tasks[thread_id];
-
-        if (current_commit_i[thread_id] >= task->committed) continue;
-
-        uint64_t tx_i = task->commit_tx_i[current_commit_i[thread_id]];
-        if (next_ts > task->commit_ts[tx_i] ||
-            next_thread_id == static_cast<uint64_t>(-1)) {
-          next_thread_id = thread_id;
-          next_ts = task->commit_ts[tx_i];
-        }
-      }
-      if (next_thread_id == static_cast<uint64_t>(-1)) break;
-
-      Task* task = &tasks[next_thread_id];
-      uint64_t tx_i = task->commit_tx_i[current_commit_i[next_thread_id]];
-      // XXX: Assume the constant number of reqs per tx.
-      uint64_t total_req_i = reqs_per_tx * tx_i;
-
-      if (print_verification)
-        printf("thread=%2" PRIu64 " tx=%" PRIu64 " commit_ts=0x%" PRIx64 "\n",
-               next_thread_id, tx_i, next_ts.t2);
-
-      for (uint64_t req_j = 0; req_j < task->req_counts[tx_i]; req_j++) {
-        const Timestamp& read_ts = task->read_ts[total_req_i + req_j];
-        const Timestamp& write_ts = task->write_ts[total_req_i + req_j];
-        uint64_t row_id = task->row_ids[total_req_i + req_j];
-        bool is_read = task->op_types[total_req_i + req_j] == 0;
-        bool is_rmw = task->op_types[total_req_i + req_j] == 1;
-
-        if (print_verification)
-          printf("  req %2" PRIu64 " row=%9" PRIu64
-                 " is_read=%d read_ts=0x%" PRIx64 "\n",
-                 req_j, row_id, is_read ? 1 : 0, read_ts.t2);
-
-        // The read set timestamp must be smaller than the commit timestamp
-        // (consistency).
-        if (read_ts >= next_ts) {
-          printf("verification failed at %" PRIu64
-                 " (read ts must predate commit ts)\n",
-                 total_tx_i);
-          assert(false);
-          return 1;
-        }
-
-        if (is_read || is_rmw) {
-          // There must be no extra version between the read and commit
-          // timestamp unless it is a write-only operation (atomicity).
-          const Timestamp& stored_ts = table_ts[row_id];
-          if (stored_ts != read_ts) {
-            printf("verification failed at %" PRIu64
-                   " (read ts mismatch; expected 0x%" PRIx64 ", got 0x%" PRIx64
-                   ")\n",
-                   total_tx_i, read_ts.t2, stored_ts.t2);
-            assert(false);
-            return 1;
-          }
-        }
-
-        // Register the new version.  It is guranteed to be the latest version
-        // because we chose the transaction in their commit ts order.
-        // if (!is_read) table_ts[row_id] = next_ts;
-        // Since we now have a promotion, a read may be actually a write.
-        // It keeps the old timestamp or updated to the transaction's timestamp.
-        assert(write_ts == read_ts || write_ts == next_ts);
-        table_ts[row_id] = write_ts;
-      }
-
-      current_commit_i[next_thread_id]++;
-      total_tx_i++;
+    std::string cmd = "cp " + DBConfig::kDBLogDir + "/out.*.log " +
+                      DBConfig::kRelayLogDir + "/ ;";
+    int r = std::system(cmd.c_str());
+    if (r != 0) {
+      fprintf(stderr, "Failed to copy log files to relay log dir\n");
+      return EXIT_FAILURE;
     }
 
-    // Final check.
-    for (uint64_t row_id = 0; row_id < num_rows; row_id++) {
-      auto stored_ts = table_ts[row_id];
-      auto rv = tbl->latest_rv(0, row_id);
-      auto read_ts = rv->wts;
+    cmd = "rm " + DBConfig::kDBLogDir + "/out.*.log ;";
+    r = std::system(cmd.c_str());
+    if (r != 0) {
+      fprintf(stderr, "Failed to remove old DB log files\n");
+      return EXIT_FAILURE;
+    }
+  }
 
-      if (stored_ts != read_ts) {
-        printf("verification failed at %" PRIu64
-               " (read ts mismatch; expected 0x%" PRIx64 ", got 0x%" PRIx64
-               ")\n",
-               total_tx_i, read_ts.t2, stored_ts.t2);
-        assert(false);
-        return 1;
+  DB replica(page_pools, &logger, &sw, static_cast<uint16_t>(num_threads));
+
+  replica.activate(0);
+  {
+    printf("Starting replication\n");
+    replica.logger()->start_log_consumer(replica.context(0));
+
+    replica.logger()->stop_log_consumer();
+  }
+  replica.deactivate(0);
+
+  db.activate(0);
+  replica.activate(0);
+  {
+    printf("Verifying replica state\n");
+
+    auto db_tables = db.get_all_tables();
+    auto replica_tables = replica.get_all_tables();
+
+    for (const auto& t : db_tables) {
+      auto search = replica_tables.find(t.first);
+      if (search == replica_tables.end()) {
+        fprintf(stderr, "Replica does not contain table: %s\n",
+                t.first.c_str());
+        return EXIT_FAILURE;
       }
     }
 
-    printf("passed verification\n");
-    printf("\n");
+    auto db_hash_idxs = db.get_all_hash_index_unique_u64();
+    auto replica_hash_idxs = replica.get_all_hash_index_unique_u64();
+
+    for (const auto& h : db_hash_idxs) {
+      auto search = replica_hash_idxs.find(h.first);
+      if (search == replica_hash_idxs.end()) {
+        fprintf(stderr, "Replica does not contain hash index: %s\n",
+                h.first.c_str());
+        return EXIT_FAILURE;
+      }
+    }
+
+    Transaction db_tx(db.context(0));
+    Transaction replica_tx(replica.context(0));
+
+    db_tx.begin(false);
+    replica_tx.begin(false);
+
+    for (const auto& h : db_hash_idxs) {
+      auto search = replica_hash_idxs.find(h.first);
+      if (search == replica_hash_idxs.end()) {
+        fprintf(stderr, "Replica does not contain hash index: %s\n",
+                h.first.c_str());
+        return EXIT_FAILURE;
+      }
+
+      auto db_idx = h.second;
+      auto replica_idx = search->second;
+
+      for (uint64_t i = 0; i < num_rows; i++) {
+        uint64_t db_key = 75;
+        const char *db_data = nullptr;
+        auto db_lookup_res =
+            db_idx->lookup(&db_tx, i, true, [&db_key](auto& k, auto& v) {
+              (void)k;
+              db_key = v;
+              return false;
+            });
+        if (db_lookup_res != 1 || db_lookup_res == HashIndex::kHaveToAbort) {
+          fprintf(stderr, "Failed to lookup key in DB hash index %lu\n", i);
+          return EXIT_FAILURE;
+        } else {
+          printf("Found key in DB hash index %lu\n", i);
+        }
+
+        RowAccessHandle db_rah(&db_tx);
+        if (!db_rah.peek_row(db_idx->main_table(), 0, db_key, false, true, false) ||
+            !db_rah.read_row()) {
+          fprintf(stderr, "Failed to lookup key in DB table %lu\n", i);
+          return EXIT_FAILURE;
+        }
+
+        db_data = db_rah.cdata();
+
+        uint64_t replica_key = 40;
+        const char *replica_data = nullptr;
+        auto replica_lookup_res = replica_idx->lookup(
+            &replica_tx, i, true, [&replica_key](auto& k, auto& v) {
+              (void)k;
+              replica_key = v;
+              return false;
+            });
+        if (replica_lookup_res != 1 ||
+            replica_lookup_res == HashIndex::kHaveToAbort) {
+          fprintf(stderr, "Failed to lookup key in replica hash index %lu\n",
+                  i);
+          return EXIT_FAILURE;
+        }
+
+        RowAccessHandle replica_rah(&db_tx);
+        if (!replica_rah.peek_row(replica_idx->main_table(), 0, replica_key, false, true, false) ||
+            !replica_rah.read_row()) {
+          fprintf(stderr, "Failed to lookup key in replica table %lu\n", i);
+          return EXIT_FAILURE;
+        }
+
+        replica_data = replica_rah.cdata();
+
+        if (db_key == replica_key) {
+          fprintf(stderr, "DB and replica index values match: %lu\n", i);
+        } else {
+          fprintf(stderr, "DB and replica index values do not match: %lu\n", i);
+        }
+
+        if (db_rah.size() == replica_rah.size()) {
+          fprintf(stderr, "DB and replica data sizes match: %lu\n", i);
+        } else {
+          fprintf(stderr, "DB and replica data sizes do now match: %lu\n", i);
+        }
+
+        if (std::memcmp(db_data, replica_data, db_rah.size()) == 0) {
+          fprintf(stderr, "DB and replica table values match: %lu\n", i);
+        } else {
+          fprintf(stderr, "DB and replica table values do not match: %lu\n", i);
+        }
+      }
+    }
+
+    db_tx.commit();
+    replica_tx.commit();
   }
+  db.deactivate(0);
+  replica.deactivate(0);
 
   {
     printf("cleaning up\n");
@@ -936,12 +887,6 @@ int main(int argc, const char* argv[]) {
       alloc.free_contiguous(tasks[thread_id].row_ids);
       alloc.free_contiguous(tasks[thread_id].column_ids);
       alloc.free_contiguous(tasks[thread_id].op_types);
-      if (kVerify) {
-        alloc.free_contiguous(tasks[thread_id].commit_tx_i);
-        alloc.free_contiguous(tasks[thread_id].commit_ts);
-        alloc.free_contiguous(tasks[thread_id].read_ts);
-        alloc.free_contiguous(tasks[thread_id].write_ts);
-      }
     }
   }
 

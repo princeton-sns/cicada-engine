@@ -15,17 +15,28 @@ namespace transaction {
 template <class StaticConfig>
 class DB;
 
+enum TableType : uint8_t {
+  DATA = 0,
+  HASH_IDX,
+  BTREE_IDX,
+};
+
 template <class StaticConfig>
 class Table {
  public:
   typedef typename StaticConfig::Timestamp Timestamp;
 
-  Table(DB<StaticConfig>* db, uint16_t cf_count,
-        const uint64_t* data_size_hints);
+  Table(DB<StaticConfig>* db, std::string name, uint16_t cf_count,
+        const uint64_t* data_size_hints, TableType type = TableType::DATA);
   ~Table();
 
   DB<StaticConfig>* db() { return db_; }
   const DB<StaticConfig>* db() const { return db_; }
+
+  std::string name() { return name_; }
+  const std::string name() const { return name_; }
+
+  TableType type() { return type_; }
 
   uint16_t cf_count() const { return cf_count_; }
 
@@ -69,7 +80,9 @@ class Table {
 
  private:
   DB<StaticConfig>* db_;
+  std::string name_;
   uint16_t cf_count_;
+  TableType type_;
 
   struct ColumnFamilyInfo {
     uint64_t data_size_hint;
@@ -99,8 +112,8 @@ class Table {
   volatile uint32_t lock_ __attribute__((aligned(64)));
   uint64_t row_count_;
 } __attribute__((aligned(64)));
-}
-}
+}  // namespace transaction
+}  // namespace mica
 
 #include "table_impl.h"
 

@@ -2,12 +2,14 @@
 #ifndef MICA_TRANSACTION_TABLE_IMPL_H_
 #define MICA_TRANSACTION_TABLE_IMPL_H_
 
+#include "mica/transaction/db.h"
+
 namespace mica {
 namespace transaction {
 template <class StaticConfig>
-Table<StaticConfig>::Table(DB<StaticConfig>* db, uint16_t cf_count,
-                           const uint64_t* data_size_hints)
-    : db_(db), cf_count_(cf_count) {
+Table<StaticConfig>::Table(DB<StaticConfig>* db, std::string name, uint16_t cf_count,
+                           const uint64_t* data_size_hints, TableType type)
+  : db_(db), name_(name), cf_count_(cf_count), type_(type) {
   assert(cf_count <= StaticConfig::kMaxColumnFamilyCount);
 
   constexpr size_t kAlignment = 64;

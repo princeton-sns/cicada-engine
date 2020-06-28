@@ -2,6 +2,8 @@
 #ifndef MICA_TRANSACTION_DB_IMPL_H_
 #define MICA_TRANSACTION_DB_IMPL_H_
 
+#include "mica/transaction/db.h"
+
 namespace mica {
 namespace transaction {
 template <class StaticConfig>
@@ -78,8 +80,13 @@ bool DB<StaticConfig>::create_table(std::string name, uint16_t cf_count,
                                     const uint64_t* data_size_hints) {
   if (tables_.find(name) != tables_.end()) return false;
 
-  auto tbl = new Table<StaticConfig>(this, cf_count, data_size_hints);
+  auto tbl = new Table<StaticConfig>(this, name, cf_count, data_size_hints,
+                                     TableType::DATA);
   tables_[name] = tbl;
+
+  if (!logger_->log(context(0), tbl))  // TODO: Fix hardcoded thread_id
+    return false;
+
   return true;
 }
 
@@ -92,9 +99,14 @@ bool DB<StaticConfig>::create_hash_index_unique_u64(
 
   const uint64_t kDataSizes[] = {HashIndexUniqueU64::kDataSize};
   auto idx = new HashIndexUniqueU64(
-      this, main_tbl, new Table<StaticConfig>(this, 1, kDataSizes),
+      this, main_tbl,
+      new Table<StaticConfig>(this, name, 1, kDataSizes, TableType::HASH_IDX),
       expected_row_count);
   hash_idxs_unique_u64_[name] = idx;
+
+  if (!logger_->log(context(0), idx))  // TODO: Fix hardcoded thread_id
+    return false;
+
   return true;
 }
 
@@ -107,7 +119,8 @@ bool DB<StaticConfig>::create_hash_index_nonunique_u64(
 
   const uint64_t kDataSizes[] = {HashIndexNonuniqueU64::kDataSize};
   auto idx = new HashIndexNonuniqueU64(
-      this, main_tbl, new Table<StaticConfig>(this, 1, kDataSizes),
+      this, main_tbl,
+      new Table<StaticConfig>(this, name, 1, kDataSizes, TableType::HASH_IDX),
       expected_row_count);
   hash_idxs_nonunique_u64_[name] = idx;
   return true;
@@ -121,7 +134,8 @@ bool DB<StaticConfig>::create_btree_index_unique_u64(
 
   const uint64_t kDataSizes[] = {BTreeIndexUniqueU64::kDataSize};
   auto idx = new BTreeIndexUniqueU64(
-      this, main_tbl, new Table<StaticConfig>(this, 1, kDataSizes));
+      this, main_tbl,
+      new Table<StaticConfig>(this, name, 1, kDataSizes, TableType::BTREE_IDX));
   btree_idxs_unique_u64_[name] = idx;
   return true;
 }
@@ -134,7 +148,8 @@ bool DB<StaticConfig>::create_btree_index_nonunique_u64(
 
   const uint64_t kDataSizes[] = {BTreeIndexNonuniqueU64::kDataSize};
   auto idx = new BTreeIndexNonuniqueU64(
-      this, main_tbl, new Table<StaticConfig>(this, 1, kDataSizes));
+      this, main_tbl,
+      new Table<StaticConfig>(this, name, 1, kDataSizes, TableType::BTREE_IDX));
   btree_idxs_nonunique_u64_[name] = idx;
   return true;
 }
@@ -365,7 +380,7 @@ void DB<StaticConfig>::reset_backoff() {
   // This requires reset_stats() to be effective.
   backoff_ = 0.;
 }
-}
-}
+}  // namespace transaction
+}  // namespace mica
 
 #endif

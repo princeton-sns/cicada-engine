@@ -2,7 +2,9 @@
 #ifndef MICA_TRANSACTION_CONTEXT_H_
 #define MICA_TRANSACTION_CONTEXT_H_
 
+#include <algorithm>
 #include <queue>
+
 #include "mica/transaction/stats.h"
 #include "mica/transaction/row.h"
 #include "mica/transaction/table.h"
@@ -201,6 +203,34 @@ class Context {
     return row_id;
   }
 
+  uint64_t allocate_row(Table<StaticConfig>* tbl, uint64_t row_id) {
+    auto& free_row_ids = free_rows_[tbl];
+    while (tbl->row_count() == 0 || tbl->row_count() - 1 < row_id) {
+      if (!tbl->allocate_rows(this, free_row_ids))
+        return static_cast<uint64_t>(-1);
+    }
+
+    auto it = std::find(free_row_ids.begin(), free_row_ids.end(), row_id);
+    assert(row_id == *it);
+    // swap the one to be removed with the last element
+    std::swap(*it, free_row_ids.back());
+    free_row_ids.pop_back();
+
+    if (StaticConfig::kVerbose) printf("new row ID = %" PRIu64 "\n", row_id);
+
+    // gc_ts needs to be initialized with a near-past timestamp.
+    auto min_wts = db_->min_wts();
+    for (uint16_t cf_id = 0; cf_id < tbl->cf_count(); cf_id++) {
+      auto g = tbl->gc_info(cf_id, row_id);
+      g->gc_lock = 0;
+      g->gc_ts.init(min_wts);
+
+      assert(tbl->head(cf_id, row_id)->older_rv == nullptr);
+    }
+
+    return row_id;
+  }
+
   void deallocate_row(Table<StaticConfig>* tbl, uint64_t row_id) {
     free_rows_[tbl].push_back(row_id);
 
@@ -336,8 +366,8 @@ class Context {
   ConcurrentTimestamp rts_;
   volatile uint64_t clock_;
 } __attribute__((aligned(64)));
-}
-}
+}  // namespace transaction
+}  // namespace mica
 
 #include "context_gc.h"
 

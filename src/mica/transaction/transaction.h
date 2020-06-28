@@ -41,7 +41,7 @@ class Transaction {
 
   // transaction_impl/commit.h
   bool begin(bool peek_only = false,
-             const Timestamp* causally_after_ts = nullptr);
+             const Timestamp *with_ts = nullptr);
 
   // transaction_impl/operation.h
   struct NoopDataCopier {

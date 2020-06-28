@@ -8,10 +8,10 @@ namespace mica {
 namespace transaction {
 enum class RowVersionStatus : uint8_t {
   kInvalid = 0,
-  kPending,
-  kAborted,
-  kCommitted,  // Commited as a valid version.
-  kDeleted,    // Commited as a deleted row.
+  kPending = 1,
+  kAborted = 2,
+  kCommitted = 3,  // Commited as a valid version.
+  kDeleted = 4,    // Commited as a deleted row.
 };
 
 template <class StaticConfig>

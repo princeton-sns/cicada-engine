@@ -2,6 +2,8 @@
 #ifndef MICA_TRANSACTION_TRANSACTION_IMPL_OPERATION_H_
 #define MICA_TRANSACTION_TRANSACTION_IMPL_OPERATION_H_
 
+#include "mica/transaction/transaction.h"
+
 namespace mica {
 namespace transaction {
 template <class StaticConfig>
@@ -24,9 +26,11 @@ bool Transaction<StaticConfig>::new_row(RAH& rah, Table<StaticConfig>* tbl,
   if (rah) return false;
 
   if (cf_id == 0) {
-    if (row_id != kNewRowID) return false;
+    if (row_id == kNewRowID)
+      row_id = ctx_->allocate_row(tbl);
+    else
+      row_id = ctx_->allocate_row(tbl, row_id);
 
-    row_id = ctx_->allocate_row(tbl);
     if (row_id == static_cast<uint64_t>(-1)) {
       // TODO: Use different stats counter.
       if (StaticConfig::kCollectExtraCommitStats) {

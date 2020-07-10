@@ -30,6 +30,18 @@ class PosixIO {
     }
   }
 
+  static long Seek(int fd, long offset, int whence) {
+    while (true) {
+      long ret = lseek(fd, offset, whence);
+      if (ret == -1) {
+        if (errno == EINTR) continue;
+        throw std::runtime_error("Failed to seek file with errno " +
+                                 std::to_string(errno));
+      }
+      return ret;
+    }
+  }
+
   static void FSync(int fd) {
     while (true) {
       int ret = fsync(fd);
@@ -82,6 +94,16 @@ class PosixIO {
       }
       written += static_cast<size_t>(ret);
     }
+  }
+
+  static off_t PRead(int fd, void* buf, size_t nbyte, off_t offset) {
+    off_t ret = pread(fd, buf, nbyte, offset);
+    if (ret == -1) {
+      throw std::runtime_error("PRead failed with errno " +
+                               std::to_string(errno));
+    }
+
+    return ret;
   }
 };
 

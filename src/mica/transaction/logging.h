@@ -75,11 +75,56 @@ class LogEntry {
   LogEntryType type;
 
   void print() {
-    std::cout << std::endl;
-    std::cout << "Log entry:" << std::endl;
-    std::cout << "Size: " << size << std::endl;
-    std::cout << "Type: " << std::to_string(static_cast<uint8_t>(type))
-              << std::endl;
+    std::stringstream stream;
+
+    stream << std::endl;
+    stream << "Log entry:" << std::endl;
+    stream << "Size: " << size << std::endl;
+    stream << "Type: " << std::to_string(static_cast<uint8_t>(type))
+           << std::endl;
+
+    std::cout << stream.str();
+  }
+};
+
+class LogEntryRef {
+ public:
+  int fd;
+  long offset;
+  std::size_t size;
+  LogEntryType type;
+  uint64_t txn_ts;
+
+  static bool compare(const LogEntryRef &r1, const LogEntryRef &r2) {
+    switch (r1.type) {
+    case LogEntryType::CREATE_TABLE:
+      return true;
+    case LogEntryType::CREATE_HASH_IDX:
+      return r2.type != LogEntryType::CREATE_TABLE;
+    case LogEntryType::INSERT_ROW:
+    case LogEntryType::WRITE_ROW:
+      if (r2.type == LogEntryType::CREATE_TABLE || r2.type == LogEntryType::CREATE_HASH_IDX)
+        return false;
+      else
+        return r1.txn_ts < r2.txn_ts;
+    }
+
+    throw std::runtime_error("Unhandled comparison!");
+  }
+
+  void print() {
+    std::stringstream stream;
+
+    stream << std::endl;
+    stream << "LogEntryRef:" << std::endl;
+    stream << "FD: " << fd << std::endl;
+    stream << "Offset: " << offset << std::endl;
+    stream << "Size: " << size << std::endl;
+    stream << "Type: " << std::to_string(static_cast<uint8_t>(type))
+           << std::endl;
+    stream << "Transaction TS: " << txn_ts << std::endl;
+
+    std::cout << stream.str();
   }
 };
 
@@ -93,13 +138,17 @@ class CreateTableLogEntry : public LogEntry<StaticConfig> {
   void print() {
     LogEntry<StaticConfig>::print();
 
-    std::cout << "Name: " << std::string{name} << std::endl;
-    std::cout << "CF count: " << cf_count << std::endl;
+    std::stringstream stream;
+
+    stream << "Name: " << std::string{name} << std::endl;
+    stream << "CF count: " << cf_count << std::endl;
 
     for (uint16_t cf_id = 0; cf_id < cf_count; cf_id++) {
-      std::cout << "data_size_hints[" << cf_id
-                << "]: " << data_size_hints[cf_id] << std::endl;
+      stream << "data_size_hints[" << cf_id << "]: " << data_size_hints[cf_id]
+             << std::endl;
     }
+
+    std::cout << stream.str();
   }
 };
 
@@ -114,10 +163,14 @@ class CreateHashIndexLogEntry : public LogEntry<StaticConfig> {
   void print() {
     LogEntry<StaticConfig>::print();
 
-    std::cout << "Name: " << std::string{name} << std::endl;
-    std::cout << "Main Table Name: " << std::string{main_tbl_name} << std::endl;
-    std::cout << "Expected Row Count: " << expected_num_rows << std::endl;
-    std::cout << "UniqueKey: " << unique_key << std::endl;
+    std::stringstream stream;
+
+    stream << "Name: " << std::string{name} << std::endl;
+    stream << "Main Table Name: " << std::string{main_tbl_name} << std::endl;
+    stream << "Expected Row Count: " << expected_num_rows << std::endl;
+    stream << "UniqueKey: " << unique_key << std::endl;
+
+    std::cout << stream.str();
   }
 };
 
@@ -143,14 +196,18 @@ class InsertRowLogEntry : public LogEntry<StaticConfig> {
   void print() {
     LogEntry<StaticConfig>::print();
 
-    std::cout << "Table Name: " << std::string{tbl_name} << std::endl;
-    std::cout << "Table Type: " << std::to_string(tbl_type) << std::endl;
-    std::cout << "Column Family ID: " << cf_id << std::endl;
-    std::cout << "Row ID: " << row_id << std::endl;
-    std::cout << "Transaction TS: " << txn_ts << std::endl;
-    std::cout << "Write TS: " << wts << std::endl;
-    std::cout << "Read TS: " << rts << std::endl;
-    std::cout << "Data Size: " << data_size << std::endl;
+    std::stringstream stream;
+
+    stream << "Table Name: " << std::string{tbl_name} << std::endl;
+    stream << "Table Type: " << std::to_string(tbl_type) << std::endl;
+    stream << "Column Family ID: " << cf_id << std::endl;
+    stream << "Row ID: " << row_id << std::endl;
+    stream << "Transaction TS: " << txn_ts << std::endl;
+    stream << "Write TS: " << wts << std::endl;
+    stream << "Read TS: " << rts << std::endl;
+    stream << "Data Size: " << data_size << std::endl;
+
+    std::cout << stream.str();
   }
 };
 
@@ -176,14 +233,18 @@ class WriteRowLogEntry : public LogEntry<StaticConfig> {
   void print() {
     LogEntry<StaticConfig>::print();
 
-    std::cout << "Table Name: " << std::string{tbl_name} << std::endl;
-    std::cout << "Table Type: " << std::to_string(tbl_type) << std::endl;
-    std::cout << "Column Family ID: " << cf_id << std::endl;
-    std::cout << "Row ID: " << row_id << std::endl;
-    std::cout << "Transaction TS: " << txn_ts << std::endl;
-    std::cout << "Write TS: " << wts << std::endl;
-    std::cout << "Read TS: " << rts << std::endl;
-    std::cout << "Data Size: " << data_size << std::endl;
+    std::stringstream stream;
+
+    stream << "Table Name: " << std::string{tbl_name} << std::endl;
+    stream << "Table Type: " << std::to_string(tbl_type) << std::endl;
+    stream << "Column Family ID: " << cf_id << std::endl;
+    stream << "Row ID: " << row_id << std::endl;
+    stream << "Transaction TS: " << txn_ts << std::endl;
+    stream << "Write TS: " << wts << std::endl;
+    stream << "Read TS: " << rts << std::endl;
+    stream << "Data Size: " << data_size << std::endl;
+
+    std::cout << stream.str();
   }
 };
 
@@ -195,9 +256,12 @@ class FileLogger : public LoggerInterface<StaticConfig> {
   std::thread log_consumer_;
   std::atomic<bool> log_consumer_stop_;
 
+  uint16_t nthreads_;
+
  public:
-  FileLogger(uint16_t nthreads) : files_{}, log_consumer_stop_{false} {
-    for (auto i = 0; i < nthreads; i++) {
+  FileLogger(uint16_t nthreads)
+      : files_{}, log_consumer_stop_{false}, nthreads_{nthreads} {
+    for (auto i = 0; i < nthreads_; i++) {
       std::stringstream fname;
       fname << StaticConfig::kDBLogDir << "/out." << i << ".log";
 
@@ -390,7 +454,7 @@ class FileLogger : public LoggerInterface<StaticConfig> {
               fd, reinterpret_cast<char*>(rle) + sizeof(LogEntry<StaticConfig>),
               le.size - sizeof(LogEntry<StaticConfig>));
 
-          // static_cast<CreateTableLogEntry<StaticConfig>*>(rle)->print();
+          //static_cast<CreateTableLogEntry<StaticConfig>*>(rle)->print();
           break;
 
         case LogEntryType::CREATE_HASH_IDX:
@@ -403,7 +467,7 @@ class FileLogger : public LoggerInterface<StaticConfig> {
               fd, reinterpret_cast<char*>(rle) + sizeof(LogEntry<StaticConfig>),
               le.size - sizeof(LogEntry<StaticConfig>));
 
-          // static_cast<CreateHashIndexLogEntry<StaticConfig>*>(rle)->print();
+          //static_cast<CreateHashIndexLogEntry<StaticConfig>*>(rle)->print();
           break;
 
         case LogEntryType::INSERT_ROW:
@@ -416,7 +480,7 @@ class FileLogger : public LoggerInterface<StaticConfig> {
               fd, reinterpret_cast<char*>(rle) + sizeof(LogEntry<StaticConfig>),
               le.size - sizeof(LogEntry<StaticConfig>));
 
-          // static_cast<InsertRowLogEntry<StaticConfig>*>(rle)->print();
+          //static_cast<InsertRowLogEntry<StaticConfig>*>(rle)->print();
           break;
 
         case LogEntryType::WRITE_ROW:
@@ -429,7 +493,7 @@ class FileLogger : public LoggerInterface<StaticConfig> {
               fd, reinterpret_cast<char*>(rle) + sizeof(LogEntry<StaticConfig>),
               le.size - sizeof(LogEntry<StaticConfig>));
 
-          // static_cast<WriteRowLogEntry<StaticConfig>*>(rle)->print();
+          //static_cast<WriteRowLogEntry<StaticConfig>*>(rle)->print();
           break;
       }
 
@@ -590,9 +654,12 @@ class FileLogger : public LoggerInterface<StaticConfig> {
       throw std::runtime_error("Failed to begin transaction.");
     }
 
-    if (!rah.peek_row(tbl, le->cf_id, le->row_id, false, false, true) ||
-        !rah.write_row(le->data_size)) {
-      throw std::runtime_error("Failed to write row.");
+    if (!rah.peek_row(tbl, le->cf_id, le->row_id, false, false, true)) {
+      throw std::runtime_error("Failed to write row: peek.");
+    }
+
+    if (!rah.write_row(le->data_size)) {
+      throw std::runtime_error("Failed to write row: write.");
     }
 
     char* data = rah.data();
@@ -621,19 +688,103 @@ class FileLogger : public LoggerInterface<StaticConfig> {
     }
   }
 
+  void process_relay_logs(Context<StaticConfig>* ctx) {
+    auto db = ctx->db();
+
+    std::vector<int> fds{};
+    std::vector<LogEntryRef> refs{};
+
+    std::stringstream fname;
+    fname << StaticConfig::kRelayLogDir << "/relay.log";
+    int outfd = ::mica::util::PosixIO::Open(fname.str().c_str(),
+                                            O_WRONLY | O_APPEND | O_CREAT,
+                                            S_IRUSR | S_IWUSR | S_IRGRP | S_IROTH);
+
+    PagePool<StaticConfig>* page_pool = db->page_pool(ctx->numa_id());
+    char* page = page_pool->allocate();
+
+    LogEntryRef ref;
+    LogEntry<StaticConfig>* le = nullptr;
+    InsertRowLogEntry<StaticConfig>* irle = nullptr;
+    WriteRowLogEntry<StaticConfig>* wrle = nullptr;
+
+    for (uint16_t tid = 0; tid < nthreads_; tid++) {
+      fname.str("");
+      fname << StaticConfig::kRelayLogDir << "/out." << tid << ".log";
+      int fd = ::mica::util::PosixIO::Open(fname.str().c_str(), O_RDONLY);
+      fds.push_back(fd);
+    }
+
+    for (int fd : fds) {
+
+      while (true) {
+        long offset = ::mica::util::PosixIO::Seek(fd, 0, SEEK_CUR);
+        bool ret = read_log_entry(fd, page, PagePool<StaticConfig>::kPageSize);
+        if (!ret) break;
+
+        le = reinterpret_cast<LogEntry<StaticConfig>*>(page);
+
+        ref.fd = fd;
+        ref.offset = offset;
+        ref.size = le->size;
+        ref.type = le->type;
+        ref.txn_ts = 0;
+
+        switch (le->type) {
+        case LogEntryType::INSERT_ROW:
+          irle = static_cast<InsertRowLogEntry<StaticConfig>*>(le);
+          ref.txn_ts = irle->txn_ts;
+          break;
+        case LogEntryType::WRITE_ROW:
+          wrle = static_cast<WriteRowLogEntry<StaticConfig>*>(le);
+          ref.txn_ts = wrle->txn_ts;
+          break;
+        default:
+          break;
+        }
+
+        refs.push_back(ref);
+      }
+    }
+
+    std::sort(refs.begin(), refs.end(), LogEntryRef::compare);
+
+    for (LogEntryRef r : refs) {
+      // r.print();
+
+      if (::mica::util::PosixIO::PRead(r.fd, page, r.size, r.offset) != static_cast<ssize_t>(r.size)) {
+        throw std::runtime_error("Error while reading from offset");
+      }
+
+      ::mica::util::PosixIO::Write(outfd, page, r.size);
+    }
+
+    ::mica::util::PosixIO::Close(outfd);
+
+    for (int fd : fds) {
+      ::mica::util::PosixIO::Close(fd);
+    }
+
+    page_pool->free(page);
+  }
+
   void log_consumer_thread(Context<StaticConfig>* ctx) {
     printf("Starting log consumer\n");
+
+    printf("Processing relay logs\n");
+    process_relay_logs(ctx);
+
+    printf("Replicating combined relay log\n");
     auto db = ctx->db();
 
     PagePool<StaticConfig>* page_pool = db->page_pool(ctx->numa_id());
     char* page = page_pool->allocate();
 
-    while (true) {
-      uint16_t tid = 0;
-      std::stringstream fname;
-      fname << StaticConfig::kRelayLogDir << "/out." << tid << ".log";
-      int fd = ::mica::util::PosixIO::Open(fname.str().c_str(), O_RDONLY);
+    std::stringstream fname;
+    fname << StaticConfig::kRelayLogDir << "/relay.log";
+    int fd = ::mica::util::PosixIO::Open(fname.str().c_str(), O_RDONLY);
 
+    while (true) {
       CreateTableLogEntry<StaticConfig>* ctle = nullptr;
       CreateHashIndexLogEntry<StaticConfig>* hile = nullptr;
       InsertRowLogEntry<StaticConfig>* irle = nullptr;
@@ -692,6 +843,7 @@ class FileLogger : public LoggerInterface<StaticConfig> {
       if (log_consumer_stop_) break;
     }
 
+    ::mica::util::PosixIO::Close(fd);
     page_pool->free(page);
 
     printf("Exiting log consumer\n");

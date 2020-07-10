@@ -505,6 +505,7 @@ int main(int argc, const char* argv[]) {
 
     // TODO: Use multiple threads to renew rows for more balanced memory access.
 
+    printf("renewing rows\n");
     db.activate(0);
     {
       uint64_t i = 0;
@@ -730,9 +731,16 @@ int main(int argc, const char* argv[]) {
   {
     printf("Copying log files\n");
 
-    std::string cmd = "cp " + DBConfig::kDBLogDir + "/out.*.log " +
-                      DBConfig::kRelayLogDir + "/ ;";
+    std::string cmd = "rm " + DBConfig::kRelayLogDir + "/* ;";
     int r = std::system(cmd.c_str());
+    if (r != 0) {
+      fprintf(stderr, "Failed to remove old relay log files\n");
+      return EXIT_FAILURE;
+    }
+
+    cmd = "cp " + DBConfig::kDBLogDir + "/out.*.log " + DBConfig::kRelayLogDir +
+          "/ ;";
+    r = std::system(cmd.c_str());
     if (r != 0) {
       fprintf(stderr, "Failed to copy log files to relay log dir\n");
       return EXIT_FAILURE;
@@ -805,7 +813,7 @@ int main(int argc, const char* argv[]) {
 
       for (uint64_t i = 0; i < num_rows; i++) {
         uint64_t db_key = 75;
-        const char *db_data = nullptr;
+        const char* db_data = nullptr;
         auto db_lookup_res =
             db_idx->lookup(&db_tx, i, true, [&db_key](auto& k, auto& v) {
               (void)k;
@@ -820,7 +828,8 @@ int main(int argc, const char* argv[]) {
         }
 
         RowAccessHandle db_rah(&db_tx);
-        if (!db_rah.peek_row(db_idx->main_table(), 0, db_key, false, true, false) ||
+        if (!db_rah.peek_row(db_idx->main_table(), 0, db_key, false, true,
+                             false) ||
             !db_rah.read_row()) {
           fprintf(stderr, "Failed to lookup key in DB table %lu\n", i);
           return EXIT_FAILURE;
@@ -829,7 +838,7 @@ int main(int argc, const char* argv[]) {
         db_data = db_rah.cdata();
 
         uint64_t replica_key = 40;
-        const char *replica_data = nullptr;
+        const char* replica_data = nullptr;
         auto replica_lookup_res = replica_idx->lookup(
             &replica_tx, i, true, [&replica_key](auto& k, auto& v) {
               (void)k;
@@ -844,7 +853,8 @@ int main(int argc, const char* argv[]) {
         }
 
         RowAccessHandle replica_rah(&db_tx);
-        if (!replica_rah.peek_row(replica_idx->main_table(), 0, replica_key, false, true, false) ||
+        if (!replica_rah.peek_row(replica_idx->main_table(), 0, replica_key,
+                                  false, true, false) ||
             !replica_rah.read_row()) {
           fprintf(stderr, "Failed to lookup key in replica table %lu\n", i);
           return EXIT_FAILURE;

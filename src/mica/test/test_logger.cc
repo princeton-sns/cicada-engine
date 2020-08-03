@@ -378,7 +378,7 @@ int main(int argc, const char* argv[]) {
 #endif
   printf("\n");
 
-  Logger logger{static_cast<uint16_t>(num_threads)};
+  Logger logger{static_cast<uint16_t>(num_threads), page_pools};
 
   DB db(page_pools, &logger, &sw, static_cast<uint16_t>(num_threads));
 
@@ -724,21 +724,21 @@ int main(int argc, const char* argv[]) {
     if (kShowPoolStats) db.print_pool_status();
 
     for (uint16_t thread_id = 0; thread_id < num_threads; thread_id++) {
-      db.logger()->flush_log(db.context(thread_id));
+      db.logger()->flush_log();
     }
   }
 
   {
     printf("Copying log files\n");
 
-    std::string cmd = "rm " + DBConfig::kRelayLogDir + "/* ;";
+    std::string cmd = "rm -f " + DBConfig::kRelayLogDir + "/* ;";
     int r = std::system(cmd.c_str());
     if (r != 0) {
       fprintf(stderr, "Failed to remove old relay log files\n");
       return EXIT_FAILURE;
     }
 
-    cmd = "cp " + DBConfig::kDBLogDir + "/out.*.log " + DBConfig::kRelayLogDir +
+    cmd = "cp -f " + DBConfig::kDBLogDir + "/out.*.log " + DBConfig::kRelayLogDir +
           "/ ;";
     r = std::system(cmd.c_str());
     if (r != 0) {
@@ -746,7 +746,7 @@ int main(int argc, const char* argv[]) {
       return EXIT_FAILURE;
     }
 
-    cmd = "rm " + DBConfig::kDBLogDir + "/out.*.log ;";
+    cmd = "rm -f " + DBConfig::kDBLogDir + "/out.*.log ;";
     r = std::system(cmd.c_str());
     if (r != 0) {
       fprintf(stderr, "Failed to remove old DB log files\n");

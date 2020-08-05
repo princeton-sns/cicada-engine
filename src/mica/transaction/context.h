@@ -210,11 +210,17 @@ class Context {
         return static_cast<uint64_t>(-1);
     }
 
-    auto it = std::find(free_row_ids.begin(), free_row_ids.end(), row_id);
-    assert(row_id == *it);
-    // swap the one to be removed with the last element
-    std::swap(*it, free_row_ids.back());
-    free_row_ids.pop_back();
+    // TODO: Remove row id from free_row_ids_
+    // The problem is that the row_id might not be in this context's
+    // free_row_ids_ because row ids are allocated in bulk.
+    // Since we only use this code path for CCC, it's ok to let the
+    // per-context free_row_ids_ get out of sync.
+
+    // auto it = std::find(free_row_ids.begin(), free_row_ids.end(), row_id);
+    // assert(row_id == *it);
+    // // swap the one to be removed with the last element
+    // std::swap(*it, free_row_ids.back());
+    // free_row_ids.pop_back();
 
     if (StaticConfig::kVerbose) printf("new row ID = %" PRIu64 "\n", row_id);
 

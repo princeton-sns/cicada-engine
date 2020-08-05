@@ -7,6 +7,7 @@
 #include <atomic>
 #include <chrono>
 #include <condition_variable>
+#include <deque>
 #include <fstream>
 #include <iostream>
 #include <mutex>
@@ -257,6 +258,11 @@ class WriteRowLogEntry : public LogEntry<StaticConfig> {
 template <class StaticConfig>
 class FileLogger : public LoggerInterface<StaticConfig> {
  private:
+  struct ReplicationWork {
+    char* ptr;
+    std::size_t n;
+  };
+
   class LoggerThread {
    private:
     FileLogger* logger_;
@@ -285,7 +291,8 @@ class FileLogger : public LoggerInterface<StaticConfig> {
     std::condition_variable alloc_cv_;
 
     char* containing_buf(char* p) {
-      uint64_t ps = static_cast<uint64_t>(PagePool<StaticConfig>::kPageSize) - 1;
+      uint64_t ps =
+          static_cast<uint64_t>(PagePool<StaticConfig>::kPageSize) - 1;
       uint64_t i = reinterpret_cast<uint64_t>(p) & ~ps;
       return reinterpret_cast<char*>(i);
     }
@@ -295,7 +302,7 @@ class FileLogger : public LoggerInterface<StaticConfig> {
 
       std::vector<std::pair<char*, std::size_t>> ready{};
 
-      ::mica::util::lcore.pin_thread(i_);
+      // ::mica::util::lcore.pin_thread(i_);
 
       char* curr_buf;
       char* next_buf;
@@ -355,11 +362,12 @@ class FileLogger : public LoggerInterface<StaticConfig> {
           lock.unlock();
 
           for (std::pair<char*, std::size_t> r : ready) {
-	    std::cout << "Writing buffer: " << (void*)r.first << " of size " << r.second << std::endl;
+            std::cout << "Writing buffer: " << (void*)r.first << " of size "
+                      << r.second << std::endl;
             ::mica::util::PosixIO::Write(fd_, r.first, r.second);
           }
 
-	  ready.clear();
+          ready.clear();
         }
 
         if (nf) {
@@ -478,16 +486,25 @@ class FileLogger : public LoggerInterface<StaticConfig> {
   std::thread log_consumer_;
   std::atomic<bool> log_consumer_stop_;
 
-  int nthreads_;
-  int nloggers_;
+  uint16_t nloggers_;
+
+  // Replica workers
+  std::vector<std::thread> replica_workers_;
+  std::atomic<bool> replica_worker_stop_;
+  std::deque<ReplicationWork> replicationq_;
+  std::mutex replicationq_lock_;
 
  public:
-  FileLogger(int nthreads, PagePool<StaticConfig>** page_pools)
+  FileLogger(PagePool<StaticConfig>** page_pools, uint16_t nloggers)
       : page_pools_{page_pools},
         loggers_{},
         log_consumer_stop_{false},
-        nthreads_{nthreads},
-        nloggers_{nthreads} {
+        nloggers_{nloggers},
+        replica_workers_{},
+        replica_worker_stop_{false},
+        replicationq_{},
+        replicationq_lock_{} {
+
     for (int i = 0; i < nloggers_; i++) {
       LoggerThread* lt = new LoggerThread{this, i};
       loggers_.push_back(lt);
@@ -511,8 +528,24 @@ class FileLogger : public LoggerInterface<StaticConfig> {
     return page_pools_[numa_id];
   }
 
-  void start_log_consumer(Context<StaticConfig>* ctx) {
-    log_consumer_ = std::thread{&FileLogger::log_consumer_thread, this, ctx};
+  void start_workers(::mica::transaction::DB<StaticConfig>* db,
+                     std::vector<uint16_t> thread_ids) {
+    for (uint16_t thread_id : thread_ids) {
+      replica_workers_.emplace_back(std::thread{
+          &FileLogger::replica_worker_thread, this, db, thread_id});
+    }
+  }
+
+  void stop_workers() {
+    replica_worker_stop_ = true;
+
+    for (auto& w : replica_workers_) {
+      w.join();
+    }
+  }
+
+  void start_log_consumer(::mica::transaction::DB<StaticConfig>* db, uint16_t thread_id) {
+    log_consumer_ = std::thread{&FileLogger::log_consumer_thread, this, db, thread_id};
   }
 
   void stop_log_consumer() {
@@ -529,7 +562,8 @@ class FileLogger : public LoggerInterface<StaticConfig> {
   }
 
   LoggerThread* get_logger_thread(uint16_t thread_id) {
-    return loggers_[thread_id];
+    uint16_t i = thread_id % nloggers_;
+    return loggers_[i];
   }
 
   bool log(Context<StaticConfig>* ctx, const Table<StaticConfig>* tbl) {
@@ -550,8 +584,6 @@ class FileLogger : public LoggerInterface<StaticConfig> {
     for (uint16_t cf_id = 0; cf_id < le->cf_count; cf_id++) {
       le->data_size_hints[cf_id] = tbl->data_size_hint(cf_id);
     }
-
-    le->print();
 
     lt->release(buf);
 
@@ -690,6 +722,92 @@ class FileLogger : public LoggerInterface<StaticConfig> {
     return true;
   }
 
+  void process_relay_logs(Context<StaticConfig>* ctx, uint64_t nloggers) {
+    auto db = ctx->db();
+
+    std::vector<int> fds{};
+    std::vector<LogEntryRef> refs{};
+
+    std::stringstream fname;
+    fname << StaticConfig::kRelayLogDir << "/relay.log";
+    int outfd = ::mica::util::PosixIO::Open(
+        fname.str().c_str(), O_WRONLY | O_APPEND | O_CREAT,
+        S_IRUSR | S_IWUSR | S_IRGRP | S_IROTH);
+
+    PagePool<StaticConfig>* page_pool = db->page_pool(ctx->numa_id());
+    char* page = page_pool->allocate();
+
+    LogEntryRef ref;
+    LogEntry<StaticConfig>* le = nullptr;
+    InsertRowLogEntry<StaticConfig>* irle = nullptr;
+    WriteRowLogEntry<StaticConfig>* wrle = nullptr;
+
+    for (uint16_t tid = 0; tid < nloggers; tid++) {
+      fname.str("");
+      fname << StaticConfig::kRelayLogDir << "/out." << tid << ".log";
+      int fd = ::mica::util::PosixIO::Open(fname.str().c_str(), O_RDONLY);
+      fds.push_back(fd);
+    }
+
+    for (int fd : fds) {
+      int i = 0;
+      //std::cout << "FD: " << fd << std::endl;
+      while (true) {
+        long offset = ::mica::util::PosixIO::Seek(fd, 0, SEEK_CUR);
+        bool ret = read_log_entry(fd, page, PagePool<StaticConfig>::kPageSize);
+        if (!ret) break;
+
+        le = reinterpret_cast<LogEntry<StaticConfig>*>(page);
+
+        ref.fd = fd;
+        ref.offset = offset;
+        ref.size = le->size;
+        ref.type = le->type;
+        ref.txn_ts = 0;
+
+        switch (le->type) {
+          case LogEntryType::INSERT_ROW:
+            irle = static_cast<InsertRowLogEntry<StaticConfig>*>(le);
+            ref.txn_ts = irle->txn_ts;
+            break;
+          case LogEntryType::WRITE_ROW:
+            wrle = static_cast<WriteRowLogEntry<StaticConfig>*>(le);
+            ref.txn_ts = wrle->txn_ts;
+            break;
+          case LogEntryType::CREATE_TABLE:
+            std::cout << "Log index: " << i << std::endl;
+            break;
+          default:
+            break;
+        }
+
+        refs.push_back(ref);
+        i += 1;
+      }
+    }
+
+    std::sort(refs.begin(), refs.end(), LogEntryRef::compare);
+
+    for (LogEntryRef r : refs) {
+      // r.print();
+
+      if (::mica::util::PosixIO::PRead(r.fd, page, r.size, r.offset) !=
+          static_cast<ssize_t>(r.size)) {
+        throw std::runtime_error("Error while reading from offset");
+      }
+
+      ::mica::util::PosixIO::Write(outfd, page, r.size);
+    }
+
+    ::mica::util::PosixIO::Close(outfd);
+
+    for (int fd : fds) {
+      ::mica::util::PosixIO::Close(fd);
+    }
+
+    page_pool->free(page);
+  }
+
  private:
   bool read_log_entry(int fd, char* buf, std::size_t max_size) {
     LogEntry<StaticConfig>* rle = nullptr;
@@ -713,7 +831,7 @@ class FileLogger : public LoggerInterface<StaticConfig> {
               fd, reinterpret_cast<char*>(rle) + sizeof(LogEntry<StaticConfig>),
               le.size - sizeof(LogEntry<StaticConfig>));
 
-          static_cast<CreateTableLogEntry<StaticConfig>*>(rle)->print();
+          // static_cast<CreateTableLogEntry<StaticConfig>*>(rle)->print();
           break;
 
         case LogEntryType::CREATE_HASH_IDX:
@@ -774,7 +892,7 @@ class FileLogger : public LoggerInterface<StaticConfig> {
     typename StaticConfig::Timestamp txn_ts;
     txn_ts.t2 = le->txn_ts;
 
-    Transaction<StaticConfig> tx(db->context(ctx->thread_id()));
+    Transaction<StaticConfig> tx(ctx);
     RowAccessHandle<StaticConfig> rah(&tx);
     if (!tx.begin(false, &txn_ts)) {
       throw std::runtime_error("Failed to begin transaction.");
@@ -816,7 +934,7 @@ class FileLogger : public LoggerInterface<StaticConfig> {
     typename StaticConfig::Timestamp txn_ts;
     txn_ts.t2 = le->txn_ts;
 
-    Transaction<StaticConfig> tx(db->context(ctx->thread_id()));
+    Transaction<StaticConfig> tx(ctx);
     RowAccessHandle<StaticConfig> rah(&tx);
     if (!tx.begin(false, &txn_ts)) {
       throw std::runtime_error("Failed to begin transaction.");
@@ -865,7 +983,7 @@ class FileLogger : public LoggerInterface<StaticConfig> {
     typename StaticConfig::Timestamp txn_ts;
     txn_ts.t2 = le->txn_ts;
 
-    Transaction<StaticConfig> tx(db->context(ctx->thread_id()));
+    Transaction<StaticConfig> tx(ctx);
     RowAccessHandle<StaticConfig> rah(&tx);
     if (!tx.begin(false, &txn_ts)) {
       throw std::runtime_error("Failed to begin transaction.");
@@ -907,7 +1025,7 @@ class FileLogger : public LoggerInterface<StaticConfig> {
     typename StaticConfig::Timestamp txn_ts;
     txn_ts.t2 = le->txn_ts;
 
-    Transaction<StaticConfig> tx(db->context(ctx->thread_id()));
+    Transaction<StaticConfig> tx(ctx);
     RowAccessHandle<StaticConfig> rah(&tx);
     if (!tx.begin(false, &txn_ts)) {
       throw std::runtime_error("Failed to begin transaction.");
@@ -947,100 +1065,12 @@ class FileLogger : public LoggerInterface<StaticConfig> {
     }
   }
 
-  void process_relay_logs(Context<StaticConfig>* ctx) {
-    auto db = ctx->db();
-
-    std::vector<int> fds{};
-    std::vector<LogEntryRef> refs{};
-
-    std::stringstream fname;
-    fname << StaticConfig::kRelayLogDir << "/relay.log";
-    int outfd = ::mica::util::PosixIO::Open(
-        fname.str().c_str(), O_WRONLY | O_APPEND | O_CREAT,
-        S_IRUSR | S_IWUSR | S_IRGRP | S_IROTH);
-
-    PagePool<StaticConfig>* page_pool = db->page_pool(ctx->numa_id());
-    char* page = page_pool->allocate();
-
-    LogEntryRef ref;
-    LogEntry<StaticConfig>* le = nullptr;
-    InsertRowLogEntry<StaticConfig>* irle = nullptr;
-    WriteRowLogEntry<StaticConfig>* wrle = nullptr;
-
-    for (uint16_t tid = 0; tid < nthreads_; tid++) {
-      fname.str("");
-      fname << StaticConfig::kRelayLogDir << "/out." << tid << ".log";
-      int fd = ::mica::util::PosixIO::Open(fname.str().c_str(), O_RDONLY);
-      fds.push_back(fd);
-    }
-
-    for (int fd : fds) {
-      int i = 0;
-      //std::cout << "FD: " << fd << std::endl;
-      while (true) {
-        long offset = ::mica::util::PosixIO::Seek(fd, 0, SEEK_CUR);
-        bool ret = read_log_entry(fd, page, PagePool<StaticConfig>::kPageSize);
-        if (!ret) break;
-
-        le = reinterpret_cast<LogEntry<StaticConfig>*>(page);
-
-        ref.fd = fd;
-        ref.offset = offset;
-        ref.size = le->size;
-        ref.type = le->type;
-        ref.txn_ts = 0;
-
-        switch (le->type) {
-          case LogEntryType::INSERT_ROW:
-            irle = static_cast<InsertRowLogEntry<StaticConfig>*>(le);
-            ref.txn_ts = irle->txn_ts;
-            break;
-          case LogEntryType::WRITE_ROW:
-            wrle = static_cast<WriteRowLogEntry<StaticConfig>*>(le);
-            ref.txn_ts = wrle->txn_ts;
-            break;
-          case LogEntryType::CREATE_TABLE:
-	    std::cout << "Log index: " << i << std::endl;
-	    break;
-          default:
-            break;
-        }
-
-        refs.push_back(ref);
-	i += 1;
-      }
-    }
-
-    std::sort(refs.begin(), refs.end(), LogEntryRef::compare);
-
-    for (LogEntryRef r : refs) {
-      // r.print();
-
-      if (::mica::util::PosixIO::PRead(r.fd, page, r.size, r.offset) !=
-          static_cast<ssize_t>(r.size)) {
-        throw std::runtime_error("Error while reading from offset");
-      }
-
-      ::mica::util::PosixIO::Write(outfd, page, r.size);
-    }
-
-    ::mica::util::PosixIO::Close(outfd);
-
-    for (int fd : fds) {
-      ::mica::util::PosixIO::Close(fd);
-    }
-
-    page_pool->free(page);
-  }
-
-  void log_consumer_thread(Context<StaticConfig>* ctx) {
+  void log_consumer_thread(::mica::transaction::DB<StaticConfig>* db, uint16_t thread_id) {
     printf("Starting log consumer\n");
-
-    printf("Processing relay logs\n");
-    process_relay_logs(ctx);
+    db->activate(thread_id);
+    auto ctx = db->context(thread_id);
 
     printf("Replicating combined relay log\n");
-    auto db = ctx->db();
 
     PagePool<StaticConfig>* page_pool = db->page_pool(ctx->numa_id());
     char* page = page_pool->allocate();
@@ -1049,15 +1079,19 @@ class FileLogger : public LoggerInterface<StaticConfig> {
     fname << StaticConfig::kRelayLogDir << "/relay.log";
     int fd = ::mica::util::PosixIO::Open(fname.str().c_str(), O_RDONLY);
 
+    // uint64_t total_committed = 0;
+    // struct timeval tv_start;
+    // struct timeval tv_end;
+
     while (true) {
       CreateTableLogEntry<StaticConfig>* ctle = nullptr;
       CreateHashIndexLogEntry<StaticConfig>* hile = nullptr;
-      InsertRowLogEntry<StaticConfig>* irle = nullptr;
-      WriteRowLogEntry<StaticConfig>* wrle = nullptr;
 
       while (read_log_entry(fd, page, PagePool<StaticConfig>::kPageSize)) {
         LogEntry<StaticConfig>* le =
             reinterpret_cast<LogEntry<StaticConfig>*>(page);
+
+        // le->print();
 
         switch (le->type) {
           case LogEntryType::CREATE_TABLE:
@@ -1069,7 +1103,10 @@ class FileLogger : public LoggerInterface<StaticConfig> {
                                        std::string{ctle->name});
             }
 
+            // Reset start time
+            // gettimeofday(&tv_start, nullptr);
             break;
+
           case LogEntryType::CREATE_HASH_IDX:
             hile = static_cast<CreateHashIndexLogEntry<StaticConfig>*>(le);
 
@@ -1090,28 +1127,111 @@ class FileLogger : public LoggerInterface<StaticConfig> {
                                        std::string{hile->name});
             }
 
+            // Reset start time
+            // gettimeofday(&tv_start, nullptr);
             break;
 
           case LogEntryType::INSERT_ROW:
-            irle = static_cast<InsertRowLogEntry<StaticConfig>*>(le);
-            insert_row(ctx, irle);
-            break;
-
           case LogEntryType::WRITE_ROW:
-            wrle = static_cast<WriteRowLogEntry<StaticConfig>*>(le);
-            write_row(ctx, wrle);
+            replicationq_lock_.lock();
+            ReplicationWork w = {reinterpret_cast<char*>(le), 1};
+            replicationq_.push_back(w);
+            replicationq_lock_.unlock();
+            page = page_pool->allocate();
+            if (page == nullptr) {
+              throw std::runtime_error("Ran out of pages for log consumer!");
+            }
             break;
         };
       }
 
-      std::this_thread::sleep_for(std::chrono::milliseconds(10));
+      // gettimeofday(&tv_end, nullptr);
+
+      // double start =
+      //     (double)tv_start.tv_sec * 1. + (double)tv_start.tv_usec * 0.000001;
+      // double end =
+      //     (double)tv_end.tv_sec * 1. + (double)tv_end.tv_usec * 0.000001;
+
+      // printf("Replication stats:\n");
+      // printf("row writes:                   %7.3lf M\n",
+      //        static_cast<double>(total_committed) * 0.000001);
+      // printf("row throughput:                   %7.3lf M/sec\n",
+      //        static_cast<double>(total_committed) / (end - start) * 0.000001);
+
       if (log_consumer_stop_) break;
     }
 
     ::mica::util::PosixIO::Close(fd);
     page_pool->free(page);
 
+    db->deactivate(thread_id);
     printf("Exiting log consumer\n");
+  }
+
+  void replica_worker_thread(::mica::transaction::DB<StaticConfig>* db, uint16_t worker_id) {
+    printf("Starting replica worker\n");
+    db->activate(worker_id);
+    auto ctx = db->context(worker_id);
+
+    PagePool<StaticConfig>* page_pool = db->page_pool(ctx->numa_id());
+
+    LogEntry<StaticConfig>* le = nullptr;
+    InsertRowLogEntry<StaticConfig>* irle = nullptr;
+    WriteRowLogEntry<StaticConfig>* wrle = nullptr;
+
+    char* ptr = nullptr;
+    char* p = nullptr;
+    std::size_t size = 0;
+    ReplicationWork w;
+
+    while (true) {
+      replicationq_lock_.lock();
+      size = replicationq_.size();
+      if (size != 0) {
+        w = replicationq_.front();
+        replicationq_.pop_front();
+      }
+      replicationq_lock_.unlock();
+
+      if (size == 0 && replica_worker_stop_) break;
+
+      if (size != 0) {
+        ptr = w.ptr;
+        p = ptr;
+
+        for (std::size_t i = 0; i < w.n; i++) {
+          le = reinterpret_cast<LogEntry<StaticConfig>*>(p);
+
+          // le->print();
+
+          switch (le->type) {
+            case LogEntryType::INSERT_ROW:
+              irle = static_cast<InsertRowLogEntry<StaticConfig>*>(le);
+              insert_row(ctx, irle);
+              break;
+
+            case LogEntryType::WRITE_ROW:
+              wrle = static_cast<WriteRowLogEntry<StaticConfig>*>(le);
+              write_row(ctx, wrle);
+              break;
+
+            default:
+              throw std::runtime_error(
+                  "Unexpected log entry in replication queue: " +
+                  std::to_string(static_cast<uint8_t>(le->type)));
+          }
+
+          p += le->size;
+        }
+
+        page_pool->free(ptr);
+      }
+
+      // std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    }
+
+    db->deactivate(worker_id);
+    printf("Exiting replica worker\n");
   }
 };
 }  // namespace transaction

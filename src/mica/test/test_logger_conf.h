@@ -105,24 +105,24 @@ struct DBConfig : public ::mica::transaction::BasicDBConfig {
 
   static const std::string kDBLogDir; // Initialized below
   static const std::string kRelayLogDir; // Initialized below
+
+  // Debugging
+  // static constexpr bool kVerbose = DBConfig::kVerbose;
+  static constexpr bool kVerbose = false;
+  static constexpr bool kShowPoolStats = true;
+  // static constexpr bool kShowPoolStats = false;
+  static constexpr bool kRunPerf = false;
+  // static constexpr bool kRunPerf = true;
+
+  // Workload generation.
+  // static constexpr bool kReadModifyWriteRatio = 0.0;
+  // static constexpr bool kReadModifyWriteRatio = 0.5;
+  static constexpr bool kReadModifyWriteRatio = 1.0;
 };
 
 // Logging
 const std::string DBConfig::kDBLogDir = "/var/log/cicada/db";
 const std::string DBConfig::kRelayLogDir = "/var/log/cicada/relay";
-
-// Debugging
-// static constexpr bool kVerbose = DBConfig::kVerbose;
-static constexpr bool kVerbose = true;
-static constexpr bool kShowPoolStats = true;
-// static constexpr bool kShowPoolStats = false;
-static constexpr bool kRunPerf = false;
-// static constexpr bool kRunPerf = true;
-
-// Workload generation.
-// static constexpr bool kReadModifyWriteRatio = 0.0;
-// static constexpr bool kReadModifyWriteRatio = 0.5;
-static constexpr bool kReadModifyWriteRatio = 1.0;
 
 #if 1
 

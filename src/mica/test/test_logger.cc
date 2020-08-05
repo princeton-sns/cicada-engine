@@ -95,7 +95,7 @@ void worker_proc(Task* task) {
     task->db->idle(static_cast<uint16_t>(task->thread_id));
   }
 
-  if (kVerbose) printf("lcore %" PRIu64 "\n", task->thread_id);
+  if (DBConfig::kVerbose) printf("lcore %" PRIu64 "\n", task->thread_id);
 
   Transaction tx(ctx);
 
@@ -321,10 +321,10 @@ void worker_proc(Task* task) {
 }
 
 int main(int argc, const char* argv[]) {
-  if (argc != 7) {
+  if (argc != 9) {
     printf(
         "%s NUM-ROWS REQS-PER-TX READ-RATIO ZIPF-THETA TX-COUNT "
-        "THREAD-COUNT\n",
+        "THREAD-COUNT LOGGER-COUNT WORKER-COUNT\n",
         argv[0]);
     return EXIT_FAILURE;
   }
@@ -337,17 +337,19 @@ int main(int argc, const char* argv[]) {
   double zipf_theta = atof(argv[4]);
   uint64_t tx_count = static_cast<uint64_t>(atol(argv[5]));
   uint64_t num_threads = static_cast<uint64_t>(atol(argv[6]));
+  uint64_t num_loggers = static_cast<uint64_t>(atol(argv[7]));
+  uint64_t num_workers = static_cast<uint64_t>(atol(argv[8]));
 
   Alloc alloc(config.get("alloc"));
-  auto page_pool_size = 4 * uint64_t(1073741824);
-  PagePool* page_pools[2];
-  // if (num_threads == 1) {
-  //   page_pools[0] = new PagePool(&alloc, page_pool_size, 0);
-  //   page_pools[1] = nullptr;
-  // } else {
-  page_pools[0] = new PagePool(&alloc, page_pool_size / 2, 0);
-  page_pools[1] = new PagePool(&alloc, page_pool_size / 2, 1);
-  // }
+  auto page_pool_size = 1 * uint64_t(1073741824);
+
+  uint8_t numa_count = static_cast<uint8_t>(::mica::util::lcore.numa_count());
+  // printf("numa_count: %u\n", numa_count);
+
+  PagePool* page_pools[numa_count];
+  for (uint8_t i = 0; i < numa_count; i++) {
+    page_pools[i] = new PagePool(&alloc, page_pool_size / numa_count, i);
+  }
 
   ::mica::util::lcore.pin_thread(0);
 
@@ -373,12 +375,14 @@ int main(int argc, const char* argv[]) {
   printf("zipf_theta = %lf\n", zipf_theta);
   printf("tx_count = %" PRIu64 "\n", tx_count);
   printf("num_threads = %" PRIu64 "\n", num_threads);
+  printf("num_loggers = %" PRIu64 "\n", num_loggers);
+  printf("num_workers = %" PRIu64 "\n", num_workers);
 #ifndef NDEBUG
   printf("!NDEBUG\n");
 #endif
   printf("\n");
 
-  Logger logger{static_cast<uint16_t>(num_threads), page_pools};
+  Logger logger{page_pools, static_cast<uint16_t>(num_loggers)};
 
   DB db(page_pools, &logger, &sw, static_cast<uint16_t>(num_threads));
 
@@ -585,7 +589,7 @@ int main(int argc, const char* argv[]) {
         uint32_t read_threshold =
             (uint32_t)(read_ratio * (double)((uint32_t)-1));
         uint32_t rmw_threshold =
-            (uint32_t)(kReadModifyWriteRatio * (double)((uint32_t)-1));
+          (uint32_t)(DBConfig::kReadModifyWriteRatio * (double)((uint32_t)-1));
 
         uint64_t req_offset = 0;
 
@@ -669,7 +673,7 @@ int main(int argc, const char* argv[]) {
     for (uint64_t thread_id = 1; thread_id < num_threads; thread_id++)
       threads.emplace_back(worker_proc, &tasks[thread_id]);
 
-    if (phase != 0 && kRunPerf) {
+    if (phase != 0 && DBConfig::kRunPerf) {
       int r = system("perf record -a sleep 1 &");
       // int r = system("perf record -a -g sleep 1 &");
       (void)r;
@@ -721,7 +725,7 @@ int main(int argc, const char* argv[]) {
     if (hash_idx != nullptr) hash_idx->index_table()->print_table_status();
     if (btree_idx != nullptr) btree_idx->index_table()->print_table_status();
 
-    if (kShowPoolStats) db.print_pool_status();
+    if (DBConfig::kShowPoolStats) db.print_pool_status();
 
     for (uint16_t thread_id = 0; thread_id < num_threads; thread_id++) {
       db.logger()->flush_log();
@@ -754,16 +758,26 @@ int main(int argc, const char* argv[]) {
     }
   }
 
-  DB replica(page_pools, &logger, &sw, static_cast<uint16_t>(num_threads));
+  DB replica(page_pools, &logger, &sw, static_cast<uint16_t>(1 + num_workers));
 
   replica.activate(0);
   {
-    printf("Starting replication\n");
-    replica.logger()->start_log_consumer(replica.context(0));
-
-    replica.logger()->stop_log_consumer();
+    printf("Processing relay logs\n");
+    replica.logger()->process_relay_logs(replica.context(0), num_loggers);
   }
   replica.deactivate(0);
+
+  {
+    std::vector<uint16_t> worker_ids {};
+    for (uint16_t worker_id = 1; worker_id < 1 + num_workers; worker_id++) {
+      worker_ids.push_back(worker_id);
+    }
+    printf("Starting replication\n");
+    replica.logger()->start_workers(&replica, worker_ids);
+    replica.logger()->start_log_consumer(&replica, 0);
+    replica.logger()->stop_log_consumer();
+    replica.logger()->stop_workers();
+  }
 
   db.activate(0);
   replica.activate(0);

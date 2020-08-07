@@ -67,6 +67,65 @@ class NullLogger : public LoggerInterface<StaticConfig> {
   }
 };
 
+template <class StaticConfig>
+class MmapLogger : public LoggerInterface<StaticConfig> {
+ public:
+  MmapLogger(uint16_t nthreads);
+  ~MmapLogger();
+
+  bool log(const Context<StaticConfig>* ctx, const Table<StaticConfig>* tbl);
+
+  template <bool UniqueKey>
+  bool log(const Context<StaticConfig>* ctx,
+           const HashIndex<StaticConfig, UniqueKey, uint64_t>* idx);
+
+  bool log(const Context<StaticConfig>* ctx,
+           const Transaction<StaticConfig>* tx);
+
+  void flush();
+
+  void read_logs();
+
+ private:
+  struct Mmapping {
+    void* addr;
+    std::size_t len;
+    int fd;
+  };
+
+  class LogBuffer {
+  public:
+    char* start;
+    char* end;
+    char* cur;
+    uint64_t cur_file_index;
+
+    void print() {
+      std::stringstream stream;
+
+      stream << "Log Buffer:" << std::endl;
+      stream << "Start: " << static_cast<void*>(start) << std::endl;
+      stream << "End: " << static_cast<void*>(end) << std::endl;
+      stream << "Cur: " << static_cast<void*>(cur) << std::endl;
+      stream << "Cur File Index: " << cur_file_index << std::endl;
+
+      std::cout << stream.str();
+    }
+  };
+
+  uint16_t nthreads_;
+
+  std::size_t len_;
+
+  std::vector<Mmapping> mappings_;
+  std::vector<LogBuffer> bufs_;
+
+  LogBuffer mmap_log_buf(uint16_t thread_id, uint64_t file_index);
+
+  char* alloc_log_buf(uint16_t thread_id, std::size_t nbytes);
+  void release_log_buf(uint16_t thread_id);
+};
+
 enum class LogEntryType : uint8_t {
   CREATE_TABLE = 0,
   CREATE_HASH_IDX,
@@ -504,7 +563,6 @@ class FileLogger : public LoggerInterface<StaticConfig> {
         replica_worker_stop_{false},
         replicationq_{},
         replicationq_lock_{} {
-
     for (int i = 0; i < nloggers_; i++) {
       LoggerThread* lt = new LoggerThread{this, i};
       loggers_.push_back(lt);
@@ -531,8 +589,8 @@ class FileLogger : public LoggerInterface<StaticConfig> {
   void start_workers(::mica::transaction::DB<StaticConfig>* db,
                      std::vector<uint16_t> thread_ids) {
     for (uint16_t thread_id : thread_ids) {
-      replica_workers_.emplace_back(std::thread{
-          &FileLogger::replica_worker_thread, this, db, thread_id});
+      replica_workers_.emplace_back(
+          std::thread{&FileLogger::replica_worker_thread, this, db, thread_id});
     }
   }
 
@@ -544,8 +602,10 @@ class FileLogger : public LoggerInterface<StaticConfig> {
     }
   }
 
-  void start_log_consumer(::mica::transaction::DB<StaticConfig>* db, uint16_t thread_id) {
-    log_consumer_ = std::thread{&FileLogger::log_consumer_thread, this, db, thread_id};
+  void start_log_consumer(::mica::transaction::DB<StaticConfig>* db,
+                          uint16_t thread_id) {
+    log_consumer_ =
+        std::thread{&FileLogger::log_consumer_thread, this, db, thread_id};
   }
 
   void stop_log_consumer() {
@@ -646,78 +706,78 @@ class FileLogger : public LoggerInterface<StaticConfig> {
         tx->iset_size() * sizeof(InsertRowLogEntry<StaticConfig>) +
         tx->wset_size() * sizeof(WriteRowLogEntry<StaticConfig>) + data_size;
 
-    char* buf = lt->alloc(log_size);
-    char* ptr = buf;
+    // char* buf = lt->alloc(log_size);
+    // char* ptr = buf;
 
-    for (auto j = 0; j < tx->iset_size(); j++) {
-      int i = iset_idx[j];
-      RowAccessItem<StaticConfig> item = accesses[i];
-      RowVersion<StaticConfig>* write_rv = item.write_rv;
-      uint32_t data_size = write_rv->data_size;
-      char* data = write_rv->data;
-      Table<StaticConfig>* tbl = item.tbl;
-      InsertRowLogEntry<StaticConfig>* le =
-          reinterpret_cast<InsertRowLogEntry<StaticConfig>*>(ptr);
+    // for (auto j = 0; j < tx->iset_size(); j++) {
+    //   int i = iset_idx[j];
+    //   RowAccessItem<StaticConfig> item = accesses[i];
+    //   RowVersion<StaticConfig>* write_rv = item.write_rv;
+    //   uint32_t data_size = write_rv->data_size;
+    //   char* data = write_rv->data;
+    //   Table<StaticConfig>* tbl = item.tbl;
+    //   InsertRowLogEntry<StaticConfig>* le =
+    //       reinterpret_cast<InsertRowLogEntry<StaticConfig>*>(ptr);
 
-      std::size_t size = sizeof *le + data_size;
+    //   std::size_t size = sizeof *le + data_size;
 
-      le->size = size;
-      le->type = LogEntryType::INSERT_ROW;
+    //   le->size = size;
+    //   le->type = LogEntryType::INSERT_ROW;
 
-      le->txn_ts = tx->ts().t2;
-      le->cf_id = item.cf_id;
-      le->row_id = item.row_id;
+    //   le->txn_ts = tx->ts().t2;
+    //   le->cf_id = item.cf_id;
+    //   le->row_id = item.row_id;
 
-      le->wts = write_rv->wts.t2;
-      le->rts = write_rv->rts.get().t2;
+    //   le->wts = write_rv->wts.t2;
+    //   le->rts = write_rv->rts.get().t2;
 
-      le->data_size = data_size;
-      le->tbl_type = static_cast<uint8_t>(tbl->type());
+    //   le->data_size = data_size;
+    //   le->tbl_type = static_cast<uint8_t>(tbl->type());
 
-      std::memcpy(&le->tbl_name[0], tbl->name().c_str(),
-                  1 + tbl->name().size());
-      std::memcpy(le->data, data, data_size);
+    //   std::memcpy(&le->tbl_name[0], tbl->name().c_str(),
+    //               1 + tbl->name().size());
+    //   std::memcpy(le->data, data, data_size);
 
-      // le->print();
+    //   // le->print();
 
-      ptr += size;
-    }
+    //   ptr += size;
+    // }
 
-    for (auto j = 0; j < tx->wset_size(); j++) {
-      int i = wset_idx[j];
-      RowAccessItem<StaticConfig> item = accesses[i];
-      RowVersion<StaticConfig>* write_rv = item.write_rv;
-      uint32_t data_size = write_rv->data_size;
-      char* data = write_rv->data;
-      Table<StaticConfig>* tbl = item.tbl;
-      WriteRowLogEntry<StaticConfig>* le =
-          reinterpret_cast<WriteRowLogEntry<StaticConfig>*>(ptr);
+    // for (auto j = 0; j < tx->wset_size(); j++) {
+    //   int i = wset_idx[j];
+    //   RowAccessItem<StaticConfig> item = accesses[i];
+    //   RowVersion<StaticConfig>* write_rv = item.write_rv;
+    //   uint32_t data_size = write_rv->data_size;
+    //   char* data = write_rv->data;
+    //   Table<StaticConfig>* tbl = item.tbl;
+    //   WriteRowLogEntry<StaticConfig>* le =
+    //       reinterpret_cast<WriteRowLogEntry<StaticConfig>*>(ptr);
 
-      std::size_t size = sizeof *le + data_size;
+    //   std::size_t size = sizeof *le + data_size;
 
-      le->size = size;
-      le->type = LogEntryType::WRITE_ROW;
+    //   le->size = size;
+    //   le->type = LogEntryType::WRITE_ROW;
 
-      le->txn_ts = tx->ts().t2;
-      le->cf_id = item.cf_id;
-      le->row_id = item.row_id;
+    //   le->txn_ts = tx->ts().t2;
+    //   le->cf_id = item.cf_id;
+    //   le->row_id = item.row_id;
 
-      le->wts = write_rv->wts.t2;
-      le->rts = write_rv->rts.get().t2;
+    //   le->wts = write_rv->wts.t2;
+    //   le->rts = write_rv->rts.get().t2;
 
-      le->data_size = data_size;
-      le->tbl_type = static_cast<uint8_t>(tbl->type());
+    //   le->data_size = data_size;
+    //   le->tbl_type = static_cast<uint8_t>(tbl->type());
 
-      std::memcpy(&le->tbl_name[0], tbl->name().c_str(),
-                  1 + tbl->name().size());
-      std::memcpy(le->data, data, data_size);
+    //   std::memcpy(&le->tbl_name[0], tbl->name().c_str(),
+    //               1 + tbl->name().size());
+    //   std::memcpy(le->data, data, data_size);
 
-      // le->print();
+    //   // le->print();
 
-      ptr += size;
-    }
+    //   ptr += size;
+    // }
 
-    lt->release(buf);
+    // lt->release(buf);
 
     return true;
   }
@@ -1065,7 +1125,8 @@ class FileLogger : public LoggerInterface<StaticConfig> {
     }
   }
 
-  void log_consumer_thread(::mica::transaction::DB<StaticConfig>* db, uint16_t thread_id) {
+  void log_consumer_thread(::mica::transaction::DB<StaticConfig>* db,
+                           uint16_t thread_id) {
     printf("Starting log consumer\n");
     db->activate(thread_id);
     auto ctx = db->context(thread_id);
@@ -1168,7 +1229,8 @@ class FileLogger : public LoggerInterface<StaticConfig> {
     printf("Exiting log consumer\n");
   }
 
-  void replica_worker_thread(::mica::transaction::DB<StaticConfig>* db, uint16_t worker_id) {
+  void replica_worker_thread(::mica::transaction::DB<StaticConfig>* db,
+                             uint16_t worker_id) {
     printf("Starting replica worker\n");
     db->activate(worker_id);
     auto ctx = db->context(worker_id);

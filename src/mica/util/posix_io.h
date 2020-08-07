@@ -2,13 +2,14 @@
 #ifndef MICA_UTIL_POSIX_IO_H_
 #define MICA_UTIL_POSIX_IO_H_
 
-#include <sys/stat.h>
-#include <fcntl.h>
-#include <unistd.h>
-#include <stdexcept>
 #include <cerrno>
 #include <cstring>
+#include <fcntl.h>
+#include <stdexcept>
 #include <string>
+#include <sys/mman.h>
+#include <sys/stat.h>
+#include <unistd.h>
 
 // Mostly copied from Peloton codebase
 namespace mica {
@@ -104,6 +105,51 @@ class PosixIO {
     }
 
     return ret;
+  }
+
+  static void Ftruncate(int fd, off_t length) {
+    while (true) {
+      int ret = ftruncate(fd, length);
+      if (ret == -1) {
+        if (errno == EINTR) continue;
+        throw std::runtime_error("ftruncate failed with errno " +
+                                 std::to_string(errno));
+      }
+
+      return;
+    }
+  }
+
+  static void* Mmap(void* addr, std::size_t len, int prot, int flags, int fd,
+                    off_t off) {
+    void* ptr = mmap(addr, len, prot, flags, fd, off);
+    if (ptr == MAP_FAILED) {
+      throw std::runtime_error("mmap failed with errno " +
+                               std::to_string(errno));
+    }
+
+    return ptr;
+  }
+
+  static void Munmap(void* addr, std::size_t len) {
+    int ret = munmap(addr, len);
+    if (ret == -1) {
+      throw std::runtime_error("munmap failed with errno " +
+                               std::to_string(errno));
+    }
+  }
+
+  static void Msync(void* addr, std::size_t len, int flags) {
+    int ret = msync(addr, len, flags);
+    if (ret == -1) {
+      throw std::runtime_error("msync failed with errno " +
+                               std::to_string(errno));
+    }
+  }
+
+  static bool Exists(const char* path) {
+    int ret = access(path, F_OK);
+    return ret == 0;
   }
 };
 

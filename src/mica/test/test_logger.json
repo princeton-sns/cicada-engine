@@ -1,6 +1,6 @@
 {
   "alloc": {
-    /*"clean_files_on_init": true,
-    "verbose": true*/
+    "clean_files_on_init": true,
+    "num_pages_to_init": 2048
   }
 }

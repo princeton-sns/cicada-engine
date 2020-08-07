@@ -1,4 +1,9 @@
+#ifndef MICA_TEST_TEST_LOGGER_CONF_H_
+#define MICA_TEST_TEST_LOGGER_CONF_H_
+
+#include "mica/transaction/db.h"
 #include "mica/transaction/logging.h"
+#include "mica/transaction/logging_impl/mmap_logger.h"
 
 // For compatibility.
 
@@ -99,9 +104,11 @@ struct DBConfig : public ::mica::transaction::BasicDBConfig {
   // typedef ::mica::transaction::ActiveTiming Timing;
 
   // Logging
-  // Switch this for verification.
+  static constexpr uint64_t kPageSize = 2 * 1048576;
+
   // typedef ::mica::transaction::NullLogger<DBConfig> Logger;
-  typedef ::mica::transaction::FileLogger<DBConfig> Logger;
+  // typedef ::mica::transaction::FileLogger<DBConfig> Logger;
+  typedef ::mica::transaction::MmapLogger<DBConfig> Logger;
 
   static const std::string kDBLogDir; // Initialized below
   static const std::string kRelayLogDir; // Initialized below
@@ -121,8 +128,8 @@ struct DBConfig : public ::mica::transaction::BasicDBConfig {
 };
 
 // Logging
-const std::string DBConfig::kDBLogDir = "/var/log/cicada/db";
-const std::string DBConfig::kRelayLogDir = "/var/log/cicada/relay";
+const std::string DBConfig::kDBLogDir = "/mnt/huge/cicada/db";
+const std::string DBConfig::kRelayLogDir = "/mnt/huge/cicada/relay";
 
 #if 1
 
@@ -190,4 +197,6 @@ static constexpr uint32_t kMaxScanLen = MICA_MAX_SCAN_LEN;
 static constexpr bool kUseFullTableScan = false;
 #else
 static constexpr bool kUseFullTableScan = true;
+#endif
+
 #endif

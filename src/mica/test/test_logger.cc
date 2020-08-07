@@ -1,11 +1,17 @@
+
 #include <cstdio>
 #include <thread>
 #include <random>
-#include "mica/transaction/db.h"
-#include "mica/util/lcore.h"
-#include "mica/util/zipf.h"
-#include "mica/util/rand.h"
+
 #include "mica/test/test_logger_conf.h"
+#include "mica/transaction/db.h"
+#include "mica/transaction/logging.h"
+#include "mica/util/lcore.h"
+#include "mica/util/posix_io.h"
+#include "mica/util/rand.h"
+#include "mica/util/zipf.h"
+
+using mica::util::PosixIO;
 
 typedef DBConfig::Alloc Alloc;
 typedef DBConfig::Logger Logger;
@@ -382,7 +388,23 @@ int main(int argc, const char* argv[]) {
 #endif
   printf("\n");
 
-  Logger logger{page_pools, static_cast<uint16_t>(num_loggers)};
+  printf("Removing old log files\n\n");
+  std::string cmd = "rm -f " + DBConfig::kDBLogDir + "/* ;";
+  int r = std::system(cmd.c_str());
+  if (r != 0) {
+    fprintf(stderr, "Failed to remove old db log files\n");
+    return EXIT_FAILURE;
+  }
+
+  cmd = "rm -f " + DBConfig::kRelayLogDir + "/* ;";
+  r = std::system(cmd.c_str());
+  if (r != 0) {
+    fprintf(stderr, "Failed to remove old relay log files\n");
+    return EXIT_FAILURE;
+  }
+
+  // Logger logger{page_pools, static_cast<uint16_t>(num_loggers)};
+  Logger logger{static_cast<uint16_t>(num_threads)};
 
   DB db(page_pools, &logger, &sw, static_cast<uint16_t>(num_threads));
 
@@ -609,6 +631,7 @@ int main(int argc, const char* argv[]) {
                            kContendedSetSize;
               } else {
                 row_id = (zg.next() * 0x9ddfea08eb382d69ULL) % num_rows;
+                // printf("generated row_id: %lu\n", row_id);
               }
               // Avoid duplicate row IDs in a single transaction.
               uint64_t req_j;
@@ -726,44 +749,72 @@ int main(int argc, const char* argv[]) {
     if (btree_idx != nullptr) btree_idx->index_table()->print_table_status();
 
     if (DBConfig::kShowPoolStats) db.print_pool_status();
-
-    for (uint16_t thread_id = 0; thread_id < num_threads; thread_id++) {
-      db.logger()->flush_log();
-    }
   }
 
   {
     printf("Copying log files\n");
+    logger.flush();
 
-    std::string cmd = "rm -f " + DBConfig::kRelayLogDir + "/* ;";
-    int r = std::system(cmd.c_str());
-    if (r != 0) {
-      fprintf(stderr, "Failed to remove old relay log files\n");
-      return EXIT_FAILURE;
+    std::size_t len = DBConfig::kPageSize;
+    for (uint16_t thread_id = 0; thread_id < num_threads; thread_id++) {
+      for (uint64_t file_index = 0;; file_index++) {
+        std::string infname = DBConfig::kDBLogDir + "/out." +
+          std::to_string(thread_id) + "." +
+          std::to_string(file_index) + ".log";
+
+        std::string outfname = DBConfig::kRelayLogDir + "/out." +
+          std::to_string(thread_id) + "." +
+          std::to_string(file_index) + ".log";
+
+        if (!PosixIO::Exists(infname.c_str())) break;
+
+        int infd = PosixIO::Open(infname.c_str(), O_RDONLY);
+        void* inaddr = PosixIO::Mmap(nullptr, len, PROT_READ, MAP_SHARED, infd, 0);
+
+        int outfd = PosixIO::Open(outfname.c_str(), O_RDWR | O_CREAT, S_IRUSR | S_IWUSR | S_IRGRP | S_IROTH);
+        PosixIO::Ftruncate(outfd, static_cast<off_t>(len));
+        void* outaddr = PosixIO::Mmap(nullptr, len, PROT_READ | PROT_WRITE, MAP_SHARED, outfd, 0);
+
+        std::memcpy(outaddr, inaddr, len);
+        PosixIO::Msync(outaddr, len, MS_SYNC);
+
+        PosixIO::Munmap(inaddr, len);
+        PosixIO::Close(infd);
+
+        PosixIO::Munmap(outaddr, len);
+        PosixIO::Close(outfd);
+      }
     }
 
-    cmd = "cp -f " + DBConfig::kDBLogDir + "/out.*.log " + DBConfig::kRelayLogDir +
-          "/ ;";
-    r = std::system(cmd.c_str());
-    if (r != 0) {
-      fprintf(stderr, "Failed to copy log files to relay log dir\n");
-      return EXIT_FAILURE;
-    }
+    // cmd = "cp -f " + DBConfig::kDBLogDir + "/out.*.log " + DBConfig::kRelayLogDir +
+    //       "/ ;";
+    // r = std::system(cmd.c_str());
+    // if (r != 0) {
+    //   fprintf(stderr, "Failed to copy log files to relay log dir\n");
+    //   return EXIT_FAILURE;
+    // }
 
-    cmd = "rm -f " + DBConfig::kDBLogDir + "/out.*.log ;";
-    r = std::system(cmd.c_str());
-    if (r != 0) {
-      fprintf(stderr, "Failed to remove old DB log files\n");
-      return EXIT_FAILURE;
-    }
+    // cmd = "rm -f " + DBConfig::kDBLogDir + "/out.*.log ;";
+    // r = std::system(cmd.c_str());
+    // if (r != 0) {
+    //   fprintf(stderr, "Failed to remove old DB log files\n");
+    //   return EXIT_FAILURE;
+    // }
   }
+
+  {
+    printf("Reading log files\n");
+    logger.read_logs();
+  }
+
+  return 1;
 
   DB replica(page_pools, &logger, &sw, static_cast<uint16_t>(1 + num_workers));
 
   replica.activate(0);
   {
     printf("Processing relay logs\n");
-    replica.logger()->process_relay_logs(replica.context(0), num_loggers);
+    // replica.logger()->process_relay_logs(replica.context(0), num_loggers);
   }
   replica.deactivate(0);
 
@@ -773,10 +824,10 @@ int main(int argc, const char* argv[]) {
       worker_ids.push_back(worker_id);
     }
     printf("Starting replication\n");
-    replica.logger()->start_workers(&replica, worker_ids);
-    replica.logger()->start_log_consumer(&replica, 0);
-    replica.logger()->stop_log_consumer();
-    replica.logger()->stop_workers();
+    // replica.logger()->start_workers(&replica, worker_ids);
+    // replica.logger()->start_log_consumer(&replica, 0);
+    // replica.logger()->stop_log_consumer();
+    // replica.logger()->stop_workers();
   }
 
   db.activate(0);

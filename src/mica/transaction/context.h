@@ -205,9 +205,11 @@ class Context {
 
   uint64_t allocate_row(Table<StaticConfig>* tbl, uint64_t row_id) {
     auto& free_row_ids = free_rows_[tbl];
+    bool allocated = false;
     while (tbl->row_count() == 0 || tbl->row_count() - 1 < row_id) {
       if (!tbl->allocate_rows(this, free_row_ids))
         return static_cast<uint64_t>(-1);
+      allocated = true;
     }
 
     // TODO: Remove row id from free_row_ids_
@@ -224,14 +226,16 @@ class Context {
 
     if (StaticConfig::kVerbose) printf("new row ID = %" PRIu64 "\n", row_id);
 
-    // gc_ts needs to be initialized with a near-past timestamp.
-    auto min_wts = db_->min_wts();
-    for (uint16_t cf_id = 0; cf_id < tbl->cf_count(); cf_id++) {
-      auto g = tbl->gc_info(cf_id, row_id);
-      g->gc_lock = 0;
-      g->gc_ts.init(min_wts);
+    if (allocated) {
+      // gc_ts needs to be initialized with a near-past timestamp.
+      auto min_wts = db_->min_wts();
+      for (uint16_t cf_id = 0; cf_id < tbl->cf_count(); cf_id++) {
+        auto g = tbl->gc_info(cf_id, row_id);
+        g->gc_lock = 0;
+        g->gc_ts.init(min_wts);
 
-      assert(tbl->head(cf_id, row_id)->older_rv == nullptr);
+        assert(tbl->head(cf_id, row_id)->older_rv == nullptr);
+      }
     }
 
     return row_id;

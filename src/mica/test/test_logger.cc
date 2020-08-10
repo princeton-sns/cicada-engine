@@ -15,6 +15,7 @@ using mica::util::PosixIO;
 
 typedef DBConfig::Alloc Alloc;
 typedef DBConfig::Logger Logger;
+typedef DBConfig::CCC CCC;
 typedef DBConfig::Timestamp Timestamp;
 typedef DBConfig::ConcurrentTimestamp ConcurrentTimestamp;
 typedef DBConfig::Timing Timing;
@@ -327,10 +328,10 @@ void worker_proc(Task* task) {
 }
 
 int main(int argc, const char* argv[]) {
-  if (argc != 9) {
+  if (argc != 8) {
     printf(
         "%s NUM-ROWS REQS-PER-TX READ-RATIO ZIPF-THETA TX-COUNT "
-        "THREAD-COUNT LOGGER-COUNT WORKER-COUNT\n",
+        "THREAD-COUNT WORKER-COUNT\n",
         argv[0]);
     return EXIT_FAILURE;
   }
@@ -343,8 +344,7 @@ int main(int argc, const char* argv[]) {
   double zipf_theta = atof(argv[4]);
   uint64_t tx_count = static_cast<uint64_t>(atol(argv[5]));
   uint64_t num_threads = static_cast<uint64_t>(atol(argv[6]));
-  uint64_t num_loggers = static_cast<uint64_t>(atol(argv[7]));
-  uint64_t num_workers = static_cast<uint64_t>(atol(argv[8]));
+  uint64_t num_workers = static_cast<uint64_t>(atol(argv[7]));
 
   Alloc alloc(config.get("alloc"));
   auto page_pool_size = 1 * uint64_t(1073741824);
@@ -381,7 +381,6 @@ int main(int argc, const char* argv[]) {
   printf("zipf_theta = %lf\n", zipf_theta);
   printf("tx_count = %" PRIu64 "\n", tx_count);
   printf("num_threads = %" PRIu64 "\n", num_threads);
-  printf("num_loggers = %" PRIu64 "\n", num_loggers);
   printf("num_workers = %" PRIu64 "\n", num_workers);
 #ifndef NDEBUG
   printf("!NDEBUG\n");
@@ -403,7 +402,7 @@ int main(int argc, const char* argv[]) {
     return EXIT_FAILURE;
   }
 
-  // Logger logger{page_pools, static_cast<uint16_t>(num_loggers)};
+  // Logger logger{page_pools, static_cast<uint16_t>(num_threads)};
   Logger logger{static_cast<uint16_t>(num_threads)};
 
   DB db(page_pools, &logger, &sw, static_cast<uint16_t>(num_threads));
@@ -610,8 +609,8 @@ int main(int argc, const char* argv[]) {
         ::mica::util::Rand scan_len_rand((seed + 3) & seed_mask);
         uint32_t read_threshold =
             (uint32_t)(read_ratio * (double)((uint32_t)-1));
-        uint32_t rmw_threshold =
-          (uint32_t)(DBConfig::kReadModifyWriteRatio * (double)((uint32_t)-1));
+        uint32_t rmw_threshold = (uint32_t)(DBConfig::kReadModifyWriteRatio *
+                                            (double)((uint32_t)-1));
 
         uint64_t req_offset = 0;
 
@@ -759,21 +758,24 @@ int main(int argc, const char* argv[]) {
     for (uint16_t thread_id = 0; thread_id < num_threads; thread_id++) {
       for (uint64_t file_index = 0;; file_index++) {
         std::string infname = DBConfig::kDBLogDir + "/out." +
-          std::to_string(thread_id) + "." +
-          std::to_string(file_index) + ".log";
+                              std::to_string(thread_id) + "." +
+                              std::to_string(file_index) + ".log";
 
         std::string outfname = DBConfig::kRelayLogDir + "/out." +
-          std::to_string(thread_id) + "." +
-          std::to_string(file_index) + ".log";
+                               std::to_string(thread_id) + "." +
+                               std::to_string(file_index) + ".log";
 
         if (!PosixIO::Exists(infname.c_str())) break;
 
         int infd = PosixIO::Open(infname.c_str(), O_RDONLY);
-        void* inaddr = PosixIO::Mmap(nullptr, len, PROT_READ, MAP_SHARED, infd, 0);
+        void* inaddr =
+            PosixIO::Mmap(nullptr, len, PROT_READ, MAP_SHARED, infd, 0);
 
-        int outfd = PosixIO::Open(outfname.c_str(), O_RDWR | O_CREAT, S_IRUSR | S_IWUSR | S_IRGRP | S_IROTH);
+        int outfd = PosixIO::Open(outfname.c_str(), O_RDWR | O_CREAT,
+                                  S_IRUSR | S_IWUSR | S_IRGRP | S_IROTH);
         PosixIO::Ftruncate(outfd, static_cast<off_t>(len));
-        void* outaddr = PosixIO::Mmap(nullptr, len, PROT_READ | PROT_WRITE, MAP_SHARED, outfd, 0);
+        void* outaddr = PosixIO::Mmap(nullptr, len, PROT_READ | PROT_WRITE,
+                                      MAP_SHARED, outfd, 0);
 
         std::memcpy(outaddr, inaddr, len);
         PosixIO::Msync(outaddr, len, MS_SYNC);
@@ -785,49 +787,20 @@ int main(int argc, const char* argv[]) {
         PosixIO::Close(outfd);
       }
     }
-
-    // cmd = "cp -f " + DBConfig::kDBLogDir + "/out.*.log " + DBConfig::kRelayLogDir +
-    //       "/ ;";
-    // r = std::system(cmd.c_str());
-    // if (r != 0) {
-    //   fprintf(stderr, "Failed to copy log files to relay log dir\n");
-    //   return EXIT_FAILURE;
-    // }
-
-    // cmd = "rm -f " + DBConfig::kDBLogDir + "/out.*.log ;";
-    // r = std::system(cmd.c_str());
-    // if (r != 0) {
-    //   fprintf(stderr, "Failed to remove old DB log files\n");
-    //   return EXIT_FAILURE;
-    // }
   }
 
-  {
-    printf("Reading log files\n");
-    logger.read_logs();
-  }
-
-  return 1;
-
-  DB replica(page_pools, &logger, &sw, static_cast<uint16_t>(1 + num_workers));
-
-  replica.activate(0);
-  {
-    printf("Processing relay logs\n");
-    // replica.logger()->process_relay_logs(replica.context(0), num_loggers);
-  }
-  replica.deactivate(0);
+  DB replica{page_pools, &logger, &sw, static_cast<uint16_t>(num_threads)};
 
   {
-    std::vector<uint16_t> worker_ids {};
-    for (uint16_t worker_id = 1; worker_id < 1 + num_workers; worker_id++) {
-      worker_ids.push_back(worker_id);
-    }
-    printf("Starting replication\n");
-    // replica.logger()->start_workers(&replica, worker_ids);
-    // replica.logger()->start_log_consumer(&replica, 0);
-    // replica.logger()->stop_log_consumer();
-    // replica.logger()->stop_workers();
+    CCC ccc{&replica, static_cast<uint16_t>(num_threads),
+            static_cast<uint16_t>(num_threads)};
+
+    printf("Preprocessing logs\n");
+    ccc.preprocess_logs();
+
+    printf("Starting cloned concurrency control\n");
+    ccc.start_workers();
+    ccc.stop_workers();
   }
 
   db.activate(0);

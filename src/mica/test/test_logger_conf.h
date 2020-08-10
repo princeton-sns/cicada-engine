@@ -4,6 +4,7 @@
 #include "mica/transaction/db.h"
 #include "mica/transaction/logging.h"
 #include "mica/transaction/logging_impl/mmap_logger.h"
+#include "mica/transaction/logging_impl/copycat.h"
 
 // For compatibility.
 
@@ -103,15 +104,17 @@ struct DBConfig : public ::mica::transaction::BasicDBConfig {
   // static constexpr bool kCollectProcessingStats = true;
   // typedef ::mica::transaction::ActiveTiming Timing;
 
-  // Logging
+  // Logging and replication
   static constexpr uint64_t kPageSize = 2 * 1048576;
+
+  static const std::string kDBLogDir; // Initialized below
+  static const std::string kRelayLogDir; // Initialized below
 
   // typedef ::mica::transaction::NullLogger<DBConfig> Logger;
   // typedef ::mica::transaction::FileLogger<DBConfig> Logger;
   typedef ::mica::transaction::MmapLogger<DBConfig> Logger;
 
-  static const std::string kDBLogDir; // Initialized below
-  static const std::string kRelayLogDir; // Initialized below
+  typedef ::mica::transaction::CopyCat<DBConfig> CCC;
 
   // Debugging
   // static constexpr bool kVerbose = DBConfig::kVerbose;

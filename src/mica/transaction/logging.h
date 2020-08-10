@@ -40,6 +40,8 @@ class LoggerInterface {
 
   bool log(const Context<StaticConfig>* ctx,
            const Transaction<StaticConfig>* tx);
+
+  void flush();
 };
 
 template <class StaticConfig>
@@ -65,6 +67,8 @@ class NullLogger : public LoggerInterface<StaticConfig> {
     (void)tx;
     return true;
   }
+
+  void flush() {}
 };
 
 template <class StaticConfig>
@@ -84,8 +88,6 @@ class MmapLogger : public LoggerInterface<StaticConfig> {
 
   void flush();
 
-  void read_logs();
-
  private:
   struct Mmapping {
     void* addr;
@@ -94,7 +96,7 @@ class MmapLogger : public LoggerInterface<StaticConfig> {
   };
 
   class LogBuffer {
-  public:
+   public:
     char* start;
     char* end;
     char* cur;
@@ -126,6 +128,17 @@ class MmapLogger : public LoggerInterface<StaticConfig> {
   void release_log_buf(uint16_t thread_id);
 };
 
+template <class StaticConfig>
+class CCCInterface {
+ public:
+  void read_logs();
+
+  void preprocess_logs();
+
+  void start_workers();
+  void stop_workers();
+};
+
 enum class LogEntryType : uint8_t {
   CREATE_TABLE = 0,
   CREATE_HASH_IDX,
@@ -147,6 +160,23 @@ class LogEntry {
     stream << "Size: " << size << std::endl;
     stream << "Type: " << std::to_string(static_cast<uint8_t>(type))
            << std::endl;
+
+    std::cout << stream.str();
+  }
+};
+
+template <class StaticConfig>
+class LogFile {
+ public:
+  uint64_t nentries;
+  LogEntry<StaticConfig> entries[0];
+
+  void print() {
+    std::stringstream stream;
+
+    stream << "Log file:" << std::endl;
+    stream << "N entries: " << nentries << std::endl;
+    stream << "First entry ptr: " << &entries[0] << std::endl;
 
     std::cout << stream.str();
   }
@@ -312,6 +342,52 @@ class WriteRowLogEntry : public LogEntry<StaticConfig> {
 
     std::cout << stream.str();
   }
+};
+
+template <class StaticConfig>
+class CopyCat : public CCCInterface<StaticConfig> {
+ public:
+  CopyCat(DB<StaticConfig>* db, uint16_t nloggers, uint16_t nworkers);
+  ~CopyCat();
+
+  void read_logs();
+
+  void preprocess_logs();
+
+  void start_workers();
+  void stop_workers();
+
+ private:
+  DB<StaticConfig>* db_;
+  std::size_t len_;
+
+  uint16_t nloggers_;
+  uint16_t nworkers_;
+
+  std::vector<std::thread> workers_;
+  std::atomic<bool> workers_stop_;
+
+  void worker_thread(DB<StaticConfig>* db, uint16_t id);
+
+  void create_table(DB<StaticConfig>* db,
+                    CreateTableLogEntry<StaticConfig>* le);
+
+  void create_hash_index(DB<StaticConfig>* db,
+                         CreateHashIndexLogEntry<StaticConfig>* le);
+
+  void insert_row(Context<StaticConfig>* ctx,
+                  InsertRowLogEntry<StaticConfig>* le);
+  void insert_data_row(Context<StaticConfig>* ctx,
+                       InsertRowLogEntry<StaticConfig>* le);
+  void insert_hash_idx_row(Context<StaticConfig>* ctx,
+                           InsertRowLogEntry<StaticConfig>* le);
+
+  void write_row(Context<StaticConfig>* ctx,
+                 WriteRowLogEntry<StaticConfig>* le);
+  void write_data_row(Context<StaticConfig>* ctx,
+                      WriteRowLogEntry<StaticConfig>* le);
+  void write_hash_idx_row(Context<StaticConfig>* ctx,
+                          WriteRowLogEntry<StaticConfig>* le);
 };
 
 template <class StaticConfig>

@@ -11,23 +11,6 @@ namespace transaction {
 using mica::util::PosixIO;
 
 template <class StaticConfig>
-class LogFile {
- public:
-  uint64_t nentries;
-  LogEntry<StaticConfig> entries[0];
-
-  void print() {
-    std::stringstream stream;
-
-    stream << "Log file:" << std::endl;
-    stream << "N entries: " << nentries << std::endl;
-    stream << "First entry ptr: " << &entries[0] << std::endl;
-
-    std::cout << stream.str();
-  }
-};
-
-template <class StaticConfig>
 MmapLogger<StaticConfig>::MmapLogger(uint16_t nthreads)
     : nthreads_{nthreads}, len_{StaticConfig::kPageSize}, mappings_{}, bufs_{} {
   for (uint16_t i = 0; i < nthreads; i++) {
@@ -52,65 +35,6 @@ template <class StaticConfig>
 void MmapLogger<StaticConfig>::flush() {
   for (Mmapping m : mappings_) {
     PosixIO::Msync(m.addr, m.len, MS_SYNC);
-  }
-}
-
-template <class StaticConfig>
-void MmapLogger<StaticConfig>::read_logs() {
-  for (uint16_t thread_id = 0; thread_id < nthreads_; thread_id++) {
-    for (uint64_t file_index = 0;; file_index++) {
-      std::string fname = StaticConfig::kRelayLogDir + "/out." +
-                          std::to_string(thread_id) + "." +
-                          std::to_string(file_index) + ".log";
-
-      if (!PosixIO::Exists(fname.c_str())) break;
-
-      int fd = PosixIO::Open(fname.c_str(), O_RDONLY);
-      void* start = PosixIO::Mmap(nullptr, len_, PROT_READ, MAP_SHARED, fd, 0);
-
-      LogFile<StaticConfig>* lf = static_cast<LogFile<StaticConfig>*>(start);
-      lf->print();
-
-      char* ptr = reinterpret_cast<char*>(&lf->entries[0]);
-
-      CreateTableLogEntry<StaticConfig>* ctle = nullptr;
-      CreateHashIndexLogEntry<StaticConfig>* chile = nullptr;
-      InsertRowLogEntry<StaticConfig>* irle = nullptr;
-      WriteRowLogEntry<StaticConfig>* wrle = nullptr;
-
-      for (uint64_t i = 0; i < lf->nentries; i++) {
-        LogEntry<StaticConfig>* le =
-            reinterpret_cast<LogEntry<StaticConfig>*>(ptr);
-        // le->print();
-
-        switch (le->type) {
-          case LogEntryType::CREATE_TABLE:
-            ctle = static_cast<CreateTableLogEntry<StaticConfig>*>(le);
-            // ctle->print();
-            break;
-
-          case LogEntryType::CREATE_HASH_IDX:
-            chile = static_cast<CreateHashIndexLogEntry<StaticConfig>*>(le);
-            // chile->print();
-            break;
-
-          case LogEntryType::INSERT_ROW:
-            irle = static_cast<InsertRowLogEntry<StaticConfig>*>(le);
-            // irle->print();
-            break;
-
-          case LogEntryType::WRITE_ROW:
-            wrle = static_cast<WriteRowLogEntry<StaticConfig>*>(le);
-            // wrle->print();
-            break;
-        }
-
-        ptr += le->size;
-      }
-
-      PosixIO::Munmap(start, len_);
-      PosixIO::Close(fd);
-    }
   }
 }
 

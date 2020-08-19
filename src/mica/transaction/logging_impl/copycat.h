@@ -20,10 +20,21 @@ CopyCat<StaticConfig>::CopyCat(DB<StaticConfig>* db, uint16_t nloggers,
       nloggers_{nloggers},
       nworkers_{nworkers},
       workers_{},
-      workers_stop_{false} {}
+      workers_stop_{false}
+{
+  int ret = pthread_barrier_init(&worker_barrier_, nullptr, nworkers + 1);
+  if (ret != 0) {
+    throw std::runtime_error("Failed to init worker barrier: " + ret);
+  }
+}
 
 template <class StaticConfig>
-CopyCat<StaticConfig>::~CopyCat() {}
+CopyCat<StaticConfig>::~CopyCat() {
+  int ret = pthread_barrier_destroy(&worker_barrier_);
+  if (ret != 0) {
+    throw std::runtime_error("Failed to destroy worker barrier: " + ret);
+  }
+}
 
 template <class StaticConfig>
 void CopyCat<StaticConfig>::start_workers() {
@@ -31,6 +42,8 @@ void CopyCat<StaticConfig>::start_workers() {
     workers_.emplace_back(
         std::thread{&CopyCat<StaticConfig>::worker_thread, this, db_, wid});
   }
+
+  pthread_barrier_wait(&worker_barrier_);
 }
 
 template <class StaticConfig>
@@ -75,15 +88,17 @@ void CopyCat<StaticConfig>::create_hash_index(
 
 template <class StaticConfig>
 void CopyCat<StaticConfig>::insert_row(Context<StaticConfig>* ctx,
+                                       Transaction<StaticConfig>* tx,
+                                       RowAccessHandle<StaticConfig>* rah,
                                        InsertRowLogEntry<StaticConfig>* le) {
   TableType tbl_type = static_cast<TableType>(le->tbl_type);
 
   switch (tbl_type) {
     case TableType::DATA:
-      insert_data_row(ctx, le);
+      insert_data_row(ctx, tx, rah, le);
       break;
     case TableType::HASH_IDX:
-      insert_hash_idx_row(ctx, le);
+      insert_hash_idx_row(ctx, tx, rah, le);
       break;
     default:
       throw std::runtime_error("Insert: Unsupported table type.");
@@ -91,8 +106,10 @@ void CopyCat<StaticConfig>::insert_row(Context<StaticConfig>* ctx,
 }
 
 template <class StaticConfig>
-void CopyCat<StaticConfig>::insert_data_row(
-    Context<StaticConfig>* ctx, InsertRowLogEntry<StaticConfig>* le) {
+void CopyCat<StaticConfig>::insert_data_row(Context<StaticConfig>* ctx,
+                                            Transaction<StaticConfig>* tx,
+                                            RowAccessHandle<StaticConfig>* rah,
+                                            InsertRowLogEntry<StaticConfig>* le) {
   auto db = ctx->db();
   Table<StaticConfig>* tbl = db->get_table(std::string{le->tbl_name});
   if (tbl == nullptr) {
@@ -103,29 +120,30 @@ void CopyCat<StaticConfig>::insert_data_row(
   typename StaticConfig::Timestamp txn_ts;
   txn_ts.t2 = le->txn_ts;
 
-  Transaction<StaticConfig> tx(ctx);
-  RowAccessHandle<StaticConfig> rah(&tx);
-  if (!tx.begin(false, &txn_ts)) {
+  if (!tx->begin(false, &txn_ts)) {
     throw std::runtime_error("Failed to begin transaction.");
   }
 
-  if (!rah.upsert_row(tbl, le->cf_id, le->row_id, false, le->data_size)) {
-    throw std::runtime_error("Failed to upsert row " + le->row_id);
+  if (!rah->new_row(tbl, le->cf_id, le->row_id, false, le->data_size)) {
+    throw std::runtime_error("Failed to create new row " + le->row_id);
   }
 
-  char* data = rah.data();
+  char* data = rah->data();
   std::memcpy(data, le->data, le->data_size);
 
   Result result;
-  tx.commit(&result);
+  tx->commit(&result);
+  rah->reset();
   if (result != Result::kCommitted) {
     throw std::runtime_error("Failed to commit transaction.");
   }
 }
 
 template <class StaticConfig>
-void CopyCat<StaticConfig>::insert_hash_idx_row(
-    Context<StaticConfig>* ctx, InsertRowLogEntry<StaticConfig>* le) {
+void CopyCat<StaticConfig>::insert_hash_idx_row(Context<StaticConfig>* ctx,
+                                                Transaction<StaticConfig>* tx,
+                                                RowAccessHandle<StaticConfig>* rah,
+                                                InsertRowLogEntry<StaticConfig>* le) {
   auto db = ctx->db();
 
   auto unique_hash_idx =
@@ -146,21 +164,20 @@ void CopyCat<StaticConfig>::insert_hash_idx_row(
   typename StaticConfig::Timestamp txn_ts;
   txn_ts.t2 = le->txn_ts;
 
-  Transaction<StaticConfig> tx(ctx);
-  RowAccessHandle<StaticConfig> rah(&tx);
-  if (!tx.begin(false, &txn_ts)) {
+  if (!tx->begin(false, &txn_ts)) {
     throw std::runtime_error("Failed to begin transaction.");
   }
 
-  if (!rah.upsert_row(tbl, le->cf_id, le->row_id, false, le->data_size)) {
-    throw std::runtime_error("Failed to upsert row " + le->row_id);
+  if (!rah->new_row(tbl, le->cf_id, le->row_id, false, le->data_size)) {
+    throw std::runtime_error("Failed to create new row " + le->row_id);
   }
 
-  char* data = rah.data();
+  char* data = rah->data();
   std::memcpy(data, le->data, le->data_size);
 
   Result result;
-  tx.commit(&result);
+  tx->commit(&result);
+  rah->reset();
   if (result != Result::kCommitted) {
     throw std::runtime_error("Failed to commit transaction.");
   }
@@ -168,15 +185,17 @@ void CopyCat<StaticConfig>::insert_hash_idx_row(
 
 template <class StaticConfig>
 void CopyCat<StaticConfig>::write_row(Context<StaticConfig>* ctx,
+                                      Transaction<StaticConfig>* tx,
+                                      RowAccessHandle<StaticConfig>* rah,
                                       WriteRowLogEntry<StaticConfig>* le) {
   TableType tbl_type = static_cast<TableType>(le->tbl_type);
 
   switch (tbl_type) {
     case TableType::DATA:
-      write_data_row(ctx, le);
+      write_data_row(ctx, tx, rah, le);
       break;
     case TableType::HASH_IDX:
-      write_hash_idx_row(ctx, le);
+      write_hash_idx_row(ctx, tx, rah, le);
       break;
     default:
       throw std::runtime_error("Insert: Unsupported table type.");
@@ -185,6 +204,8 @@ void CopyCat<StaticConfig>::write_row(Context<StaticConfig>* ctx,
 
 template <class StaticConfig>
 void CopyCat<StaticConfig>::write_data_row(Context<StaticConfig>* ctx,
+                                           Transaction<StaticConfig>* tx,
+                                           RowAccessHandle<StaticConfig>* rah,
                                            WriteRowLogEntry<StaticConfig>* le) {
   auto db = ctx->db();
 
@@ -197,29 +218,31 @@ void CopyCat<StaticConfig>::write_data_row(Context<StaticConfig>* ctx,
   typename StaticConfig::Timestamp txn_ts;
   txn_ts.t2 = le->txn_ts;
 
-  Transaction<StaticConfig> tx(ctx);
-  RowAccessHandle<StaticConfig> rah(&tx);
-  if (!tx.begin(false, &txn_ts)) {
+  if (!tx->begin(false, &txn_ts)) {
     throw std::runtime_error("Failed to begin transaction.");
   }
 
-  if (!rah.upsert_row(tbl, le->cf_id, le->row_id, false, le->data_size)) {
-    throw std::runtime_error("Failed to upsert row " + le->row_id);
+  if (!rah->template peek_row<true>(tbl, le->cf_id, le->row_id, false, false, true) ||
+      !rah->write_row(le->data_size)) {
+    throw std::runtime_error("Failed to write row.");
   }
 
-  char* data = rah.data();
+  char* data = rah->data();
   std::memcpy(data, le->data, le->data_size);
 
   Result result;
-  tx.commit(&result);
+  tx->commit(&result);
+  rah->reset();
   if (result != Result::kCommitted) {
     throw std::runtime_error("Failed to commit transaction.");
   }
 }
 
 template <class StaticConfig>
-void CopyCat<StaticConfig>::write_hash_idx_row(
-    Context<StaticConfig>* ctx, WriteRowLogEntry<StaticConfig>* le) {
+void CopyCat<StaticConfig>::write_hash_idx_row(Context<StaticConfig>* ctx,
+                                               Transaction<StaticConfig>* tx,
+                                               RowAccessHandle<StaticConfig>* rah,
+                                               WriteRowLogEntry<StaticConfig>* le) {
   auto db = ctx->db();
   auto unique_hash_idx =
       db->get_hash_index_unique_u64(std::string{le->tbl_name});
@@ -239,21 +262,21 @@ void CopyCat<StaticConfig>::write_hash_idx_row(
   typename StaticConfig::Timestamp txn_ts;
   txn_ts.t2 = le->txn_ts;
 
-  Transaction<StaticConfig> tx(ctx);
-  RowAccessHandle<StaticConfig> rah(&tx);
-  if (!tx.begin(false, &txn_ts)) {
+  if (!tx->begin(false, &txn_ts)) {
     throw std::runtime_error("Failed to begin transaction.");
   }
 
-  if (!rah.upsert_row(tbl, le->cf_id, le->row_id, false, le->data_size)) {
-    throw std::runtime_error("Failed to upsert row " + le->row_id);
+  if (!rah->template peek_row<true>(tbl, le->cf_id, le->row_id, false, false, true) ||
+      !rah->write_row(le->data_size)) {
+    throw std::runtime_error("Failed to write row.");
   }
 
-  char* data = rah.data();
+  char* data = rah->data();
   std::memcpy(data, le->data, le->data_size);
 
   Result result;
-  tx.commit(&result);
+  tx->commit(&result);
+  rah->reset();
   if (result != Result::kCommitted) {
     throw std::runtime_error("Failed to commit transaction.");
   }
@@ -263,12 +286,18 @@ template <class StaticConfig>
 void CopyCat<StaticConfig>::worker_thread(DB<StaticConfig>* db, uint16_t id) {
   printf("Starting replica worker: %u\n", id);
 
+  mica::util::lcore.pin_thread(id);
   db->activate(id);
+
   Context<StaticConfig>* ctx = db->context(id);
+  Transaction<StaticConfig> tx {ctx};
+  RowAccessHandle<StaticConfig> rah {&tx};
+
+  pthread_barrier_wait(&worker_barrier_);
 
   while (true) {
     for (uint64_t file_index = 0;; file_index++) {
-      std::string fname = StaticConfig::kRelayLogDir + "/out." +
+      std::string fname = std::string{MICA_RELAY_DIR} + "/out." +
                           std::to_string(id) + "." +
                           std::to_string(file_index) + ".log";
 
@@ -294,14 +323,20 @@ void CopyCat<StaticConfig>::worker_thread(DB<StaticConfig>* db, uint16_t id) {
           case LogEntryType::INSERT_ROW:
             irle = static_cast<InsertRowLogEntry<StaticConfig>*>(le);
             // irle->print();
-            insert_row(ctx, irle);
+            insert_row(ctx, &tx, &rah, irle);
             break;
 
           case LogEntryType::WRITE_ROW:
             wrle = static_cast<WriteRowLogEntry<StaticConfig>*>(le);
             // wrle->print();
-            write_row(ctx, wrle);
+            write_row(ctx, &tx, &rah, wrle);
             break;
+
+          case LogEntryType::CREATE_TABLE:
+          case LogEntryType::CREATE_HASH_IDX:
+            break;
+          default:
+            throw std::runtime_error("worker_thread: Unexpected log entry type.");
         }
 
         ptr += le->size;
@@ -323,7 +358,7 @@ template <class StaticConfig>
 void CopyCat<StaticConfig>::preprocess_logs() {
   for (uint16_t thread_id = 0; thread_id < nloggers_; thread_id++) {
     for (uint64_t file_index = 0;; file_index++) {
-      std::string fname = StaticConfig::kRelayLogDir + "/out." +
+      std::string fname = std::string{MICA_RELAY_DIR} + "/out." +
                           std::to_string(thread_id) + "." +
                           std::to_string(file_index) + ".log";
 
@@ -357,6 +392,12 @@ void CopyCat<StaticConfig>::preprocess_logs() {
             create_hash_index(db_, chile);
             // chile->print();
             break;
+
+          case LogEntryType::INSERT_ROW:
+          case LogEntryType::WRITE_ROW:
+            break;
+          default:
+            throw std::runtime_error("preprocess_logs: Unexpected log entry type.");
         }
 
         ptr += le->size;
@@ -372,7 +413,7 @@ template <class StaticConfig>
 void CopyCat<StaticConfig>::read_logs() {
   for (uint16_t thread_id = 0; thread_id < nloggers_; thread_id++) {
     for (uint64_t file_index = 0;; file_index++) {
-      std::string fname = StaticConfig::kRelayLogDir + "/out." +
+      std::string fname = std::string{MICA_RELAY_DIR} + "/out." +
                           std::to_string(thread_id) + "." +
                           std::to_string(file_index) + ".log";
 

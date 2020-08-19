@@ -14,8 +14,17 @@ class PagePool {
 
   static constexpr uint64_t kPageSize = 2 * 1048576;
 
-  PagePool(Alloc* alloc, uint64_t size, uint8_t numa_id)
-      : alloc_(alloc), numa_id_(numa_id) {
+  PagePool(Alloc* alloc, uint64_t size, size_t lcore)
+      : alloc_(alloc) {
+
+    size_t numa_id = ::mica::util::lcore.numa_id(lcore);
+    if (numa_id == ::mica::util::lcore.kUnknown) {
+      fprintf(stderr, "error: invalid lcore\n");
+      return;
+    }
+
+    numa_id_ = static_cast<uint8_t>(numa_id);
+
     uint64_t page_count = (size + kPageSize - 1) / kPageSize;
     size_ = page_count * kPageSize;
 
@@ -24,7 +33,7 @@ class PagePool {
     free_count_ = page_count;
 
     pages_ =
-        reinterpret_cast<char*>(alloc_->malloc_contiguous(size_, numa_id_));
+        reinterpret_cast<char*>(alloc_->malloc_contiguous(size_, lcore));
     if (!pages_) {
       printf("failed to initialize PagePool\n");
       return;

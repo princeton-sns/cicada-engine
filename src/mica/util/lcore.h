@@ -29,6 +29,17 @@ class LCore {
 
   void pin_thread(size_t lcore_id) const;
 
+  size_t first_lcore_id_with_numa_id(size_t numa_id) const {
+    assert(numa_id < numa_count());
+    for (size_t lcore_id = 0; lcore_id < lcore_to_numa_id_.size(); lcore_id++) {
+      if (lcore_to_numa_id_[lcore_id] == numa_id) {
+        return lcore_id;
+      }
+    }
+
+    return static_cast<size_t>(-1);
+  }
+
  private:
   std::vector<size_t> lcore_to_numa_id_;
   size_t numa_count_;

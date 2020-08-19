@@ -12,8 +12,17 @@ using mica::util::PosixIO;
 
 template <class StaticConfig>
 MmapLogger<StaticConfig>::MmapLogger(uint16_t nthreads)
-    : nthreads_{nthreads}, len_{StaticConfig::kPageSize}, mappings_{}, bufs_{} {
-  for (uint16_t i = 0; i < nthreads; i++) {
+    : nthreads_{nthreads},
+      len_{StaticConfig::kPageSize},
+      mappings_{},
+      bufs_{},
+      enabled_{true} {
+
+  for (uint16_t i = 0; i < nthreads_; i++) {
+    mappings_.emplace_back();
+  }
+
+  for (uint16_t i = 0; i < nthreads_; i++) {
     LogBuffer lb = mmap_log_buf(i, 0);
     bufs_.push_back(lb);
   }
@@ -23,9 +32,13 @@ template <class StaticConfig>
 MmapLogger<StaticConfig>::~MmapLogger() {
   flush();
 
-  for (Mmapping m : mappings_) {
-    PosixIO::Munmap(m.addr, m.len);
-    PosixIO::Close(m.fd);
+  for (uint16_t i = 0; i < nthreads_; i++) {
+    for (Mmapping m : mappings_[i]) {
+      PosixIO::Munmap(m.addr, m.len);
+      PosixIO::Close(m.fd);
+    }
+
+    mappings_[i].clear();
   }
 
   mappings_.clear();
@@ -33,8 +46,10 @@ MmapLogger<StaticConfig>::~MmapLogger() {
 
 template <class StaticConfig>
 void MmapLogger<StaticConfig>::flush() {
-  for (Mmapping m : mappings_) {
-    PosixIO::Msync(m.addr, m.len, MS_SYNC);
+  for (uint16_t i = 0; i < nthreads_; i++) {
+    for (Mmapping m : mappings_[i]) {
+      PosixIO::Msync(m.addr, m.len, MS_SYNC);
+    }
   }
 }
 
@@ -42,7 +57,7 @@ template <class StaticConfig>
 typename MmapLogger<StaticConfig>::LogBuffer
 MmapLogger<StaticConfig>::mmap_log_buf(uint16_t thread_id,
                                        uint64_t file_index) {
-  std::string fname = StaticConfig::kDBLogDir + "/out." +
+  std::string fname = std::string{MICA_LOG_DIR} + "/out." +
                       std::to_string(thread_id) + "." +
                       std::to_string(file_index) + ".log";
 
@@ -51,12 +66,10 @@ MmapLogger<StaticConfig>::mmap_log_buf(uint16_t thread_id,
 
   PosixIO::Ftruncate(fd, static_cast<off_t>(len_));
 
-  char* start = static_cast<char*>(
-      PosixIO::Mmap(nullptr, len_, PROT_READ | PROT_WRITE,
-                    MAP_SHARED | MAP_POPULATE, fd, 0));
+  char* start = static_cast<char*>(PosixIO::Mmap(
+      nullptr, len_, PROT_READ | PROT_WRITE, MAP_SHARED | MAP_POPULATE, fd, 0));
 
-  Mmapping m{start, len_, fd};
-  mappings_.push_back(m);
+  mappings_[thread_id].emplace_back(start, len_, fd);
 
   LogFile<StaticConfig>* lf = reinterpret_cast<LogFile<StaticConfig>*>(start);
   lf->nentries = 0;
@@ -101,26 +114,28 @@ void MmapLogger<StaticConfig>::release_log_buf(uint16_t thread_id) {
 template <class StaticConfig>
 bool MmapLogger<StaticConfig>::log(const Context<StaticConfig>* ctx,
                                    const Table<StaticConfig>* tbl) {
-  uint16_t thread_id = ctx->thread_id();
+  if (enabled_) {
+    uint16_t thread_id = ctx->thread_id();
 
-  char* buf =
-      alloc_log_buf(thread_id, sizeof(CreateTableLogEntry<StaticConfig>));
+    char* buf =
+        alloc_log_buf(thread_id, sizeof(CreateTableLogEntry<StaticConfig>));
 
-  CreateTableLogEntry<StaticConfig>* le =
-      reinterpret_cast<CreateTableLogEntry<StaticConfig>*>(buf);
+    CreateTableLogEntry<StaticConfig>* le =
+        reinterpret_cast<CreateTableLogEntry<StaticConfig>*>(buf);
 
-  le->size = sizeof *le;
-  le->type = LogEntryType::CREATE_TABLE;
-  le->cf_count = tbl->cf_count();
+    le->size = sizeof *le;
+    le->type = LogEntryType::CREATE_TABLE;
+    le->cf_count = tbl->cf_count();
 
-  std::memcpy(&le->name[0], tbl->name().c_str(), 1 + tbl->name().size());
-  for (uint16_t cf_id = 0; cf_id < le->cf_count; cf_id++) {
-    le->data_size_hints[cf_id] = tbl->data_size_hint(cf_id);
+    std::memcpy(&le->name[0], tbl->name().c_str(), 1 + tbl->name().size());
+    for (uint16_t cf_id = 0; cf_id < le->cf_count; cf_id++) {
+      le->data_size_hints[cf_id] = tbl->data_size_hint(cf_id);
+    }
+
+    // le->print();
+
+    release_log_buf(thread_id);
   }
-
-  // le->print();
-
-  release_log_buf(thread_id);
 
   return true;
 }
@@ -130,28 +145,30 @@ template <bool UniqueKey>
 bool MmapLogger<StaticConfig>::log(
     const Context<StaticConfig>* ctx,
     const HashIndex<StaticConfig, UniqueKey, uint64_t>* idx) {
-  uint16_t thread_id = ctx->thread_id();
+  if (enabled_) {
+    uint16_t thread_id = ctx->thread_id();
 
-  char* buf =
-      alloc_log_buf(thread_id, sizeof(CreateHashIndexLogEntry<StaticConfig>));
+    char* buf =
+        alloc_log_buf(thread_id, sizeof(CreateHashIndexLogEntry<StaticConfig>));
 
-  CreateHashIndexLogEntry<StaticConfig>* le =
-      reinterpret_cast<CreateHashIndexLogEntry<StaticConfig>*>(buf);
+    CreateHashIndexLogEntry<StaticConfig>* le =
+        reinterpret_cast<CreateHashIndexLogEntry<StaticConfig>*>(buf);
 
-  le->size = sizeof *le;
-  le->type = LogEntryType::CREATE_HASH_IDX;
-  le->expected_num_rows = idx->expected_num_rows();
-  le->unique_key = UniqueKey;
+    le->size = sizeof *le;
+    le->type = LogEntryType::CREATE_HASH_IDX;
+    le->expected_num_rows = idx->expected_num_rows();
+    le->unique_key = UniqueKey;
 
-  std::memcpy(&le->name[0], idx->index_table()->name().c_str(),
-              1 + idx->index_table()->name().size());
+    std::memcpy(&le->name[0], idx->index_table()->name().c_str(),
+                1 + idx->index_table()->name().size());
 
-  std::memcpy(&le->main_tbl_name[0], idx->main_table()->name().c_str(),
-              1 + idx->main_table()->name().size());
+    std::memcpy(&le->main_tbl_name[0], idx->main_table()->name().c_str(),
+                1 + idx->main_table()->name().size());
 
-  // le->print();
+    // le->print();
 
-  release_log_buf(thread_id);
+    release_log_buf(thread_id);
+  }
 
   return true;
 }
@@ -159,81 +176,85 @@ bool MmapLogger<StaticConfig>::log(
 template <class StaticConfig>
 bool MmapLogger<StaticConfig>::log(const Context<StaticConfig>* ctx,
                                    const Transaction<StaticConfig>* tx) {
-  uint16_t thread_id = ctx->thread_id();
+  if (enabled_) {
+    uint16_t thread_id = ctx->thread_id();
 
-  auto accesses = tx->accesses();
-  auto iset_idx = tx->iset_idx();
-  auto wset_idx = tx->wset_idx();
+    auto accesses = tx->accesses();
+    auto iset_idx = tx->iset_idx();
+    auto wset_idx = tx->wset_idx();
 
-  for (auto j = 0; j < tx->iset_size(); j++) {
-    int i = iset_idx[j];
-    RowAccessItem<StaticConfig> item = accesses[i];
-    RowVersion<StaticConfig>* write_rv = item.write_rv;
-    uint32_t data_size = write_rv->data_size;
-    char* data = write_rv->data;
-    Table<StaticConfig>* tbl = item.tbl;
+    for (auto j = 0; j < tx->iset_size(); j++) {
+      int i = iset_idx[j];
+      RowAccessItem<StaticConfig> item = accesses[i];
+      RowVersion<StaticConfig>* write_rv = item.write_rv;
+      uint32_t data_size = write_rv->data_size;
+      char* data = write_rv->data;
+      Table<StaticConfig>* tbl = item.tbl;
 
-    char* buf = alloc_log_buf(
-        thread_id, sizeof(InsertRowLogEntry<StaticConfig>) + data_size);
-    InsertRowLogEntry<StaticConfig>* le =
-        reinterpret_cast<InsertRowLogEntry<StaticConfig>*>(buf);
+      char* buf = alloc_log_buf(
+          thread_id, sizeof(InsertRowLogEntry<StaticConfig>) + data_size);
+      InsertRowLogEntry<StaticConfig>* le =
+          reinterpret_cast<InsertRowLogEntry<StaticConfig>*>(buf);
 
-    std::size_t size = sizeof *le + data_size;
+      std::size_t size = sizeof *le + data_size;
 
-    le->size = size;
-    le->type = LogEntryType::INSERT_ROW;
+      le->size = size;
+      le->type = LogEntryType::INSERT_ROW;
 
-    le->txn_ts = tx->ts().t2;
-    le->cf_id = item.cf_id;
-    le->row_id = item.row_id;
+      le->txn_ts = tx->ts().t2;
+      le->cf_id = item.cf_id;
+      le->row_id = item.row_id;
 
-    le->wts = write_rv->wts.t2;
-    le->rts = write_rv->rts.get().t2;
+      le->wts = write_rv->wts.t2;
+      le->rts = write_rv->rts.get().t2;
 
-    le->data_size = data_size;
-    le->tbl_type = static_cast<uint8_t>(tbl->type());
+      le->data_size = data_size;
+      le->tbl_type = static_cast<uint8_t>(tbl->type());
 
-    std::memcpy(&le->tbl_name[0], tbl->name().c_str(), 1 + tbl->name().size());
-    std::memcpy(le->data, data, data_size);
+      std::memcpy(&le->tbl_name[0], tbl->name().c_str(),
+                  1 + tbl->name().size());
+      std::memcpy(le->data, data, data_size);
 
-    // le->print();
+      // le->print();
 
-    release_log_buf(thread_id);
-  }
+      release_log_buf(thread_id);
+    }
 
-  for (auto j = 0; j < tx->wset_size(); j++) {
-    int i = wset_idx[j];
-    RowAccessItem<StaticConfig> item = accesses[i];
-    RowVersion<StaticConfig>* write_rv = item.write_rv;
-    uint32_t data_size = write_rv->data_size;
-    char* data = write_rv->data;
-    Table<StaticConfig>* tbl = item.tbl;
+    for (auto j = 0; j < tx->wset_size(); j++) {
+      int i = wset_idx[j];
+      RowAccessItem<StaticConfig> item = accesses[i];
+      RowVersion<StaticConfig>* write_rv = item.write_rv;
+      uint32_t data_size = write_rv->data_size;
+      char* data = write_rv->data;
+      Table<StaticConfig>* tbl = item.tbl;
 
-    char* buf = alloc_log_buf(
-        thread_id, sizeof(WriteRowLogEntry<StaticConfig>) + data_size);
-    WriteRowLogEntry<StaticConfig>* le =
-        reinterpret_cast<WriteRowLogEntry<StaticConfig>*>(buf);
+      char* buf = alloc_log_buf(
+          thread_id, sizeof(WriteRowLogEntry<StaticConfig>) + data_size);
+      WriteRowLogEntry<StaticConfig>* le =
+          reinterpret_cast<WriteRowLogEntry<StaticConfig>*>(buf);
 
-    std::size_t size = sizeof *le + data_size;
-    le->size = size;
-    le->type = LogEntryType::WRITE_ROW;
+      std::size_t size = sizeof *le + data_size;
+      le->size = size;
+      le->type = LogEntryType::WRITE_ROW;
 
-    le->txn_ts = tx->ts().t2;
-    le->cf_id = item.cf_id;
-    le->row_id = item.row_id;
+      le->txn_ts = tx->ts().t2;
+      le->cf_id = item.cf_id;
+      le->row_id = item.row_id;
 
-    le->wts = write_rv->wts.t2;
-    le->rts = write_rv->rts.get().t2;
+      le->wts = write_rv->wts.t2;
+      le->rts = write_rv->rts.get().t2;
 
-    le->data_size = data_size;
-    le->tbl_type = static_cast<uint8_t>(tbl->type());
+      le->data_size = data_size;
+      le->tbl_type = static_cast<uint8_t>(tbl->type());
 
-    std::memcpy(&le->tbl_name[0], tbl->name().c_str(), 1 + tbl->name().size());
-    std::memcpy(le->data, data, data_size);
+      std::memcpy(&le->tbl_name[0], tbl->name().c_str(),
+                  1 + tbl->name().size());
+      std::memcpy(le->data, data, data_size);
 
-    // le->print();
+      // le->print();
 
-    release_log_buf(thread_id);
+      release_log_buf(thread_id);
+    }
   }
 
   return true;

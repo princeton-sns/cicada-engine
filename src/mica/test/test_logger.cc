@@ -388,22 +388,22 @@ int main(int argc, const char* argv[]) {
   printf("\n");
 
   printf("Removing old log files\n\n");
-  std::string cmd = "rm -f " + DBConfig::kDBLogDir + "/* ;";
+  std::string cmd = "rm -f " + std::string{MICA_LOG_DIR} + "/* ;";
   int r = std::system(cmd.c_str());
   if (r != 0) {
     fprintf(stderr, "Failed to remove old db log files\n");
     return EXIT_FAILURE;
   }
 
-  cmd = "rm -f " + DBConfig::kRelayLogDir + "/* ;";
+  cmd = "rm -f " + std::string{MICA_RELAY_DIR} + "/* ;";
   r = std::system(cmd.c_str());
   if (r != 0) {
     fprintf(stderr, "Failed to remove old relay log files\n");
     return EXIT_FAILURE;
   }
 
-  // Logger logger{page_pools, static_cast<uint16_t>(num_threads)};
   Logger logger{static_cast<uint16_t>(num_threads)};
+  // Logger logger{};
 
   DB db(page_pools, &logger, &sw, static_cast<uint16_t>(num_threads));
 
@@ -757,11 +757,11 @@ int main(int argc, const char* argv[]) {
     std::size_t len = DBConfig::kPageSize;
     for (uint16_t thread_id = 0; thread_id < num_threads; thread_id++) {
       for (uint64_t file_index = 0;; file_index++) {
-        std::string infname = DBConfig::kDBLogDir + "/out." +
+        std::string infname = std::string{MICA_LOG_DIR} + "/out." +
                               std::to_string(thread_id) + "." +
                               std::to_string(file_index) + ".log";
 
-        std::string outfname = DBConfig::kRelayLogDir + "/out." +
+        std::string outfname = std::string{MICA_RELAY_DIR} + "/out." +
                                std::to_string(thread_id) + "." +
                                std::to_string(file_index) + ".log";
 

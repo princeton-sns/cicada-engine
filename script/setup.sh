@@ -34,6 +34,8 @@
 #   OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 mnthuge=/mnt/huge
+logdir="$mnthuge/cicada/db"
+relaydir="$mnthuge/cicada/relay"
 
 disable_oom_kills()
 {
@@ -106,6 +108,17 @@ clear_huge_pages()
 	remove_mnt_huge
 }
 
+create_log_dirs()
+{
+	  echo "Creating $logdir and $relaydir in $mnthuge"
+
+	  grep -s $mnthuge /proc/mounts > /dev/null
+	  if [[ $? -eq 0 ]] ; then
+        sudo mkdir -p $logdir
+        sudo mkdir -p $relaydir
+    fi
+}
+
 create_mnt_huge()
 {
 	echo "Creating $mnthuge and mounting as hugetlbfs"
@@ -116,6 +129,8 @@ create_mnt_huge()
 	if [ $? -ne 0 ] ; then
 		sudo mount -t hugetlbfs nodev $mnthuge
 	fi
+
+  create_log_dirs
 }
 
 set_numa_pages()

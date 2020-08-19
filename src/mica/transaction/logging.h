@@ -2,6 +2,7 @@
 #ifndef MICA_TRANSACTION_LOGGING_H_
 #define MICA_TRANSACTION_LOGGING_H_
 
+#include <pthread.h>
 #include <stdio.h>
 
 #include <atomic>
@@ -27,6 +28,9 @@
 #include "mica/transaction/transaction.h"
 #include "mica/util/posix_io.h"
 
+#define MICA_LOG_DIR "/mnt/huge/cicada/db"
+#define MICA_RELAY_DIR "/mnt/huge/cicada/relay"
+
 namespace mica {
 namespace transaction {
 template <class StaticConfig>
@@ -42,6 +46,9 @@ class LoggerInterface {
            const Transaction<StaticConfig>* tx);
 
   void flush();
+
+  void enable();
+  void disable();
 };
 
 template <class StaticConfig>
@@ -69,6 +76,9 @@ class NullLogger : public LoggerInterface<StaticConfig> {
   }
 
   void flush() {}
+
+  void enable() {}
+  void disable() {}
 };
 
 template <class StaticConfig>
@@ -88,11 +98,18 @@ class MmapLogger : public LoggerInterface<StaticConfig> {
 
   void flush();
 
+  void enable() { enabled_ = true; }
+  void disable() { enabled_ = false; }
+
  private:
-  struct Mmapping {
+  class Mmapping {
+  public:
     void* addr;
     std::size_t len;
     int fd;
+
+    Mmapping(void* addr, std::size_t len, int fd) : addr{addr}, len{len}, fd{fd} {}
+    ~Mmapping() {}
   };
 
   class LogBuffer {
@@ -119,8 +136,10 @@ class MmapLogger : public LoggerInterface<StaticConfig> {
 
   std::size_t len_;
 
-  std::vector<Mmapping> mappings_;
+  std::vector<std::vector<Mmapping>> mappings_;
   std::vector<LogBuffer> bufs_;
+
+  bool enabled_;
 
   LogBuffer mmap_log_buf(uint16_t thread_id, uint64_t file_index);
 
@@ -364,6 +383,7 @@ class CopyCat : public CCCInterface<StaticConfig> {
   uint16_t nloggers_;
   uint16_t nworkers_;
 
+  pthread_barrier_t worker_barrier_;
   std::vector<std::thread> workers_;
   std::atomic<bool> workers_stop_;
 
@@ -376,17 +396,29 @@ class CopyCat : public CCCInterface<StaticConfig> {
                          CreateHashIndexLogEntry<StaticConfig>* le);
 
   void insert_row(Context<StaticConfig>* ctx,
+                  Transaction<StaticConfig>* tx,
+                  RowAccessHandle<StaticConfig>* rah,
                   InsertRowLogEntry<StaticConfig>* le);
   void insert_data_row(Context<StaticConfig>* ctx,
+                       Transaction<StaticConfig>* tx,
+                       RowAccessHandle<StaticConfig>* rah,
                        InsertRowLogEntry<StaticConfig>* le);
   void insert_hash_idx_row(Context<StaticConfig>* ctx,
+                           Transaction<StaticConfig>* tx,
+                           RowAccessHandle<StaticConfig>* rah,
                            InsertRowLogEntry<StaticConfig>* le);
 
   void write_row(Context<StaticConfig>* ctx,
+                 Transaction<StaticConfig>* tx,
+                 RowAccessHandle<StaticConfig>* rah,
                  WriteRowLogEntry<StaticConfig>* le);
   void write_data_row(Context<StaticConfig>* ctx,
+                      Transaction<StaticConfig>* tx,
+                      RowAccessHandle<StaticConfig>* rah,
                       WriteRowLogEntry<StaticConfig>* le);
   void write_hash_idx_row(Context<StaticConfig>* ctx,
+                          Transaction<StaticConfig>* tx,
+                          RowAccessHandle<StaticConfig>* rah,
                           WriteRowLogEntry<StaticConfig>* le);
 };
 

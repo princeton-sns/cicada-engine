@@ -107,9 +107,6 @@ struct DBConfig : public ::mica::transaction::BasicDBConfig {
   // Logging and replication
   static constexpr uint64_t kPageSize = 2 * 1048576;
 
-  static const std::string kDBLogDir; // Initialized below
-  static const std::string kRelayLogDir; // Initialized below
-
   // typedef ::mica::transaction::NullLogger<DBConfig> Logger;
   // typedef ::mica::transaction::FileLogger<DBConfig> Logger;
   typedef ::mica::transaction::MmapLogger<DBConfig> Logger;
@@ -129,10 +126,6 @@ struct DBConfig : public ::mica::transaction::BasicDBConfig {
   // static constexpr bool kReadModifyWriteRatio = 0.5;
   static constexpr bool kReadModifyWriteRatio = 1.0;
 };
-
-// Logging
-const std::string DBConfig::kDBLogDir = "/mnt/huge/cicada/db";
-const std::string DBConfig::kRelayLogDir = "/mnt/huge/cicada/relay";
 
 #if 1
 

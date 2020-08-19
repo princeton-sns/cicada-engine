@@ -70,13 +70,9 @@ class Transaction {
                uint64_t row_id, bool check_dup_access,
                uint64_t data_size, const DataCopier& data_copier);
 
-  template <class DataCopier>
-  bool upsert_row(RAH& rah, Table<StaticConfig>* tbl, uint16_t cf_id,
-                  uint64_t row_id, bool check_dup_access,
-                  uint64_t data_size, const DataCopier& data_copier);
-
   void prefetch_row(Table<StaticConfig>* tbl, uint16_t cf_id, uint64_t row_id,
                     uint64_t off, uint64_t len);
+  template <bool IsReplica>
   bool peek_row(RAH& rah, Table<StaticConfig>* tbl, uint16_t cf_id,
                 uint64_t row_id, bool check_dup_access, bool read_hint,
                 bool write_hint);

@@ -203,6 +203,10 @@ class Context {
     return row_id;
   }
 
+  bool is_allocated(Table<StaticConfig>* tbl, uint64_t row_id) {
+    return row_id < tbl->row_count();
+  }
+
   uint64_t allocate_row(Table<StaticConfig>* tbl, uint64_t row_id) {
     auto& free_row_ids = free_rows_[tbl];
     bool allocated = false;

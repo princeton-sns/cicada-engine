@@ -57,7 +57,7 @@ bool Transaction<StaticConfig>::begin(bool peek_only,
     RAH rah(this);
     for (auto& item : to_reserve_) {
       rah.reset();
-      if (!peek_row(rah, item.tbl, item.cf_id, item.row_id, false,
+      if (!peek_row<false>(rah, item.tbl, item.cf_id, item.row_id, false,
                     item.read_hint, item.write_hint)) {
         retry = true;
         break;

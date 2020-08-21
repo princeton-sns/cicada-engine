@@ -39,6 +39,7 @@ CopyCat<StaticConfig>::~CopyCat() {
 
 template <class StaticConfig>
 void CopyCat<StaticConfig>::start_workers() {
+  workers_stop_ = false;
   for (uint16_t wid = 0; wid < nworkers_; wid++) {
     workers_.emplace_back(
         std::thread{&CopyCat<StaticConfig>::worker_thread, this, db_, wid});
@@ -54,6 +55,8 @@ void CopyCat<StaticConfig>::stop_workers() {
   for (auto& w : workers_) {
     w.join();
   }
+
+  workers_.clear();
 }
 
 template <class StaticConfig>
@@ -298,7 +301,7 @@ void CopyCat<StaticConfig>::worker_thread(DB<StaticConfig>* db, uint16_t id) {
 
   while (true) {
     for (uint64_t file_index = 0;; file_index++) {
-      std::string fname = std::string{MICA_RELAY_DIR} + "/out." +
+      std::string fname = logdir_ + "/out." +
                           std::to_string(id) + "." +
                           std::to_string(file_index) + ".log";
 
@@ -414,7 +417,7 @@ template <class StaticConfig>
 void CopyCat<StaticConfig>::read_logs() {
   for (uint16_t thread_id = 0; thread_id < nloggers_; thread_id++) {
     for (uint64_t file_index = 0;; file_index++) {
-      std::string fname = std::string{MICA_RELAY_DIR} + "/out." +
+      std::string fname = logdir_ + "/out." +
                           std::to_string(thread_id) + "." +
                           std::to_string(file_index) + ".log";
 

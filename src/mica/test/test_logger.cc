@@ -402,7 +402,7 @@ int main(int argc, const char* argv[]) {
     return EXIT_FAILURE;
   }
 
-  Logger logger{static_cast<uint16_t>(num_threads)};
+  Logger logger{static_cast<uint16_t>(num_threads), std::string{MICA_LOG_DIR}};
   // Logger logger{};
 
   DB db(page_pools, &logger, &sw, static_cast<uint16_t>(num_threads));

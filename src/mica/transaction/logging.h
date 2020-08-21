@@ -84,7 +84,7 @@ class NullLogger : public LoggerInterface<StaticConfig> {
 template <class StaticConfig>
 class MmapLogger : public LoggerInterface<StaticConfig> {
  public:
-  MmapLogger(uint16_t nthreads);
+  MmapLogger(uint16_t nthreads, std::string logdir);
   ~MmapLogger();
 
   bool log(const Context<StaticConfig>* ctx, const Table<StaticConfig>* tbl);
@@ -96,6 +96,7 @@ class MmapLogger : public LoggerInterface<StaticConfig> {
   bool log(const Context<StaticConfig>* ctx,
            const Transaction<StaticConfig>* tx);
 
+  void change_logdir(std::string logdir);
   void flush();
 
   void enable() { enabled_ = true; }
@@ -133,6 +134,7 @@ class MmapLogger : public LoggerInterface<StaticConfig> {
   };
 
   uint16_t nthreads_;
+  std::string logdir_;
 
   std::size_t len_;
 

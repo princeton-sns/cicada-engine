@@ -11,8 +11,9 @@ namespace transaction {
 using mica::util::PosixIO;
 
 template <class StaticConfig>
-MmapLogger<StaticConfig>::MmapLogger(uint16_t nthreads)
+MmapLogger<StaticConfig>::MmapLogger(uint16_t nthreads, std::string logdir)
     : nthreads_{nthreads},
+      logdir_{logdir},
       len_{StaticConfig::kPageSize},
       mappings_{},
       bufs_{},
@@ -45,6 +46,30 @@ MmapLogger<StaticConfig>::~MmapLogger() {
 }
 
 template <class StaticConfig>
+void MmapLogger<StaticConfig>::change_logdir(std::string logdir) {
+  flush();
+
+  for (uint16_t i = 0; i < nthreads_; i++) {
+    for (Mmapping m : mappings_[i]) {
+      PosixIO::Munmap(m.addr, m.len);
+      PosixIO::Close(m.fd);
+    }
+
+    mappings_[i].clear();
+  }
+
+  mappings_.clear();
+
+  // Change log dir
+  logdir_ = logdir;
+
+  for (uint16_t i = 0; i < nthreads_; i++) {
+    bufs_[i] = mmap_log_buf(i, 0);
+  }
+}
+
+
+template <class StaticConfig>
 void MmapLogger<StaticConfig>::flush() {
   for (uint16_t i = 0; i < nthreads_; i++) {
     for (Mmapping m : mappings_[i]) {
@@ -57,7 +82,7 @@ template <class StaticConfig>
 typename MmapLogger<StaticConfig>::LogBuffer
 MmapLogger<StaticConfig>::mmap_log_buf(uint16_t thread_id,
                                        uint64_t file_index) {
-  std::string fname = std::string{MICA_LOG_DIR} + "/out." +
+  std::string fname = logdir_ + "/out." +
                       std::to_string(thread_id) + "." +
                       std::to_string(file_index) + ".log";
 

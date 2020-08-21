@@ -390,10 +390,10 @@ void CopyCat<StaticConfig>::worker_thread(DB<StaticConfig>* db, uint16_t id) {
       PosixIO::Close(fd);
     }
 
-    if (!tx->has_began()) {
+    if (!tx.has_began()) {
       Result result;
-      tx->commit(&result);
-      rah->reset();
+      tx.commit(&result);
+      rah.reset();
       if (result != Result::kCommitted) {
         throw std::runtime_error("Failed to commit transaction.");
       }

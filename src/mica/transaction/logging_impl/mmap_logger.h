@@ -18,7 +18,6 @@ MmapLogger<StaticConfig>::MmapLogger(uint16_t nthreads, std::string logdir)
       mappings_{},
       bufs_{},
       enabled_{true} {
-
   for (uint16_t i = 0; i < nthreads_; i++) {
     mappings_.emplace_back();
   }
@@ -68,6 +67,42 @@ void MmapLogger<StaticConfig>::change_logdir(std::string logdir) {
   }
 }
 
+template <class StaticConfig>
+void MmapLogger<StaticConfig>::copy_logs(std::string srcdir,
+                                         std::string dstdir) {
+  for (uint16_t thread_id = 0; thread_id < nthreads_; thread_id++) {
+    for (uint64_t file_index = 0;; file_index++) {
+      std::string infname = srcdir + "/out." +
+                            std::to_string(thread_id) + "." +
+                            std::to_string(file_index) + ".log";
+
+      std::string outfname = dstdir + "/out." +
+                             std::to_string(thread_id) + "." +
+                             std::to_string(file_index) + ".log";
+
+      if (!PosixIO::Exists(infname.c_str())) break;
+
+      int infd = PosixIO::Open(infname.c_str(), O_RDONLY);
+      void* inaddr =
+          PosixIO::Mmap(nullptr, len_, PROT_READ, MAP_SHARED, infd, 0);
+
+      int outfd = PosixIO::Open(outfname.c_str(), O_RDWR | O_CREAT,
+                                S_IRUSR | S_IWUSR | S_IRGRP | S_IROTH);
+      PosixIO::Ftruncate(outfd, static_cast<off_t>(len_));
+      void* outaddr = PosixIO::Mmap(nullptr, len_, PROT_READ | PROT_WRITE,
+                                    MAP_SHARED, outfd, 0);
+
+      std::memcpy(outaddr, inaddr, len_);
+      PosixIO::Msync(outaddr, len_, MS_SYNC);
+
+      PosixIO::Munmap(inaddr, len_);
+      PosixIO::Close(infd);
+
+      PosixIO::Munmap(outaddr, len_);
+      PosixIO::Close(outfd);
+    }
+  }
+}
 
 template <class StaticConfig>
 void MmapLogger<StaticConfig>::flush() {
@@ -82,8 +117,7 @@ template <class StaticConfig>
 typename MmapLogger<StaticConfig>::LogBuffer
 MmapLogger<StaticConfig>::mmap_log_buf(uint16_t thread_id,
                                        uint64_t file_index) {
-  std::string fname = logdir_ + "/out." +
-                      std::to_string(thread_id) + "." +
+  std::string fname = logdir_ + "/out." + std::to_string(thread_id) + "." +
                       std::to_string(file_index) + ".log";
 
   int fd = PosixIO::Open(fname.c_str(), O_RDWR | O_CREAT,

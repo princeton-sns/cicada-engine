@@ -46,7 +46,9 @@ class LoggerInterface {
            const Transaction<StaticConfig>* tx);
 
   void flush();
+
   void change_logdir(std::string logdir);
+  void copy_logs(std::string srcdir, std::string dstdir);
 
   void enable();
   void disable();
@@ -77,7 +79,12 @@ class NullLogger : public LoggerInterface<StaticConfig> {
   }
 
   void flush() {}
+
   void change_logdir(std::string logdir) { (void)logdir; }
+  void copy_logs(std::string srcdir, std::string dstdir) {
+    (void)srcdir;
+    (void)dstdir;
+  }
 
   void enable() {}
   void disable() {}
@@ -98,8 +105,10 @@ class MmapLogger : public LoggerInterface<StaticConfig> {
   bool log(const Context<StaticConfig>* ctx,
            const Transaction<StaticConfig>* tx);
 
-  void change_logdir(std::string logdir);
   void flush();
+
+  void change_logdir(std::string logdir);
+  void copy_logs(std::string srcdir, std::string dstdir);
 
   void enable() { enabled_ = true; }
   void disable() { enabled_ = false; }

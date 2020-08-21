@@ -34,8 +34,8 @@
 #   OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 mnthuge=/mnt/huge
-logdir="$mnthuge/cicada/db"
-relaydir="$mnthuge/cicada/relay"
+logdirs=("$mnthuge/cicada/log/init" "$mnthuge/cicada/log/warmup" "$mnthuge/cicada/log/workload")
+relaydirs=("$mnthuge/cicada/relay/init" "$mnthuge/cicada/relay/warmup" "$mnthuge/cicada/relay/workload")
 
 disable_oom_kills()
 {
@@ -110,12 +110,16 @@ clear_huge_pages()
 
 create_log_dirs()
 {
-	  echo "Creating $logdir and $relaydir in $mnthuge"
+	  echo "Creating log dirs and relay dirs in $mnthuge"
 
 	  grep -s $mnthuge /proc/mounts > /dev/null
 	  if [[ $? -eq 0 ]] ; then
-        sudo mkdir -p $logdir
-        sudo mkdir -p $relaydir
+        for logdir in "${logdirs[@]}"; do
+            sudo mkdir -p $logdir
+        done
+        for relaydir in "${relaydirs[@]}"; do
+            sudo mkdir -p $relaydir
+        done
     fi
 }
 

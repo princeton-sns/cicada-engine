@@ -46,6 +46,7 @@ class LoggerInterface {
            const Transaction<StaticConfig>* tx);
 
   void flush();
+  void change_logdir(std::string logdir);
 
   void enable();
   void disable();
@@ -76,6 +77,7 @@ class NullLogger : public LoggerInterface<StaticConfig> {
   }
 
   void flush() {}
+  void change_logdir(std::string logdir) { (void)logdir; }
 
   void enable() {}
   void disable() {}

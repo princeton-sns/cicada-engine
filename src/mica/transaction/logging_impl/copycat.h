@@ -14,11 +14,12 @@ using mica::util::PosixIO;
 
 template <class StaticConfig>
 CopyCat<StaticConfig>::CopyCat(DB<StaticConfig>* db, uint16_t nloggers,
-                               uint16_t nworkers)
+                               uint16_t nworkers, std::string logdir)
     : db_{db},
       len_{StaticConfig::kPageSize},
       nloggers_{nloggers},
       nworkers_{nworkers},
+      logdir_{logdir},
       workers_{},
       workers_stop_{false}
 {
@@ -355,10 +356,10 @@ void CopyCat<StaticConfig>::worker_thread(DB<StaticConfig>* db, uint16_t id) {
 }
 
 template <class StaticConfig>
-void CopyCat<StaticConfig>::preprocess_logs() {
+  void CopyCat<StaticConfig>::preprocess_logs() {
   for (uint16_t thread_id = 0; thread_id < nloggers_; thread_id++) {
     for (uint64_t file_index = 0;; file_index++) {
-      std::string fname = std::string{MICA_RELAY_DIR} + "/out." +
+      std::string fname = logdir_ + "/out." +
                           std::to_string(thread_id) + "." +
                           std::to_string(file_index) + ".log";
 

@@ -28,6 +28,12 @@
 #include "mica/transaction/transaction.h"
 #include "mica/util/posix_io.h"
 
+#define MICA_LOG_INIT_DIR "/mnt/huge/cicada/log/init"
+#define MICA_LOG_WARMUP_DIR "/mnt/huge/cicada/log/warmup"
+#define MICA_LOG_WORKLOAD_DIR "/mnt/huge/cicada/log/workload"
+#define MICA_RELAY_INIT_DIR "/mnt/huge/cicada/relay/init"
+#define MICA_RELAY_WARMUP_DIR "/mnt/huge/cicada/relay/warmup"
+#define MICA_RELAY_WORKLOAD_DIR "/mnt/huge/cicada/relay/workload"
 #define MICA_LOG_DIR "/mnt/huge/cicada/db"
 #define MICA_RELAY_DIR "/mnt/huge/cicada/relay"
 
@@ -165,6 +171,7 @@ class CCCInterface {
  public:
   void read_logs();
 
+  void set_logdir(std::string logdir);
   void preprocess_logs();
 
   void start_workers();
@@ -379,10 +386,14 @@ class WriteRowLogEntry : public LogEntry<StaticConfig> {
 template <class StaticConfig>
 class CopyCat : public CCCInterface<StaticConfig> {
  public:
-  CopyCat(DB<StaticConfig>* db, uint16_t nloggers, uint16_t nworkers);
+  CopyCat(DB<StaticConfig>* db, uint16_t nloggers, uint16_t nworkers,
+          std::string logdir);
+
   ~CopyCat();
 
   void read_logs();
+
+  void set_logdir(std::string logdir) { logdir_ = logdir; }
 
   void preprocess_logs();
 
@@ -395,6 +406,8 @@ class CopyCat : public CCCInterface<StaticConfig> {
 
   uint16_t nloggers_;
   uint16_t nworkers_;
+
+  std::string logdir_;
 
   pthread_barrier_t worker_barrier_;
   std::vector<std::thread> workers_;

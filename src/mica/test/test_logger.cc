@@ -793,7 +793,7 @@ int main(int argc, const char* argv[]) {
 
   {
     CCC ccc{&replica, static_cast<uint16_t>(num_threads),
-            static_cast<uint16_t>(num_threads)};
+      static_cast<uint16_t>(num_threads), std::string{MICA_RELAY_INIT_DIR}};
 
     printf("Preprocessing logs\n");
     ccc.preprocess_logs();

@@ -124,7 +124,11 @@ void CopyCat<StaticConfig>::insert_data_row(Context<StaticConfig>* ctx,
   typename StaticConfig::Timestamp txn_ts;
   txn_ts.t2 = le->txn_ts;
 
-  if (tx->ts() != txn_ts) {
+  if (!tx->has_began()) {
+    if (!tx->begin(false, &txn_ts)) {
+      throw std::runtime_error("Failed to begin transaction.");
+    }
+  } else if (tx->ts() != txn_ts) {
     Result result;
     tx->commit(&result);
     rah->reset();
@@ -171,7 +175,11 @@ void CopyCat<StaticConfig>::insert_hash_idx_row(Context<StaticConfig>* ctx,
   typename StaticConfig::Timestamp txn_ts;
   txn_ts.t2 = le->txn_ts;
 
-  if (tx->ts() != txn_ts) {
+  if (!tx->has_began()) {
+    if (!tx->begin(false, &txn_ts)) {
+      throw std::runtime_error("Failed to begin transaction.");
+    }
+  } else if (tx->ts() != txn_ts) {
     Result result;
     tx->commit(&result);
     rah->reset();
@@ -228,7 +236,11 @@ void CopyCat<StaticConfig>::write_data_row(Context<StaticConfig>* ctx,
   typename StaticConfig::Timestamp txn_ts;
   txn_ts.t2 = le->txn_ts;
 
-  if (tx->ts() != txn_ts) {
+  if (!tx->has_began()) {
+    if (!tx->begin(false, &txn_ts)) {
+      throw std::runtime_error("Failed to begin transaction.");
+    }
+  } else if (tx->ts() != txn_ts) {
     Result result;
     tx->commit(&result);
     rah->reset();
@@ -274,7 +286,11 @@ void CopyCat<StaticConfig>::write_hash_idx_row(Context<StaticConfig>* ctx,
   typename StaticConfig::Timestamp txn_ts;
   txn_ts.t2 = le->txn_ts;
 
-  if (tx->ts() != txn_ts) {
+  if (!tx->has_began()) {
+    if (!tx->begin(false, &txn_ts)) {
+      throw std::runtime_error("Failed to begin transaction.");
+    }
+  } else if (tx->ts() != txn_ts) {
     Result result;
     tx->commit(&result);
     rah->reset();
@@ -308,8 +324,6 @@ void CopyCat<StaticConfig>::worker_thread(DB<StaticConfig>* db, uint16_t id) {
   RowAccessHandle<StaticConfig> rah {&tx};
 
   pthread_barrier_wait(&worker_barrier_);
-
-  tx.begin(false);
 
   while (true) {
     for (uint64_t file_index = 0;; file_index++) {

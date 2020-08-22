@@ -131,7 +131,6 @@ void CopyCat<StaticConfig>::insert_data_row(Context<StaticConfig>* ctx,
   } else if (tx->ts() != txn_ts) {
     Result result;
     tx->commit(&result);
-    rah->reset();
     if (result != Result::kCommitted) {
       throw std::runtime_error("Failed to commit transaction.");
     }
@@ -141,13 +140,14 @@ void CopyCat<StaticConfig>::insert_data_row(Context<StaticConfig>* ctx,
     }
   }
 
+  rah->reset();
+
   if (!rah->new_row(tbl, le->cf_id, le->row_id, false, le->data_size)) {
     throw std::runtime_error("Failed to create new row " + le->row_id);
   }
 
   char* data = rah->data();
   std::memcpy(data, le->data, le->data_size);
-
 }
 
 template <class StaticConfig>
@@ -182,7 +182,6 @@ void CopyCat<StaticConfig>::insert_hash_idx_row(Context<StaticConfig>* ctx,
   } else if (tx->ts() != txn_ts) {
     Result result;
     tx->commit(&result);
-    rah->reset();
     if (result != Result::kCommitted) {
       throw std::runtime_error("Failed to commit transaction.");
     }
@@ -192,13 +191,14 @@ void CopyCat<StaticConfig>::insert_hash_idx_row(Context<StaticConfig>* ctx,
     }
   }
 
+  rah->reset();
+
   if (!rah->new_row(tbl, le->cf_id, le->row_id, false, le->data_size)) {
     throw std::runtime_error("Failed to create new row " + le->row_id);
   }
 
   char* data = rah->data();
   std::memcpy(data, le->data, le->data_size);
-
 }
 
 template <class StaticConfig>
@@ -243,7 +243,6 @@ void CopyCat<StaticConfig>::write_data_row(Context<StaticConfig>* ctx,
   } else if (tx->ts() != txn_ts) {
     Result result;
     tx->commit(&result);
-    rah->reset();
     if (result != Result::kCommitted) {
       throw std::runtime_error("Failed to commit transaction.");
     }
@@ -252,6 +251,8 @@ void CopyCat<StaticConfig>::write_data_row(Context<StaticConfig>* ctx,
       throw std::runtime_error("Failed to begin transaction.");
     }
   }
+
+  rah->reset();
 
   if (!rah->template peek_row<true>(tbl, le->cf_id, le->row_id, false, false, true) ||
       !rah->write_row(le->data_size)) {
@@ -383,7 +384,6 @@ void CopyCat<StaticConfig>::worker_thread(DB<StaticConfig>* db, uint16_t id) {
   if (tx.has_began()) {
     Result result;
     tx.commit(&result);
-    rah.reset();
     if (result != Result::kCommitted) {
       throw std::runtime_error("Failed to commit transaction.");
     }

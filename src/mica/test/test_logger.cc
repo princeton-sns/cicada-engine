@@ -388,21 +388,18 @@ int main(int argc, const char* argv[]) {
   printf("\n");
 
   printf("Removing old log files\n\n");
-  std::string cmd = "rm -f " + std::string{MICA_LOG_DIR} + "/* ;";
-  int r = std::system(cmd.c_str());
-  if (r != 0) {
-    fprintf(stderr, "Failed to remove old db log files\n");
-    return EXIT_FAILURE;
+  std::vector<std::string> dirs = {MICA_LOG_INIT_DIR, MICA_LOG_WARMUP_DIR, MICA_LOG_WORKLOAD_DIR,
+    MICA_RELAY_INIT_DIR, MICA_RELAY_WARMUP_DIR, MICA_RELAY_WORKLOAD_DIR};
+  for (std::string dir : dirs) {
+    std::string cmd = "rm -f " + dir + "/* ;";
+    int r = std::system(cmd.c_str());
+    if (r != 0) {
+      fprintf(stderr, "Failed to remove log dir: %s\n", dir.c_str());
+      return EXIT_FAILURE;
+    }
   }
 
-  cmd = "rm -f " + std::string{MICA_RELAY_DIR} + "/* ;";
-  r = std::system(cmd.c_str());
-  if (r != 0) {
-    fprintf(stderr, "Failed to remove old relay log files\n");
-    return EXIT_FAILURE;
-  }
-
-  Logger logger{static_cast<uint16_t>(num_threads), std::string{MICA_LOG_DIR}};
+  Logger logger{static_cast<uint16_t>(num_threads), std::string{MICA_LOG_INIT_DIR}};
   // Logger logger{};
 
   DB db(page_pools, &logger, &sw, static_cast<uint16_t>(num_threads));
@@ -679,9 +676,11 @@ int main(int argc, const char* argv[]) {
   std::vector<Timestamp> table_ts;
 
   for (auto phase = 0; phase < 2; phase++) {
-    if (phase == 0)
+    if (phase == 0) {
+      logger.change_logdir(std::string{MICA_LOG_WARMUP_DIR});
       printf("warming up\n");
-    else {
+    } else {
+      logger.change_logdir(std::string{MICA_LOG_WORKLOAD_DIR});
       db.reset_stats();
       printf("executing workload\n");
     }
@@ -754,42 +753,16 @@ int main(int argc, const char* argv[]) {
     printf("Copying log files\n");
     logger.flush();
 
-    std::size_t len = DBConfig::kPageSize;
-    for (uint16_t thread_id = 0; thread_id < num_threads; thread_id++) {
-      for (uint64_t file_index = 0;; file_index++) {
-        std::string infname = std::string{MICA_LOG_DIR} + "/out." +
-                              std::to_string(thread_id) + "." +
-                              std::to_string(file_index) + ".log";
-
-        std::string outfname = std::string{MICA_RELAY_DIR} + "/out." +
-                               std::to_string(thread_id) + "." +
-                               std::to_string(file_index) + ".log";
-
-        if (!PosixIO::Exists(infname.c_str())) break;
-
-        int infd = PosixIO::Open(infname.c_str(), O_RDONLY);
-        void* inaddr =
-            PosixIO::Mmap(nullptr, len, PROT_READ, MAP_SHARED, infd, 0);
-
-        int outfd = PosixIO::Open(outfname.c_str(), O_RDWR | O_CREAT,
-                                  S_IRUSR | S_IWUSR | S_IRGRP | S_IROTH);
-        PosixIO::Ftruncate(outfd, static_cast<off_t>(len));
-        void* outaddr = PosixIO::Mmap(nullptr, len, PROT_READ | PROT_WRITE,
-                                      MAP_SHARED, outfd, 0);
-
-        std::memcpy(outaddr, inaddr, len);
-        PosixIO::Msync(outaddr, len, MS_SYNC);
-
-        PosixIO::Munmap(inaddr, len);
-        PosixIO::Close(infd);
-
-        PosixIO::Munmap(outaddr, len);
-        PosixIO::Close(outfd);
-      }
-    }
+    logger.copy_logs(std::string{MICA_LOG_INIT_DIR},
+                      std::string{MICA_RELAY_INIT_DIR});
+    logger.copy_logs(std::string{MICA_LOG_WARMUP_DIR},
+                      std::string{MICA_RELAY_WARMUP_DIR});
+    logger.copy_logs(std::string{MICA_LOG_WORKLOAD_DIR},
+                      std::string{MICA_RELAY_WORKLOAD_DIR});
   }
 
   DB replica{page_pools, &logger, &sw, static_cast<uint16_t>(num_threads)};
+  logger.disable();
 
   {
     CCC ccc{&replica, static_cast<uint16_t>(num_threads),
@@ -798,9 +771,31 @@ int main(int argc, const char* argv[]) {
     printf("Preprocessing logs\n");
     ccc.preprocess_logs();
 
-    printf("Starting cloned concurrency control\n");
+    printf("Starting cloned concurrency control INIT\n");
+    replica.reset_stats();
+    replica.reset_backoff();
     ccc.start_workers();
+    // int64_t starttime = get_server_clock();
     ccc.stop_workers();
+    // int64_t endtime = get_server_clock();
+
+    printf("Starting cloned concurrency control WARMUP\n");
+    ccc.set_logdir(std::string{MICA_RELAY_WARMUP_DIR});
+    replica.reset_stats();
+    replica.reset_backoff();
+    ccc.start_workers();
+    // starttime = get_server_clock();
+    ccc.stop_workers();
+    // endtime = get_server_clock();
+
+    printf("Starting cloned concurrency control WORKLOAD\n");
+    ccc.set_logdir(std::string{MICA_RELAY_WORKLOAD_DIR});
+    replica.reset_stats();
+    replica.reset_backoff();
+    ccc.start_workers();
+    // starttime = get_server_clock();
+    ccc.stop_workers();
+    // endtime = get_server_clock();
   }
 
   db.activate(0);

@@ -28,15 +28,6 @@
 #include "mica/transaction/transaction.h"
 #include "mica/util/posix_io.h"
 
-#define MICA_LOG_INIT_DIR "/mnt/huge/cicada/log/init"
-#define MICA_LOG_WARMUP_DIR "/mnt/huge/cicada/log/warmup"
-#define MICA_LOG_WORKLOAD_DIR "/mnt/huge/cicada/log/workload"
-#define MICA_RELAY_INIT_DIR "/mnt/huge/cicada/relay/init"
-#define MICA_RELAY_WARMUP_DIR "/mnt/huge/cicada/relay/warmup"
-#define MICA_RELAY_WORKLOAD_DIR "/mnt/huge/cicada/relay/workload"
-#define MICA_LOG_DIR "/mnt/huge/cicada/db"
-#define MICA_RELAY_DIR "/mnt/huge/cicada/relay"
-
 namespace mica {
 namespace transaction {
 template <class StaticConfig>

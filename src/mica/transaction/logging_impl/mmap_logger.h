@@ -57,8 +57,6 @@ void MmapLogger<StaticConfig>::change_logdir(std::string logdir) {
     mappings_[i].clear();
   }
 
-  mappings_.clear();
-
   // Change log dir
   logdir_ = logdir;
 

@@ -12,6 +12,10 @@ namespace transaction {
 
 using mica::util::PosixIO;
 
+struct NoopWriteFunc {
+  bool operator()() const { return true; }
+};
+
 template <class StaticConfig>
 CopyCat<StaticConfig>::CopyCat(DB<StaticConfig>* db, uint16_t nloggers,
                                uint16_t nworkers, std::string logdir)
@@ -117,7 +121,7 @@ void CopyCat<StaticConfig>::insert_data_row(Context<StaticConfig>* ctx,
   auto db = ctx->db();
   Table<StaticConfig>* tbl = db->get_table(std::string{le->tbl_name});
   if (tbl == nullptr) {
-    throw std::runtime_error("Failed to find table " +
+    throw std::runtime_error("insert_data_row: Failed to find table " +
                              std::string{le->tbl_name});
   }
 
@@ -126,24 +130,30 @@ void CopyCat<StaticConfig>::insert_data_row(Context<StaticConfig>* ctx,
 
   if (!tx->has_began()) {
     if (!tx->begin(false, &txn_ts)) {
-      throw std::runtime_error("Failed to begin transaction.");
+      throw std::runtime_error("insert_data_row: Failed to begin transaction.");
     }
   } else if (tx->ts() != txn_ts) {
     Result result;
-    tx->commit(&result);
+    tx->template commit<NoopWriteFunc, true>(&result);
     if (result != Result::kCommitted) {
-      throw std::runtime_error("Failed to commit transaction.");
+      throw std::runtime_error("insert_data_row: Failed to commit transaction.");
     }
 
     if (!tx->begin(false, &txn_ts)) {
-      throw std::runtime_error("Failed to begin transaction.");
+      throw std::runtime_error("insert_data_row: Failed to begin transaction.");
     }
   }
 
   rah->reset();
 
-  if (!rah->new_row(tbl, le->cf_id, le->row_id, false, le->data_size)) {
-    throw std::runtime_error("Failed to create new row " + le->row_id);
+  if (StaticConfig::kReplUseUpsert) {
+    if (!rah->upsert_row(tbl, le->cf_id, le->row_id, false, le->data_size)) {
+      throw std::runtime_error("insert_data_row: Failed to upsert row " + le->row_id);
+    }
+  } else {
+    if (!rah->new_row(tbl, le->cf_id, le->row_id, false, le->data_size)) {
+      throw std::runtime_error("insert_data_row: Failed to create new row " + le->row_id);
+    }
   }
 
   char* data = rah->data();
@@ -169,7 +179,7 @@ void CopyCat<StaticConfig>::insert_hash_idx_row(Context<StaticConfig>* ctx,
   }
 
   if (tbl == nullptr) {
-    throw std::runtime_error("Failed to find index table.");
+    throw std::runtime_error("insert_hash_idx_row: Failed to find index table.");
   }
 
   typename StaticConfig::Timestamp txn_ts;
@@ -177,24 +187,31 @@ void CopyCat<StaticConfig>::insert_hash_idx_row(Context<StaticConfig>* ctx,
 
   if (!tx->has_began()) {
     if (!tx->begin(false, &txn_ts)) {
-      throw std::runtime_error("Failed to begin transaction.");
+      throw std::runtime_error("insert_hash_idx_row: Failed to begin transaction.");
     }
   } else if (tx->ts() != txn_ts) {
     Result result;
-    tx->commit(&result);
+    tx->template commit<NoopWriteFunc, true>(&result);
     if (result != Result::kCommitted) {
-      throw std::runtime_error("Failed to commit transaction.");
+      throw std::runtime_error("insert_hash_idx_row: Failed to commit transaction.");
     }
 
     if (!tx->begin(false, &txn_ts)) {
-      throw std::runtime_error("Failed to begin transaction.");
+      throw std::runtime_error("insert_hash_idx_row: Failed to begin transaction.");
     }
   }
 
   rah->reset();
 
-  if (!rah->new_row(tbl, le->cf_id, le->row_id, false, le->data_size)) {
-    throw std::runtime_error("Failed to create new row " + le->row_id);
+
+  if (StaticConfig::kReplUseUpsert) {
+    if (!rah->upsert_row(tbl, le->cf_id, le->row_id, false, le->data_size)) {
+      throw std::runtime_error("insert_hash_idx_row: Failed to upsert row " + le->row_id);
+    }
+  } else {
+    if (!rah->new_row(tbl, le->cf_id, le->row_id, false, le->data_size)) {
+      throw std::runtime_error("insert_hash_idx_row: Failed to create new row " + le->row_id);
+    }
   }
 
   char* data = rah->data();
@@ -229,7 +246,7 @@ void CopyCat<StaticConfig>::write_data_row(Context<StaticConfig>* ctx,
 
   Table<StaticConfig>* tbl = db->get_table(std::string{le->tbl_name});
   if (tbl == nullptr) {
-    throw std::runtime_error("Failed to find table " +
+    throw std::runtime_error("write_data_row: Failed to find table " +
                              std::string{le->tbl_name});
   }
 
@@ -238,17 +255,17 @@ void CopyCat<StaticConfig>::write_data_row(Context<StaticConfig>* ctx,
 
   if (!tx->has_began()) {
     if (!tx->begin(false, &txn_ts)) {
-      throw std::runtime_error("Failed to begin transaction.");
+      throw std::runtime_error("write_data_row: Failed to begin transaction.");
     }
   } else if (tx->ts() != txn_ts) {
     Result result;
-    tx->commit(&result);
+    tx->template commit<NoopWriteFunc, true>(&result);
     if (result != Result::kCommitted) {
-      throw std::runtime_error("Failed to commit transaction.");
+      throw std::runtime_error("write_data_row: Failed to commit transaction.");
     }
 
     if (!tx->begin(false, &txn_ts)) {
-      throw std::runtime_error("Failed to begin transaction.");
+      throw std::runtime_error("write_data_row: Failed to begin transaction.");
     }
   }
 
@@ -256,7 +273,7 @@ void CopyCat<StaticConfig>::write_data_row(Context<StaticConfig>* ctx,
 
   if (!rah->template peek_row<true>(tbl, le->cf_id, le->row_id, false, false, true) ||
       !rah->write_row(le->data_size)) {
-    throw std::runtime_error("Failed to write row.");
+    throw std::runtime_error("write_data_row: Failed to write row.");
   }
 
   char* data = rah->data();
@@ -281,7 +298,7 @@ void CopyCat<StaticConfig>::write_hash_idx_row(Context<StaticConfig>* ctx,
   }
 
   if (tbl == nullptr) {
-    throw std::runtime_error("Failed to find index table.");
+    throw std::runtime_error("write_hash_idx_row: Failed to find index table.");
   }
 
   typename StaticConfig::Timestamp txn_ts;
@@ -289,24 +306,28 @@ void CopyCat<StaticConfig>::write_hash_idx_row(Context<StaticConfig>* ctx,
 
   if (!tx->has_began()) {
     if (!tx->begin(false, &txn_ts)) {
-      throw std::runtime_error("Failed to begin transaction.");
+      throw std::runtime_error("write_hash_idx_row: Failed to begin transaction.");
     }
   } else if (tx->ts() != txn_ts) {
     Result result;
-    tx->commit(&result);
-    rah->reset();
+    tx->template commit<NoopWriteFunc, true>(&result);
     if (result != Result::kCommitted) {
-      throw std::runtime_error("Failed to commit transaction.");
+      throw std::runtime_error("write_hash_idx_row: Failed to commit transaction.");
     }
 
     if (!tx->begin(false, &txn_ts)) {
-      throw std::runtime_error("Failed to begin transaction.");
+      throw std::runtime_error("write_hash_idx_row: Failed to begin transaction.");
     }
   }
 
-  if (!rah->template peek_row<true>(tbl, le->cf_id, le->row_id, false, false, true) ||
-      !rah->write_row(le->data_size)) {
-    throw std::runtime_error("Failed to write row.");
+  rah->reset();
+
+  if (!rah->template peek_row<true>(tbl, le->cf_id, le->row_id, false, false, true)) {
+    throw std::runtime_error("write_hash_idx_row: Failed to write row: peek");
+  }
+
+  if (!rah->write_row(le->data_size)) {
+    throw std::runtime_error("write_hash_idx_row: Failed to write row: write");
   }
 
   char* data = rah->data();
@@ -383,7 +404,7 @@ void CopyCat<StaticConfig>::worker_thread(DB<StaticConfig>* db, uint16_t id) {
 
   if (tx.has_began()) {
     Result result;
-    tx.commit(&result);
+    tx.template commit<NoopWriteFunc, true>(&result);
     if (result != Result::kCommitted) {
       throw std::runtime_error("Failed to commit transaction.");
     }

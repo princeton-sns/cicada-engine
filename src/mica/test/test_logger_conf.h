@@ -55,6 +55,15 @@
 #define MICA_USE_SLOW_GC false
 #define MICA_SLOW_GC 10
 
+#define MICA_LOG_INIT_DIR "/mnt/huge/cicada/log/init"
+#define MICA_LOG_WARMUP_DIR "/mnt/huge/cicada/log/warmup"
+#define MICA_LOG_WORKLOAD_DIR "/mnt/huge/cicada/log/workload"
+#define MICA_RELAY_INIT_DIR "/mnt/huge/cicada/relay/init"
+#define MICA_RELAY_WARMUP_DIR "/mnt/huge/cicada/relay/warmup"
+#define MICA_RELAY_WORKLOAD_DIR "/mnt/huge/cicada/relay/workload"
+
+#define MICA_REPL_USE_UPSERT true
+
 struct DBConfig : public ::mica::transaction::BasicDBConfig {
 
 #if MICA_NO_PRE_VALIDATION
@@ -112,6 +121,8 @@ struct DBConfig : public ::mica::transaction::BasicDBConfig {
   typedef ::mica::transaction::MmapLogger<DBConfig> Logger;
 
   typedef ::mica::transaction::CopyCat<DBConfig> CCC;
+
+  static constexpr bool kReplUseUpsert = MICA_REPL_USE_UPSERT;
 
   // Debugging
   // static constexpr bool kVerbose = DBConfig::kVerbose;

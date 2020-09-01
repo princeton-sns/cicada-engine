@@ -222,7 +222,7 @@ void Transaction<StaticConfig>::write() {
 }
 
 template <class StaticConfig>
-template <class WriteFunc>
+template <class WriteFunc, bool IsReplica>
 bool Transaction<StaticConfig>::commit(Result* detail,
                                        const WriteFunc& write_func) {
   Timing t(ctx_->timing_stack(), &Stats::main_validation);
@@ -280,28 +280,30 @@ bool Transaction<StaticConfig>::commit(Result* detail,
     }
   }
 
-  if (consecutive_commits_ < 5) {
-    if (StaticConfig::kSortWriteSetByContention) {
-      t.switch_to(&Stats::sort_wset);
-      if (StaticConfig::kVerbose)
-        printf("sort_wset_by_contention: ts=%" PRIu64 "\n", ts_.t2);
-      sort_wset();
-    }
+  if (!IsReplica) {
+    if (consecutive_commits_ < 5) {
+      if (StaticConfig::kSortWriteSetByContention) {
+        t.switch_to(&Stats::sort_wset);
+        if (StaticConfig::kVerbose)
+          printf("sort_wset_by_contention: ts=%" PRIu64 "\n", ts_.t2);
+        sort_wset();
+      }
 
-    if (StaticConfig::kPreValidation) {
-      t.switch_to(&Stats::pre_validation);
-      if (StaticConfig::kVerbose)
-        printf("pre_validation: ts=%" PRIu64 "\n", ts_.t2);
-      if (!check_version()) {
-        if (StaticConfig::kCollectExtraCommitStats) {
-          abort_reason_target_count_ =
+      if (StaticConfig::kPreValidation) {
+        t.switch_to(&Stats::pre_validation);
+        if (StaticConfig::kVerbose)
+          printf("pre_validation: ts=%" PRIu64 "\n", ts_.t2);
+        if (!check_version()) {
+          if (StaticConfig::kCollectExtraCommitStats) {
+            abort_reason_target_count_ =
               &ctx_->stats().aborted_by_pre_validation_count;
-          abort_reason_target_time_ =
+            abort_reason_target_time_ =
               &ctx_->stats().aborted_by_pre_validation_time;
+          }
+          abort();
+          if (detail != nullptr) *detail = Result::kAbortedByPreValidation;
+          return false;
         }
-        abort();
-        if (detail != nullptr) *detail = Result::kAbortedByPreValidation;
-        return false;
       }
     }
   }
@@ -310,7 +312,7 @@ bool Transaction<StaticConfig>::commit(Result* detail,
     t.switch_to(&Stats::deferred_row_insert);
     if (StaticConfig::kVerbose)
       printf("deferred_version_insert: ts=%" PRIu64 "\n", ts_.t2);
-    if (!insert_version_deferred()) {
+    if (!insert_version_deferred<IsReplica>()) {
       if (StaticConfig::kCollectExtraCommitStats) {
         abort_reason_target_count_ =
             &ctx_->stats().aborted_by_deferred_row_version_insert_count;
@@ -325,25 +327,29 @@ bool Transaction<StaticConfig>::commit(Result* detail,
   }
 
   {
-    t.switch_to(&Stats::rts_update);
-    if (StaticConfig::kVerbose) printf("rts_update: ts=%" PRIu64 "\n", ts_.t2);
-    update_rts();
+    if (!IsReplica) {
+      t.switch_to(&Stats::rts_update);
+      if (StaticConfig::kVerbose) printf("rts_update: ts=%" PRIu64 "\n", ts_.t2);
+      update_rts();
+    }
   }
 
   {
-    t.switch_to(&Stats::main_validation);
-    if (StaticConfig::kVerbose)
-      printf("main_validation: ts=%" PRIu64 "\n", ts_.t2);
-    if (!check_version()) {
-      if (StaticConfig::kCollectExtraCommitStats) {
-        abort_reason_target_count_ =
+    if (!IsReplica) {
+      t.switch_to(&Stats::main_validation);
+      if (StaticConfig::kVerbose)
+        printf("main_validation: ts=%" PRIu64 "\n", ts_.t2);
+      if (!check_version()) {
+        if (StaticConfig::kCollectExtraCommitStats) {
+          abort_reason_target_count_ =
             &ctx_->stats().aborted_by_main_validation_count;
-        abort_reason_target_time_ =
+          abort_reason_target_time_ =
             &ctx_->stats().aborted_by_main_validation_time;
+        }
+        abort();
+        if (detail != nullptr) *detail = Result::kAbortedByMainValidation;
+        return false;
       }
-      abort();
-      if (detail != nullptr) *detail = Result::kAbortedByMainValidation;
-      return false;
     }
   }
 

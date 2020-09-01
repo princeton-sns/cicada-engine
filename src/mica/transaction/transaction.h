@@ -70,6 +70,11 @@ class Transaction {
                uint64_t row_id, bool check_dup_access,
                uint64_t data_size, const DataCopier& data_copier);
 
+  template <class DataCopier>
+  bool upsert_row(RAH& rah, Table<StaticConfig>* tbl, uint16_t cf_id,
+                  uint64_t row_id, bool check_dup_access,
+                  uint64_t data_size, const DataCopier& data_copier);
+
   void prefetch_row(Table<StaticConfig>* tbl, uint16_t cf_id, uint64_t row_id,
                     uint64_t off, uint64_t len);
   template <bool IsReplica>
@@ -88,7 +93,7 @@ class Transaction {
   struct NoopWriteFunc {
     bool operator()() const { return true; }
   };
-  template <class WriteFunc = NoopWriteFunc>
+  template <class WriteFunc = NoopWriteFunc, bool IsReplica = false>
   bool commit(Result* detail = nullptr,
               const WriteFunc& write_func = WriteFunc());
   bool abort(bool skip_backoff = false);
@@ -120,6 +125,7 @@ class Transaction {
   template <bool ForRead, bool ForWrite, bool ForValidation>
   void locate(RowCommon<StaticConfig>*& newer_rv,
               RowVersion<StaticConfig>*& rv);
+  template <bool IsReplica>
   bool insert_version_deferred();
   RowVersionStatus wait_for_pending(RowVersion<StaticConfig>* rv);
   void insert_row_deferred();

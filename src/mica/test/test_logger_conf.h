@@ -63,6 +63,7 @@
 #define MICA_RELAY_WORKLOAD_DIR "/mnt/huge/cicada/relay/workload"
 
 #define MICA_REPL_USE_UPSERT true
+#define MICA_REPL_UPSERT_ASSUME_NEW false
 
 struct DBConfig : public ::mica::transaction::BasicDBConfig {
 
@@ -115,14 +116,11 @@ struct DBConfig : public ::mica::transaction::BasicDBConfig {
 
   // Logging and replication
   static constexpr uint64_t kPageSize = 2 * 1048576;
-
   // typedef ::mica::transaction::NullLogger<DBConfig> Logger;
-  // typedef ::mica::transaction::FileLogger<DBConfig> Logger;
   typedef ::mica::transaction::MmapLogger<DBConfig> Logger;
-
   typedef ::mica::transaction::CopyCat<DBConfig> CCC;
-
   static constexpr bool kReplUseUpsert = MICA_REPL_USE_UPSERT;
+  static constexpr bool kUpsertAssumeNewRow = MICA_REPL_UPSERT_ASSUME_NEW;
 
   // Debugging
   // static constexpr bool kVerbose = DBConfig::kVerbose;

@@ -57,7 +57,7 @@ bool Transaction<StaticConfig>::begin(bool peek_only,
     RAH rah(this);
     for (auto& item : to_reserve_) {
       rah.reset();
-      if (!peek_row<false>(rah, item.tbl, item.cf_id, item.row_id, false,
+      if (!peek_row(rah, item.tbl, item.cf_id, item.row_id, false,
                     item.read_hint, item.write_hint)) {
         retry = true;
         break;
@@ -222,7 +222,7 @@ void Transaction<StaticConfig>::write() {
 }
 
 template <class StaticConfig>
-template <class WriteFunc, bool IsReplica>
+template <class WriteFunc>
 bool Transaction<StaticConfig>::commit(Result* detail,
                                        const WriteFunc& write_func) {
   Timing t(ctx_->timing_stack(), &Stats::main_validation);
@@ -235,6 +235,7 @@ bool Transaction<StaticConfig>::commit(Result* detail,
   //if (!peek_only_) {
 
   if (StaticConfig::kVerbose) printf("try_to_commit: ts=%" PRIu64 "\n", ts_.t2);
+
 
   if (false) {
     // Try to amend the timestamp to meet the read timestamp requirement for the write est.
@@ -280,30 +281,28 @@ bool Transaction<StaticConfig>::commit(Result* detail,
     }
   }
 
-  if (!IsReplica) {
-    if (consecutive_commits_ < 5) {
-      if (StaticConfig::kSortWriteSetByContention) {
-        t.switch_to(&Stats::sort_wset);
-        if (StaticConfig::kVerbose)
-          printf("sort_wset_by_contention: ts=%" PRIu64 "\n", ts_.t2);
-        sort_wset();
-      }
+  if (consecutive_commits_ < 5) {
+    if (StaticConfig::kSortWriteSetByContention) {
+      t.switch_to(&Stats::sort_wset);
+      if (StaticConfig::kVerbose)
+        printf("sort_wset_by_contention: ts=%" PRIu64 "\n", ts_.t2);
+      sort_wset();
+    }
 
-      if (StaticConfig::kPreValidation) {
-        t.switch_to(&Stats::pre_validation);
-        if (StaticConfig::kVerbose)
-          printf("pre_validation: ts=%" PRIu64 "\n", ts_.t2);
-        if (!check_version()) {
-          if (StaticConfig::kCollectExtraCommitStats) {
-            abort_reason_target_count_ =
-              &ctx_->stats().aborted_by_pre_validation_count;
-            abort_reason_target_time_ =
-              &ctx_->stats().aborted_by_pre_validation_time;
-          }
-          abort();
-          if (detail != nullptr) *detail = Result::kAbortedByPreValidation;
-          return false;
+    if (StaticConfig::kPreValidation) {
+      t.switch_to(&Stats::pre_validation);
+      if (StaticConfig::kVerbose)
+        printf("pre_validation: ts=%" PRIu64 "\n", ts_.t2);
+      if (!check_version()) {
+        if (StaticConfig::kCollectExtraCommitStats) {
+          abort_reason_target_count_ =
+            &ctx_->stats().aborted_by_pre_validation_count;
+          abort_reason_target_time_ =
+            &ctx_->stats().aborted_by_pre_validation_time;
         }
+        abort();
+        if (detail != nullptr) *detail = Result::kAbortedByPreValidation;
+        return false;
       }
     }
   }
@@ -312,7 +311,7 @@ bool Transaction<StaticConfig>::commit(Result* detail,
     t.switch_to(&Stats::deferred_row_insert);
     if (StaticConfig::kVerbose)
       printf("deferred_version_insert: ts=%" PRIu64 "\n", ts_.t2);
-    if (!insert_version_deferred<IsReplica>()) {
+    if (!insert_version_deferred()) {
       if (StaticConfig::kCollectExtraCommitStats) {
         abort_reason_target_count_ =
             &ctx_->stats().aborted_by_deferred_row_version_insert_count;
@@ -327,29 +326,115 @@ bool Transaction<StaticConfig>::commit(Result* detail,
   }
 
   {
-    if (!IsReplica) {
-      t.switch_to(&Stats::rts_update);
-      if (StaticConfig::kVerbose) printf("rts_update: ts=%" PRIu64 "\n", ts_.t2);
-      update_rts();
+    t.switch_to(&Stats::rts_update);
+    if (StaticConfig::kVerbose) printf("rts_update: ts=%" PRIu64 "\n", ts_.t2);
+    update_rts();
+  }
+
+  {
+    t.switch_to(&Stats::main_validation);
+    if (StaticConfig::kVerbose)
+      printf("main_validation: ts=%" PRIu64 "\n", ts_.t2);
+    if (!check_version()) {
+      if (StaticConfig::kCollectExtraCommitStats) {
+        abort_reason_target_count_ =
+          &ctx_->stats().aborted_by_main_validation_count;
+        abort_reason_target_time_ =
+          &ctx_->stats().aborted_by_main_validation_time;
+      }
+      abort();
+      if (detail != nullptr) *detail = Result::kAbortedByMainValidation;
+      return false;
     }
   }
 
   {
-    if (!IsReplica) {
-      t.switch_to(&Stats::main_validation);
-      if (StaticConfig::kVerbose)
-        printf("main_validation: ts=%" PRIu64 "\n", ts_.t2);
-      if (!check_version()) {
-        if (StaticConfig::kCollectExtraCommitStats) {
-          abort_reason_target_count_ =
-            &ctx_->stats().aborted_by_main_validation_count;
-          abort_reason_target_time_ =
-            &ctx_->stats().aborted_by_main_validation_time;
-        }
-        abort();
-        if (detail != nullptr) *detail = Result::kAbortedByMainValidation;
-        return false;
+    t.switch_to(&Stats::logging);
+    if (StaticConfig::kVerbose) printf("logging: ts=%" PRIu64 "\n", ts_.t2);
+    if (!ctx_->db_->logger()->log(ctx_, this)) {
+      if (StaticConfig::kCollectExtraCommitStats) {
+        abort_reason_target_count_ = &ctx_->stats().aborted_by_logging_count;
+        abort_reason_target_time_ = &ctx_->stats().aborted_by_logging_time;
       }
+      abort();
+      if (detail != nullptr) *detail = Result::kAbortedByLogging;
+      return false;
+    }
+  }
+
+  {
+    t.switch_to(&Stats::write);
+    if (StaticConfig::kVerbose) printf("write: ts=%" PRIu64 "\n", ts_.t2);
+
+    if (!write_func()) return false;
+
+    // We must insert new rows before marking anything committed because earlier
+    // committed rows may have row IDs to new rows.
+    insert_row_deferred();
+
+    write();
+  }
+
+  // }    // if (peek_only_)
+
+  began_ = false;
+
+  if (StaticConfig::kStragglerAvoidance) ctx_->clock_boost_ = 0;
+  if (StaticConfig::kReserveAfterAbort) to_reserve_.clear();
+  if (consecutive_commits_ < 100) consecutive_commits_++;
+
+  if (StaticConfig::kCollectCommitStats) {
+    auto now = ctx_->db_->sw()->now();
+    auto diff = now - begin_time_;
+    ctx_->stats().tx_count++;
+    ctx_->stats().tx_time += diff;
+    ctx_->stats().committed_count++;
+    ctx_->stats().committed_time += diff;
+    if (StaticConfig::kCollectExtraCommitStats)
+      ctx_->commit_latency_.update(diff / ctx_->db_->sw()->c_1_usec());
+
+    if (last_commit_time_ != 0)
+      ctx_->inter_commit_latency_.update((now - last_commit_time_) /
+                                         ctx_->db_->sw()->c_1_usec());
+    last_commit_time_ = now;
+  }
+
+  maintenance();
+
+  if (detail != nullptr) *detail = Result::kCommitted;
+  return true;
+}
+
+template <class StaticConfig>
+template <class WriteFunc>
+bool Transaction<StaticConfig>::commit_replica(Result* detail,
+                                               const WriteFunc& write_func) {
+  Timing t(ctx_->timing_stack(), &Stats::main_validation);
+
+  if (!began_) {
+    if (detail != nullptr) *detail = Result::kInvalid;
+    return false;
+  }
+
+  //if (!peek_only_) {
+
+  if (StaticConfig::kVerbose) printf("try_to_commit: ts=%" PRIu64 "\n", ts_.t2);
+
+  {
+    t.switch_to(&Stats::deferred_row_insert);
+    if (StaticConfig::kVerbose)
+      printf("deferred_version_insert: ts=%" PRIu64 "\n", ts_.t2);
+    if (!insert_version_deferred_replica()) {
+      if (StaticConfig::kCollectExtraCommitStats) {
+        abort_reason_target_count_ =
+            &ctx_->stats().aborted_by_deferred_row_version_insert_count;
+        abort_reason_target_time_ =
+            &ctx_->stats().aborted_by_deferred_row_version_insert_time;
+      }
+      abort();
+      if (detail != nullptr)
+        *detail = Result::kAbortedByDeferredRowVersionInsert;
+      return false;
     }
   }
 

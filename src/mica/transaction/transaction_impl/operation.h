@@ -26,11 +26,9 @@ bool Transaction<StaticConfig>::new_row(RAH& rah, Table<StaticConfig>* tbl,
   if (rah) return false;
 
   if (cf_id == 0) {
-    if (row_id == kNewRowID)
-      row_id = ctx_->allocate_row(tbl);
-    else
-      row_id = ctx_->allocate_row(tbl, row_id);
+    if (row_id != kNewRowID) return false;
 
+    row_id = ctx_->allocate_row(tbl);
     if (row_id == static_cast<uint64_t>(-1)) {
       // TODO: Use different stats counter.
       if (StaticConfig::kCollectExtraCommitStats) {
@@ -42,6 +40,123 @@ bool Transaction<StaticConfig>::new_row(RAH& rah, Table<StaticConfig>* tbl,
   } else {
     // Non-zero column family must supply a valid row ID.
     if (row_id == kNewRowID) return false;
+  }
+
+  auto head = tbl->head(cf_id, row_id);
+
+  auto write_rv =
+      ctx_->allocate_version_for_new_row(tbl, cf_id, row_id, head, data_size);
+  if (write_rv == nullptr) {
+    // Not enough memory.
+    if (cf_id == 0) ctx_->deallocate_row(tbl, row_id);
+    return false;
+  }
+
+  write_rv->older_rv = nullptr;
+  write_rv->wts = ts_;
+  write_rv->rts.init(ts_);
+  write_rv->status = RowVersionStatus::kPending;
+
+  if (!data_copier(cf_id, write_rv, nullptr)) {
+    // Copy failed.
+    ctx_->deallocate_version(write_rv);
+    if (cf_id == 0) ctx_->deallocate_row(tbl, row_id);
+    return false;
+  }
+
+  // Prefetch the whole row because it is typically written with new data.
+  // {
+  //   auto addr = reinterpret_cast<const char*>(write_rv);
+  //   auto max_addr = addr + version_size;
+  //   for (; addr < max_addr; addr += 64)
+  //     __builtin_prefetch(reinterpret_cast<const void*>(addr), 1, 0);
+  // }
+
+  uint16_t bkt_id;
+  AccessBucket* bkt;
+  if (check_dup_access) {
+    // TODO: Factor this out because it is used later again.
+    if (access_bucket_count_ == 0) {
+      for (size_t i = 0; i < StaticConfig::kAccessBucketRootCount; i++) {
+        access_buckets_[i].count = 0;
+        access_buckets_[i].next = AccessBucket::kEmptyBucketID;
+      }
+      access_bucket_count_ = StaticConfig::kAccessBucketRootCount;
+    }
+
+    bkt_id = (reinterpret_cast<size_t>(tbl) / 64 + row_id) %
+             StaticConfig::kAccessBucketRootCount;
+    bkt = &access_buckets_[bkt_id];
+    while (true) {
+      if (bkt->next == AccessBucket::kEmptyBucketID) break;
+      bkt_id = bkt->next;
+      bkt = &access_buckets_[bkt_id];
+    }
+
+    if (bkt->count == StaticConfig::kAccessBucketSize) {
+      // Allocate a new acccess bucket if needed.
+      auto new_bkt_id = access_bucket_count_++;
+      if (access_buckets_.size() < access_bucket_count_)
+        access_buckets_.resize(access_bucket_count_);
+      auto new_bkt = &access_buckets_[new_bkt_id];
+      new_bkt->count = 0;
+      new_bkt->next = AccessBucket::kEmptyBucketID;
+
+      // We must refresh bkt pointer because std::vector's resize() can move
+      // the buffer.
+      bkt = &access_buckets_[bkt_id];
+      bkt->next = new_bkt_id;
+      bkt = new_bkt;
+    }
+    bkt->idx[bkt->count++] = access_size_;
+    // printf("check_dup %" PRIu64 "\n", row_id);
+  }
+
+  // assert(access_size_ < StaticConfig::kMaxAccessSize);
+  if (access_size_ >= StaticConfig::kMaxAccessSize) {
+    printf("too large access\n");
+    assert(false);
+  }
+  iset_idx_[iset_size_++] = access_size_;
+  rah.access_item_ = &accesses_[access_size_];
+  accesses_[access_size_] = {access_size_, 0,     RowAccessState::kNew,
+                             tbl,          cf_id, row_id,
+                             head,         head,  write_rv,
+                             nullptr /*, ts_*/};
+  access_size_++;
+
+  return true;
+}
+
+template <class StaticConfig>
+template <class DataCopier>
+bool Transaction<StaticConfig>::new_row_replica(RAH& rah, Table<StaticConfig>* tbl,
+                                                uint16_t cf_id, uint64_t row_id,
+                                                bool check_dup_access,
+                                                uint64_t data_size,
+                                                const DataCopier& data_copier) {
+  assert(began_);
+
+  assert(!peek_only_);
+
+  // new_row() requires explicit data sizes.
+  assert(data_size != kDefaultWriteDataSize);
+
+  Timing t(ctx_->timing_stack(), &Stats::execution_write);
+
+  // This rah must not be in use.
+  if (rah) return false;
+
+  if (row_id == kNewRowID) return false;
+
+  row_id = ctx_->allocate_row(tbl, row_id);
+  if (row_id == static_cast<uint64_t>(-1)) {
+    // TODO: Use different stats counter.
+    if (StaticConfig::kCollectExtraCommitStats) {
+      abort_reason_target_count_ = &ctx_->stats().aborted_by_get_row_count;
+      abort_reason_target_time_ = &ctx_->stats().aborted_by_get_row_time;
+    }
+    return false;
   }
 
   auto head = tbl->head(cf_id, row_id);
@@ -165,8 +280,15 @@ bool Transaction<StaticConfig>::upsert_row(RAH& rah, Table<StaticConfig>* tbl,
 
   auto head = tbl->head(cf_id, row_id);
 
-  auto write_rv =
+  RowVersion<StaticConfig>* write_rv = nullptr;
+  if (StaticConfig::kUpsertAssumeNewRow) {
+    write_rv =
+      ctx_->allocate_version_for_new_row(tbl, cf_id, row_id, head, data_size);
+  } else {
+    write_rv =
       ctx_->allocate_version_for_existing_row(tbl, cf_id, row_id, head, data_size);
+  }
+
   if (write_rv == nullptr) {
     // Not enough memory.
     if (cf_id == 0) ctx_->deallocate_row(tbl, row_id);
@@ -184,32 +306,50 @@ bool Transaction<StaticConfig>::upsert_row(RAH& rah, Table<StaticConfig>* tbl,
     return false;
   }
 
-  RowCommon<StaticConfig>* newer_rv = head;
-  RowVersion<StaticConfig>* rv = nullptr;
-  if (newer_rv != nullptr) {
-    rv = newer_rv->older_rv;
-  }
-
-  locate<false, true, false>(newer_rv, rv);
-
   if (access_size_ >= StaticConfig::kMaxAccessSize) {
     printf("too large access\n");
     assert(false);
   }
 
-  wset_idx_[wset_size_++] = access_size_;
-  rah.access_item_ = &accesses_[access_size_];
-  accesses_[access_size_] = {access_size_,
-                             0,
-                             RowAccessState::kWrite,
-                             tbl,
-                             cf_id,
-                             row_id,
-                             head,
-                             newer_rv,
-                             write_rv,
-                             rv /*, ts_*/};
-  access_size_++;
+  if (StaticConfig::kUpsertAssumeNewRow) {
+    write_rv->older_rv = nullptr;
+
+    iset_idx_[iset_size_++] = access_size_;
+    rah.access_item_ = &accesses_[access_size_];
+    accesses_[access_size_] = {access_size_,
+      0,
+      RowAccessState::kNew,
+      tbl,
+      cf_id,
+      row_id,
+      head,
+      head,
+      write_rv,
+      nullptr /*, ts_*/};
+    access_size_++;
+  } else {
+    RowCommon<StaticConfig>* newer_rv = head;
+    RowVersion<StaticConfig>* rv = nullptr;
+    if (newer_rv != nullptr) {
+      rv = newer_rv->older_rv;
+    }
+
+    locate<false, true, false>(newer_rv, rv);
+
+    wset_idx_[wset_size_++] = access_size_;
+    rah.access_item_ = &accesses_[access_size_];
+    accesses_[access_size_] = {access_size_,
+      0,
+      RowAccessState::kWrite,
+      tbl,
+      cf_id,
+      row_id,
+      head,
+      newer_rv,
+      write_rv,
+      rv /*, ts_*/};
+    access_size_++;
+  }
 
   return true;
 }
@@ -240,7 +380,6 @@ void Transaction<StaticConfig>::prefetch_row(Table<StaticConfig>* tbl,
 }
 
 template <class StaticConfig>
-template <bool IsReplica>
 bool Transaction<StaticConfig>::peek_row(RAH& rah, Table<StaticConfig>* tbl,
                                          uint16_t cf_id, uint64_t row_id,
                                          bool check_dup_access, bool read_hint,
@@ -282,10 +421,147 @@ bool Transaction<StaticConfig>::peek_row(RAH& rah, Table<StaticConfig>* tbl,
     }
   }
 
-  if (IsReplica) {
-    while (!ctx_->is_allocated(tbl, row_id))
-      ::mica::util::pause();
+  auto head = tbl->head(cf_id, row_id);
+  if (StaticConfig::kInlinedRowVersion && StaticConfig::kInlineWithAltRow &&
+      tbl->inlining(cf_id)) {
+    auto alt_head = tbl->alt_head(cf_id, row_id);
+    (void)alt_head;
   }
+
+  RowCommon<StaticConfig>* newer_rv = head;
+  auto rv = head->older_rv;
+  // auto head_older = rv;
+  // auto latest_wts = rv->wts;
+
+  switch (static_cast<int>(read_hint) * 2 + static_cast<int>(write_hint)) {
+    default:
+    case 0:
+      locate<false, false, false>(newer_rv, rv);
+      break;
+    case 1:
+      locate<false, true, false>(newer_rv, rv);
+      break;
+    case 2:
+      locate<true, false, false>(newer_rv, rv);
+      break;
+    case 3:
+      locate<true, true, false>(newer_rv, rv);
+      break;
+  }
+
+  if (rv == nullptr) {
+    /*
+#ifndef NDEBUG
+    if (!write_hint) {
+      // This usually should not happen; print some debugging information.
+
+      print_version_chain(tbl, row_id);
+
+      assert(ctx_->db_->min_rts() <= ts_);
+    }
+#endif
+    */
+
+    if (StaticConfig::kReserveAfterAbort)
+      reserve(tbl, cf_id, row_id, read_hint, write_hint);
+
+    if (StaticConfig::kCollectExtraCommitStats) {
+      abort_reason_target_count_ = &ctx_->stats().aborted_by_get_row_count;
+      abort_reason_target_time_ = &ctx_->stats().aborted_by_get_row_time;
+    }
+    return false;
+  }
+
+  // if (head_older != rv) using_latest_only_ = 0;
+
+  // assert(access_size_ < StaticConfig::kMaxAccessSize);
+  if (access_size_ >= StaticConfig::kMaxAccessSize) {
+    printf("too large access\n");
+    assert(false);
+  }
+  rah.access_item_ = &accesses_[access_size_];
+
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wmaybe-uninitialized"
+  if (check_dup_access) {
+    if (bkt->count == StaticConfig::kAccessBucketSize) {
+      // Allocate a new acccess bucket if needed.
+      auto new_bkt_id = access_bucket_count_++;
+      if (access_buckets_.size() < access_bucket_count_)
+        access_buckets_.resize(access_bucket_count_);
+      auto new_bkt = &access_buckets_[new_bkt_id];
+      new_bkt->count = 0;
+      new_bkt->next = AccessBucket::kEmptyBucketID;
+
+      // We must refresh bkt pointer because std::vector's resize() can move
+      // the buffer.
+      bkt = &access_buckets_[bkt_id];
+      bkt->next = new_bkt_id;
+      bkt = new_bkt;
+    }
+    bkt->idx[bkt->count++] = access_size_;
+  }
+#pragma GCC diagnostic pop
+
+  accesses_[access_size_] = {access_size_,
+                             0,
+                             RowAccessState::kPeek,
+                             tbl,
+                             cf_id,
+                             row_id,
+                             head,
+                             newer_rv,
+                             nullptr,
+                             rv /*, latest_wts */};
+  access_size_++;
+
+  return true;
+}
+
+template <class StaticConfig>
+bool Transaction<StaticConfig>::peek_row_replica(RAH& rah, Table<StaticConfig>* tbl,
+                                                 uint16_t cf_id, uint64_t row_id,
+                                                 bool check_dup_access, bool read_hint,
+                                                 bool write_hint) {
+  assert(began_);
+  if (rah) return false;
+
+  assert(row_id < tbl->row_count());
+
+  Timing t(ctx_->timing_stack(), &Stats::execution_read);
+
+  // Use an access item if it already exists.
+  uint16_t bkt_id;
+  AccessBucket* bkt;
+  if (check_dup_access) {
+    if (access_bucket_count_ == 0) {
+      for (size_t i = 0; i < StaticConfig::kAccessBucketRootCount; i++) {
+        access_buckets_[i].count = 0;
+        access_buckets_[i].next = AccessBucket::kEmptyBucketID;
+      }
+      access_bucket_count_ = StaticConfig::kAccessBucketRootCount;
+    }
+
+    bkt_id = (reinterpret_cast<size_t>(tbl) / 64 + row_id) %
+             StaticConfig::kAccessBucketRootCount;
+    bkt = &access_buckets_[bkt_id];
+    while (true) {
+      for (auto i = 0; i < bkt->count; i++) {
+        auto item = &accesses_[bkt->idx[i]];
+        if (item->row_id == row_id && item->tbl == tbl &&
+            item->cf_id == cf_id) {
+          rah.access_item_ = item;
+          return true;
+        }
+      }
+      if (bkt->next == AccessBucket::kEmptyBucketID) break;
+      bkt_id = bkt->next;
+      bkt = &access_buckets_[bkt_id];
+    }
+  }
+
+  while (!ctx_->is_allocated(tbl, row_id))
+    ::mica::util::pause();
 
   auto head = tbl->head(cf_id, row_id);
   if (StaticConfig::kInlinedRowVersion && StaticConfig::kInlineWithAltRow &&
@@ -294,10 +570,8 @@ bool Transaction<StaticConfig>::peek_row(RAH& rah, Table<StaticConfig>* tbl,
     (void)alt_head;
   }
 
-  if (IsReplica) {
-    while (head->inlined_rv->status != RowVersionStatus::kCommitted && head->older_rv == nullptr)
-      ::mica::util::pause();
-  }
+  while (head->inlined_rv->status != RowVersionStatus::kCommitted && head->older_rv == nullptr)
+    ::mica::util::pause();
 
   RowCommon<StaticConfig>* newer_rv = head;
   auto rv = head->older_rv;
@@ -692,7 +966,6 @@ RowVersionStatus Transaction<StaticConfig>::wait_for_pending(
 }
 
 template <class StaticConfig>
-template <bool IsReplica>
 bool Transaction<StaticConfig>::insert_version_deferred() {
   for (auto j = 0; j < wset_size_; j++) {
     auto i = wset_idx_[j];
@@ -715,23 +988,17 @@ bool Transaction<StaticConfig>::insert_version_deferred() {
                item->state == RowAccessState::kDelete);
         locate<false, true, false>(item->newer_rv, rv);
       }
-      if (!IsReplica) {
-        if (rv == nullptr) {
-          if (StaticConfig::kReserveAfterAbort)
-            reserve(item->tbl, item->cf_id, item->row_id, false, true);
-          return false;
-        }
+      if (rv == nullptr) {
+        if (StaticConfig::kReserveAfterAbort)
+          reserve(item->tbl, item->cf_id, item->row_id, false, true);
+        return false;
       }
 
       auto older_rv = item->newer_rv->older_rv;
 
       // It seems that newer_rv got a new older_rv node.  We need to find
       // the new value for rv.
-      if (!IsReplica) {
-        if (older_rv->wts > ts_) continue;
-      } else {
-        if (older_rv != nullptr && older_rv->wts > ts_) continue;
-      }
+      if (older_rv->wts > ts_) continue;
 
       item->write_rv->older_rv = older_rv;
 
@@ -747,30 +1014,78 @@ bool Transaction<StaticConfig>::insert_version_deferred() {
       // Mark the write set item that this row version is visible.
       item->inserted = 1;
 
-      if (!IsReplica) {
-        if (rv->rts.get() > ts_) {
-          // Oops, someone has updated rts just before the row insert.  We did
-          // this checking earlier, but we can do this again to stop inserting
-          // more stuff.
+      if (rv->rts.get() > ts_) {
+        // Oops, someone has updated rts just before the row insert.  We did
+        // this checking earlier, but we can do this again to stop inserting
+        // more stuff.
+        if (StaticConfig::kReserveAfterAbort)
+          reserve(item->tbl, item->cf_id, item->row_id,
+                  item->state == RowAccessState::kReadWrite ||
+                  item->state == RowAccessState::kReadDelete,
+                  true);
+        return false;
+      }
+      break;
+    }
+  }
+
+  return true;
+}
+
+template <class StaticConfig>
+bool Transaction<StaticConfig>::insert_version_deferred_replica() {
+  for (auto j = 0; j < wset_size_; j++) {
+    auto i = wset_idx_[j];
+    auto item = &accesses_[i];
+    assert(item->write_rv != nullptr);
+
+    while (true) {
+      auto rv = item->newer_rv->older_rv;
+      if (item->state == RowAccessState::kReadWrite ||
+          item->state == RowAccessState::kReadDelete) {
+        locate<true, true, false>(item->newer_rv, rv);
+        // Read version changed; abort here without going to validation.
+        if (rv != item->read_rv) {
           if (StaticConfig::kReserveAfterAbort)
-            reserve(item->tbl, item->cf_id, item->row_id,
-                    item->state == RowAccessState::kReadWrite ||
-                    item->state == RowAccessState::kReadDelete,
-                    true);
+            reserve(item->tbl, item->cf_id, item->row_id, true, true);
           return false;
         }
       } else {
-        if (rv != nullptr && rv->rts.get() > ts_) {
-          // Oops, someone has updated rts just before the row insert.  We did
-          // this checking earlier, but we can do this again to stop inserting
-          // more stuff.
-          if (StaticConfig::kReserveAfterAbort)
-            reserve(item->tbl, item->cf_id, item->row_id,
-                    item->state == RowAccessState::kReadWrite ||
-                    item->state == RowAccessState::kReadDelete,
-                    true);
-          return false;
-        }
+        assert(item->state == RowAccessState::kWrite ||
+               item->state == RowAccessState::kDelete);
+        locate<false, true, false>(item->newer_rv, rv);
+      }
+
+      auto older_rv = item->newer_rv->older_rv;
+
+      // It seems that newer_rv got a new older_rv node.  We need to find
+      // the new value for rv.
+      if (older_rv != nullptr && older_rv->wts > ts_) continue;
+
+      item->write_rv->older_rv = older_rv;
+
+      // auto actual_older_rv = __sync_val_compare_and_swap(
+      //     &item->newer_rv->older_rv, older_rv, item->write_rv);
+      //
+      // // Found a newly inserted version that could be used as a read version.
+      // if (older_rv != actual_older_rv) continue;
+      if (!__sync_bool_compare_and_swap(&item->newer_rv->older_rv, older_rv,
+                                        item->write_rv))
+        continue;
+
+      // Mark the write set item that this row version is visible.
+      item->inserted = 1;
+
+      if (rv != nullptr && rv->rts.get() > ts_) {
+        // Oops, someone has updated rts just before the row insert.  We did
+        // this checking earlier, but we can do this again to stop inserting
+        // more stuff.
+        if (StaticConfig::kReserveAfterAbort)
+          reserve(item->tbl, item->cf_id, item->row_id,
+                  item->state == RowAccessState::kReadWrite ||
+                  item->state == RowAccessState::kReadDelete,
+                  true);
+        return false;
       }
       break;
     }

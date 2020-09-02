@@ -12,10 +12,6 @@ namespace transaction {
 
 using mica::util::PosixIO;
 
-struct NoopWriteFunc {
-  bool operator()() const { return true; }
-};
-
 template <class StaticConfig>
 CopyCat<StaticConfig>::CopyCat(DB<StaticConfig>* db, uint16_t nloggers,
                                uint16_t nworkers, std::string logdir)
@@ -134,7 +130,7 @@ void CopyCat<StaticConfig>::insert_data_row(Context<StaticConfig>* ctx,
     }
   } else if (tx->ts() != txn_ts) {
     Result result;
-    tx->template commit<NoopWriteFunc, true>(&result);
+    tx->commit_replica(&result);
     if (result != Result::kCommitted) {
       throw std::runtime_error("insert_data_row: Failed to commit transaction.");
     }
@@ -151,7 +147,7 @@ void CopyCat<StaticConfig>::insert_data_row(Context<StaticConfig>* ctx,
       throw std::runtime_error("insert_data_row: Failed to upsert row " + le->row_id);
     }
   } else {
-    if (!rah->new_row(tbl, le->cf_id, le->row_id, false, le->data_size)) {
+    if (!rah->new_row_replica(tbl, le->cf_id, le->row_id, false, le->data_size)) {
       throw std::runtime_error("insert_data_row: Failed to create new row " + le->row_id);
     }
   }
@@ -191,7 +187,7 @@ void CopyCat<StaticConfig>::insert_hash_idx_row(Context<StaticConfig>* ctx,
     }
   } else if (tx->ts() != txn_ts) {
     Result result;
-    tx->template commit<NoopWriteFunc, true>(&result);
+    tx->commit_replica(&result);
     if (result != Result::kCommitted) {
       throw std::runtime_error("insert_hash_idx_row: Failed to commit transaction.");
     }
@@ -209,7 +205,7 @@ void CopyCat<StaticConfig>::insert_hash_idx_row(Context<StaticConfig>* ctx,
       throw std::runtime_error("insert_hash_idx_row: Failed to upsert row " + le->row_id);
     }
   } else {
-    if (!rah->new_row(tbl, le->cf_id, le->row_id, false, le->data_size)) {
+    if (!rah->new_row_replica(tbl, le->cf_id, le->row_id, false, le->data_size)) {
       throw std::runtime_error("insert_hash_idx_row: Failed to create new row " + le->row_id);
     }
   }
@@ -259,7 +255,7 @@ void CopyCat<StaticConfig>::write_data_row(Context<StaticConfig>* ctx,
     }
   } else if (tx->ts() != txn_ts) {
     Result result;
-    tx->template commit<NoopWriteFunc, true>(&result);
+    tx->commit_replica(&result);
     if (result != Result::kCommitted) {
       throw std::runtime_error("write_data_row: Failed to commit transaction.");
     }
@@ -271,7 +267,7 @@ void CopyCat<StaticConfig>::write_data_row(Context<StaticConfig>* ctx,
 
   rah->reset();
 
-  if (!rah->template peek_row<true>(tbl, le->cf_id, le->row_id, false, false, true) ||
+  if (!rah->peek_row_replica(tbl, le->cf_id, le->row_id, false, false, true) ||
       !rah->write_row(le->data_size)) {
     throw std::runtime_error("write_data_row: Failed to write row.");
   }
@@ -310,7 +306,7 @@ void CopyCat<StaticConfig>::write_hash_idx_row(Context<StaticConfig>* ctx,
     }
   } else if (tx->ts() != txn_ts) {
     Result result;
-    tx->template commit<NoopWriteFunc, true>(&result);
+    tx->commit_replica(&result);
     if (result != Result::kCommitted) {
       throw std::runtime_error("write_hash_idx_row: Failed to commit transaction.");
     }
@@ -322,7 +318,7 @@ void CopyCat<StaticConfig>::write_hash_idx_row(Context<StaticConfig>* ctx,
 
   rah->reset();
 
-  if (!rah->template peek_row<true>(tbl, le->cf_id, le->row_id, false, false, true)) {
+  if (!rah->peek_row_replica(tbl, le->cf_id, le->row_id, false, false, true)) {
     throw std::runtime_error("write_hash_idx_row: Failed to write row: peek");
   }
 
@@ -404,7 +400,7 @@ void CopyCat<StaticConfig>::worker_thread(DB<StaticConfig>* db, uint16_t id) {
 
   if (tx.has_began()) {
     Result result;
-    tx.template commit<NoopWriteFunc, true>(&result);
+    tx.commit_replica(&result);
     if (result != Result::kCommitted) {
       throw std::runtime_error("Failed to commit transaction.");
     }

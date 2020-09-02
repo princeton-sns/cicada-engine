@@ -69,6 +69,10 @@ class Transaction {
   bool new_row(RAH& rah, Table<StaticConfig>* tbl, uint16_t cf_id,
                uint64_t row_id, bool check_dup_access,
                uint64_t data_size, const DataCopier& data_copier);
+  template <class DataCopier>
+  bool new_row_replica(RAH& rah, Table<StaticConfig>* tbl, uint16_t cf_id,
+                       uint64_t row_id, bool check_dup_access,
+                       uint64_t data_size, const DataCopier& data_copier);
 
   template <class DataCopier>
   bool upsert_row(RAH& rah, Table<StaticConfig>* tbl, uint16_t cf_id,
@@ -77,10 +81,12 @@ class Transaction {
 
   void prefetch_row(Table<StaticConfig>* tbl, uint16_t cf_id, uint64_t row_id,
                     uint64_t off, uint64_t len);
-  template <bool IsReplica>
   bool peek_row(RAH& rah, Table<StaticConfig>* tbl, uint16_t cf_id,
                 uint64_t row_id, bool check_dup_access, bool read_hint,
                 bool write_hint);
+  bool peek_row_replica(RAH& rah, Table<StaticConfig>* tbl, uint16_t cf_id,
+                        uint64_t row_id, bool check_dup_access, bool read_hint,
+                        bool write_hint);
   bool peek_row(RAHPO& rah, Table<StaticConfig>* tbl, uint16_t cf_id,
                 uint64_t row_id, bool check_dup_access);
   template <class DataCopier>
@@ -93,9 +99,12 @@ class Transaction {
   struct NoopWriteFunc {
     bool operator()() const { return true; }
   };
-  template <class WriteFunc = NoopWriteFunc, bool IsReplica = false>
+  template <class WriteFunc = NoopWriteFunc>
   bool commit(Result* detail = nullptr,
               const WriteFunc& write_func = WriteFunc());
+  template <class WriteFunc = NoopWriteFunc>
+  bool commit_replica(Result* detail = nullptr,
+                      const WriteFunc& write_func = WriteFunc());
   bool abort(bool skip_backoff = false);
 
   bool has_began() const { return began_; }
@@ -125,8 +134,8 @@ class Transaction {
   template <bool ForRead, bool ForWrite, bool ForValidation>
   void locate(RowCommon<StaticConfig>*& newer_rv,
               RowVersion<StaticConfig>*& rv);
-  template <bool IsReplica>
   bool insert_version_deferred();
+  bool insert_version_deferred_replica();
   RowVersionStatus wait_for_pending(RowVersion<StaticConfig>* rv);
   void insert_row_deferred();
 

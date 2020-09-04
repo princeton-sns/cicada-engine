@@ -771,155 +771,155 @@ int main(int argc, const char* argv[]) {
     printf("Preprocessing logs\n");
     ccc.preprocess_logs();
 
-    printf("Starting cloned concurrency control INIT\n");
-    replica.reset_stats();
-    replica.reset_backoff();
-    ccc.start_workers();
-    // int64_t starttime = get_server_clock();
-    ccc.stop_workers();
-    // int64_t endtime = get_server_clock();
+    // printf("Starting cloned concurrency control INIT\n");
+    // replica.reset_stats();
+    // replica.reset_backoff();
+    // ccc.start_workers();
+    // // int64_t starttime = get_server_clock();
+    // ccc.stop_workers();
+    // // int64_t endtime = get_server_clock();
 
-    printf("Starting cloned concurrency control WARMUP\n");
-    ccc.set_logdir(std::string{MICA_RELAY_WARMUP_DIR});
-    replica.reset_stats();
-    replica.reset_backoff();
-    ccc.start_workers();
-    // starttime = get_server_clock();
-    ccc.stop_workers();
-    // endtime = get_server_clock();
+    // printf("Starting cloned concurrency control WARMUP\n");
+    // ccc.set_logdir(std::string{MICA_RELAY_WARMUP_DIR});
+    // replica.reset_stats();
+    // replica.reset_backoff();
+    // ccc.start_workers();
+    // // starttime = get_server_clock();
+    // ccc.stop_workers();
+    // // endtime = get_server_clock();
 
-    printf("Starting cloned concurrency control WORKLOAD\n");
-    ccc.set_logdir(std::string{MICA_RELAY_WORKLOAD_DIR});
-    replica.reset_stats();
-    replica.reset_backoff();
-    ccc.start_workers();
-    // starttime = get_server_clock();
-    ccc.stop_workers();
+    // printf("Starting cloned concurrency control WORKLOAD\n");
+    // ccc.set_logdir(std::string{MICA_RELAY_WORKLOAD_DIR});
+    // replica.reset_stats();
+    // replica.reset_backoff();
+    // ccc.start_workers();
+    // // starttime = get_server_clock();
+    // ccc.stop_workers();
     // endtime = get_server_clock();
   }
 
-  db.activate(0);
-  replica.activate(0);
-  {
-    printf("Verifying replica state\n");
+  // db.activate(0);
+  // replica.activate(0);
+  // {
+  //   printf("Verifying replica state\n");
 
-    auto db_tables = db.get_all_tables();
-    auto replica_tables = replica.get_all_tables();
+  //   auto db_tables = db.get_all_tables();
+  //   auto replica_tables = replica.get_all_tables();
 
-    for (const auto& t : db_tables) {
-      auto search = replica_tables.find(t.first);
-      if (search == replica_tables.end()) {
-        fprintf(stderr, "Replica does not contain table: %s\n",
-                t.first.c_str());
-        return EXIT_FAILURE;
-      }
-    }
+  //   for (const auto& t : db_tables) {
+  //     auto search = replica_tables.find(t.first);
+  //     if (search == replica_tables.end()) {
+  //       fprintf(stderr, "Replica does not contain table: %s\n",
+  //               t.first.c_str());
+  //       return EXIT_FAILURE;
+  //     }
+  //   }
 
-    auto db_hash_idxs = db.get_all_hash_index_unique_u64();
-    auto replica_hash_idxs = replica.get_all_hash_index_unique_u64();
+  //   auto db_hash_idxs = db.get_all_hash_index_unique_u64();
+  //   auto replica_hash_idxs = replica.get_all_hash_index_unique_u64();
 
-    for (const auto& h : db_hash_idxs) {
-      auto search = replica_hash_idxs.find(h.first);
-      if (search == replica_hash_idxs.end()) {
-        fprintf(stderr, "Replica does not contain hash index: %s\n",
-                h.first.c_str());
-        return EXIT_FAILURE;
-      }
-    }
+  //   for (const auto& h : db_hash_idxs) {
+  //     auto search = replica_hash_idxs.find(h.first);
+  //     if (search == replica_hash_idxs.end()) {
+  //       fprintf(stderr, "Replica does not contain hash index: %s\n",
+  //               h.first.c_str());
+  //       return EXIT_FAILURE;
+  //     }
+  //   }
 
-    Transaction db_tx(db.context(0));
-    Transaction replica_tx(replica.context(0));
+  //   Transaction db_tx(db.context(0));
+  //   Transaction replica_tx(replica.context(0));
 
-    db_tx.begin(false);
-    replica_tx.begin(false);
+  //   db_tx.begin(false);
+  //   replica_tx.begin(false);
 
-    for (const auto& h : db_hash_idxs) {
-      auto search = replica_hash_idxs.find(h.first);
-      if (search == replica_hash_idxs.end()) {
-        fprintf(stderr, "Replica does not contain hash index: %s\n",
-                h.first.c_str());
-        return EXIT_FAILURE;
-      }
+  //   for (const auto& h : db_hash_idxs) {
+  //     auto search = replica_hash_idxs.find(h.first);
+  //     if (search == replica_hash_idxs.end()) {
+  //       fprintf(stderr, "Replica does not contain hash index: %s\n",
+  //               h.first.c_str());
+  //       return EXIT_FAILURE;
+  //     }
 
-      auto db_idx = h.second;
-      auto replica_idx = search->second;
+  //     auto db_idx = h.second;
+  //     auto replica_idx = search->second;
 
-      for (uint64_t i = 0; i < num_rows; i++) {
-        uint64_t db_key = 75;
-        const char* db_data = nullptr;
-        auto db_lookup_res =
-            db_idx->lookup(&db_tx, i, true, [&db_key](auto& k, auto& v) {
-              (void)k;
-              db_key = v;
-              return false;
-            });
-        if (db_lookup_res != 1 || db_lookup_res == HashIndex::kHaveToAbort) {
-          fprintf(stderr, "Failed to lookup key in DB hash index %lu\n", i);
-          return EXIT_FAILURE;
-        } else {
-          printf("Found key in DB hash index %lu\n", i);
-        }
+  //     for (uint64_t i = 0; i < num_rows; i++) {
+  //       uint64_t db_key = 75;
+  //       const char* db_data = nullptr;
+  //       auto db_lookup_res =
+  //           db_idx->lookup(&db_tx, i, true, [&db_key](auto& k, auto& v) {
+  //             (void)k;
+  //             db_key = v;
+  //             return false;
+  //           });
+  //       if (db_lookup_res != 1 || db_lookup_res == HashIndex::kHaveToAbort) {
+  //         fprintf(stderr, "Failed to lookup key in DB hash index %lu\n", i);
+  //         return EXIT_FAILURE;
+  //       } else {
+  //         printf("Found key in DB hash index %lu\n", i);
+  //       }
 
-        RowAccessHandle db_rah(&db_tx);
-        if (!db_rah.peek_row(db_idx->main_table(), 0, db_key, false, true,
-                             false) ||
-            !db_rah.read_row()) {
-          fprintf(stderr, "Failed to lookup key in DB table %lu\n", i);
-          return EXIT_FAILURE;
-        }
+  //       RowAccessHandle db_rah(&db_tx);
+  //       if (!db_rah.peek_row(db_idx->main_table(), 0, db_key, false, true,
+  //                            false) ||
+  //           !db_rah.read_row()) {
+  //         fprintf(stderr, "Failed to lookup key in DB table %lu\n", i);
+  //         return EXIT_FAILURE;
+  //       }
 
-        db_data = db_rah.cdata();
+  //       db_data = db_rah.cdata();
 
-        uint64_t replica_key = 40;
-        const char* replica_data = nullptr;
-        auto replica_lookup_res = replica_idx->lookup(
-            &replica_tx, i, true, [&replica_key](auto& k, auto& v) {
-              (void)k;
-              replica_key = v;
-              return false;
-            });
-        if (replica_lookup_res != 1 ||
-            replica_lookup_res == HashIndex::kHaveToAbort) {
-          fprintf(stderr, "Failed to lookup key in replica hash index %lu\n",
-                  i);
-          return EXIT_FAILURE;
-        }
+  //       uint64_t replica_key = 40;
+  //       const char* replica_data = nullptr;
+  //       auto replica_lookup_res = replica_idx->lookup(
+  //           &replica_tx, i, true, [&replica_key](auto& k, auto& v) {
+  //             (void)k;
+  //             replica_key = v;
+  //             return false;
+  //           });
+  //       if (replica_lookup_res != 1 ||
+  //           replica_lookup_res == HashIndex::kHaveToAbort) {
+  //         fprintf(stderr, "Failed to lookup key in replica hash index %lu\n",
+  //                 i);
+  //         return EXIT_FAILURE;
+  //       }
 
-        RowAccessHandle replica_rah(&db_tx);
-        if (!replica_rah.peek_row(replica_idx->main_table(), 0, replica_key,
-                                  false, true, false) ||
-            !replica_rah.read_row()) {
-          fprintf(stderr, "Failed to lookup key in replica table %lu\n", i);
-          return EXIT_FAILURE;
-        }
+  //       RowAccessHandle replica_rah(&db_tx);
+  //       if (!replica_rah.peek_row(replica_idx->main_table(), 0, replica_key,
+  //                                 false, true, false) ||
+  //           !replica_rah.read_row()) {
+  //         fprintf(stderr, "Failed to lookup key in replica table %lu\n", i);
+  //         return EXIT_FAILURE;
+  //       }
 
-        replica_data = replica_rah.cdata();
+  //       replica_data = replica_rah.cdata();
 
-        if (db_key == replica_key) {
-          fprintf(stderr, "DB and replica index values match: %lu\n", i);
-        } else {
-          fprintf(stderr, "DB and replica index values do not match: %lu\n", i);
-        }
+  //       if (db_key == replica_key) {
+  //         fprintf(stderr, "DB and replica index values match: %lu\n", i);
+  //       } else {
+  //         fprintf(stderr, "DB and replica index values do not match: %lu\n", i);
+  //       }
 
-        if (db_rah.size() == replica_rah.size()) {
-          fprintf(stderr, "DB and replica data sizes match: %lu\n", i);
-        } else {
-          fprintf(stderr, "DB and replica data sizes do now match: %lu\n", i);
-        }
+  //       if (db_rah.size() == replica_rah.size()) {
+  //         fprintf(stderr, "DB and replica data sizes match: %lu\n", i);
+  //       } else {
+  //         fprintf(stderr, "DB and replica data sizes do now match: %lu\n", i);
+  //       }
 
-        if (std::memcmp(db_data, replica_data, db_rah.size()) == 0) {
-          fprintf(stderr, "DB and replica table values match: %lu\n", i);
-        } else {
-          fprintf(stderr, "DB and replica table values do not match: %lu\n", i);
-        }
-      }
-    }
+  //       if (std::memcmp(db_data, replica_data, db_rah.size()) == 0) {
+  //         fprintf(stderr, "DB and replica table values match: %lu\n", i);
+  //       } else {
+  //         fprintf(stderr, "DB and replica table values do not match: %lu\n", i);
+  //       }
+  //     }
+  //   }
 
-    db_tx.commit();
-    replica_tx.commit();
-  }
-  db.deactivate(0);
-  replica.deactivate(0);
+  //   db_tx.commit();
+  //   replica_tx.commit();
+  // }
+  // db.deactivate(0);
+  // replica.deactivate(0);
 
   {
     printf("cleaning up\n");

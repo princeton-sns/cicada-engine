@@ -467,6 +467,8 @@ void CopyCat<StaticConfig>::preprocess_logs() {
   // Allocate out file
   int out_fd = PosixIO::Open(outfname.c_str(), O_RDWR | O_CREAT,
                              S_IRUSR | S_IWUSR | S_IRGRP | S_IROTH);
+
+  outf_size = len_ * ((outf_size + (len_ - 1)) / len_); // Round up to next multiple of len_
   PosixIO::Ftruncate(out_fd, static_cast<off_t>(outf_size));
   void* out_addr = PosixIO::Mmap(nullptr, outf_size, PROT_READ | PROT_WRITE,
                                  MAP_SHARED, out_fd, 0);
@@ -482,13 +484,13 @@ void CopyCat<StaticConfig>::preprocess_logs() {
   uint64_t file_index = 0;
   for (uint16_t thread_id = 0; thread_id < nloggers_; thread_id++) {
     MmappedLogFile mlf = try_open_log_file(logdir_, thread_id, file_index);
-    if (mlf.fd != -1) {
+    if (mlf.fd != -1 && mlf.nentries != 0) {
       lfs.push_back(mlf);
     }
   }
 
   // Sort log files by transaction timestamp
-  while (true) {
+  while (lfs.size() != 0) {
     uint64_t min_txn_ts = static_cast<uint64_t>(-1);
     char* min_addr = nullptr;
     std::size_t min_size = 0;
@@ -496,8 +498,11 @@ void CopyCat<StaticConfig>::preprocess_logs() {
     // Find log file with min transaction timestamp
     for (std::size_t i = 0; i < lfs.size(); i++) {
       MmappedLogFile lf = lfs[i];
+
       LogEntry<StaticConfig>* le =
           reinterpret_cast<LogEntry<StaticConfig>*>(lf.cur_ptr);
+
+      le->print();
 
       CreateTableLogEntry<StaticConfig>* ctle = nullptr;
       CreateHashIndexLogEntry<StaticConfig>* chile = nullptr;
@@ -509,34 +514,12 @@ void CopyCat<StaticConfig>::preprocess_logs() {
           ctle = static_cast<CreateTableLogEntry<StaticConfig>*>(le);
           // ctle->print();
           create_table(db_, ctle);
-          lf.cur_ptr += le->size;
-          lf.cur_n += 1;
-          if (lf.cur_n == lf.nentries) {
-            PosixIO::Munmap(lf.start, lf.len);
-            PosixIO::Close(lf.fd);
-
-            lf = try_open_log_file(logdir_, lf.thread_id, lf.file_index + 1);
-            if (lf.fd == -1) {  // No more log files for this thread ID
-              lfs_to_remove.push_back(i);
-            }
-          }
           break;
 
         case LogEntryType::CREATE_HASH_IDX:
           chile = static_cast<CreateHashIndexLogEntry<StaticConfig>*>(le);
           // chile->print();
           create_hash_index(db_, chile);
-          lf.cur_ptr += le->size;
-          lf.cur_n += 1;
-          if (lf.cur_n == lf.nentries) {
-            PosixIO::Munmap(lf.start, lf.len);
-            PosixIO::Close(lf.fd);
-
-            lf = try_open_log_file(logdir_, lf.thread_id, lf.file_index + 1);
-            if (lf.fd == -1) {  // No more log files for this thread ID
-              lfs_to_remove.push_back(i);
-            }
-          }
           break;
 
         case LogEntryType::INSERT_ROW:
@@ -553,7 +536,7 @@ void CopyCat<StaticConfig>::preprocess_logs() {
           wrle = static_cast<WriteRowLogEntry<StaticConfig>*>(le);
           // wrle->print();
           if (wrle->txn_ts < min_txn_ts) {
-            min_txn_ts = irle->txn_ts;
+            min_txn_ts = wrle->txn_ts;
             min_addr = reinterpret_cast<char*>(le);
             min_size = le->size;
           }
@@ -564,7 +547,19 @@ void CopyCat<StaticConfig>::preprocess_logs() {
               "preprocess_logs: Unexpected log entry type.");
       }
 
+      lf.cur_ptr += le->size;
+      lf.cur_n += 1;
+      if (lf.cur_n == lf.nentries) {
+        lfs_to_remove.push_back(i);
+      }
+
       lfs[i] = lf;
+    }
+
+    if (min_txn_ts != static_cast<uint64_t>(-1)) {
+      printf("min_txn_ts: %lu\n", min_txn_ts);
+      std::memcpy(out_cur, min_addr, min_size);
+      out_cur += min_size;
     }
 
     // Remove lfs
@@ -573,72 +568,19 @@ void CopyCat<StaticConfig>::preprocess_logs() {
       MmappedLogFile lf = lfs[i];
       PosixIO::Munmap(lf.start, lf.len);
       PosixIO::Close(lf.fd);
-      lfs.erase(lfs.begin() + static_cast<long int>(i));
+
+      lf = try_open_log_file(logdir_, lf.thread_id, lf.file_index + 1);
+      if (lf.fd == -1) {  // No more log files for this thread ID
+        lfs.erase(lfs.begin() + static_cast<long int>(i));
+      } else {
+        lfs[i] = lf;
+      }
     }
     lfs_to_remove.clear();
-
-    if (lfs.size() == 0) break;  // No more log files
-    if (min_txn_ts == static_cast<uint64_t>(-1))
-      continue;  // All log files had create table or index entries at front
-
-    std::memcpy(out_cur, min_addr, min_size);
-    out_cur += min_size;
   }
 
   PosixIO::Munmap(out_addr, outf_size);
   PosixIO::Close(out_fd);
-
-  for (uint16_t thread_id = 0; thread_id < nloggers_; thread_id++) {
-    for (uint64_t file_index = 0;; file_index++) {
-      std::string fname = logdir_ + "/out." + std::to_string(thread_id) + "." +
-                          std::to_string(file_index) + ".log";
-
-      if (!PosixIO::Exists(fname.c_str())) break;
-
-      int fd = PosixIO::Open(fname.c_str(), O_RDONLY);
-      void* start = PosixIO::Mmap(nullptr, len_, PROT_READ, MAP_SHARED, fd, 0);
-
-      LogFile<StaticConfig>* lf = static_cast<LogFile<StaticConfig>*>(start);
-      lf->print();
-
-      char* ptr = reinterpret_cast<char*>(&lf->entries[0]);
-
-      CreateTableLogEntry<StaticConfig>* ctle = nullptr;
-      CreateHashIndexLogEntry<StaticConfig>* chile = nullptr;
-
-      for (uint64_t i = 0; i < lf->nentries; i++) {
-        LogEntry<StaticConfig>* le =
-            reinterpret_cast<LogEntry<StaticConfig>*>(ptr);
-        // le->print();
-
-        switch (le->type) {
-          case LogEntryType::CREATE_TABLE:
-            ctle = static_cast<CreateTableLogEntry<StaticConfig>*>(le);
-            create_table(db_, ctle);
-            // ctle->print();
-            break;
-
-          case LogEntryType::CREATE_HASH_IDX:
-            chile = static_cast<CreateHashIndexLogEntry<StaticConfig>*>(le);
-            create_hash_index(db_, chile);
-            // chile->print();
-            break;
-
-          case LogEntryType::INSERT_ROW:
-          case LogEntryType::WRITE_ROW:
-            break;
-          default:
-            throw std::runtime_error(
-                "preprocess_logs: Unexpected log entry type.");
-        }
-
-        ptr += le->size;
-      }
-
-      PosixIO::Munmap(start, len_);
-      PosixIO::Close(fd);
-    }
-  }
 }
 
 template <class StaticConfig>

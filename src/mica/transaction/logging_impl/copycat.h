@@ -21,8 +21,7 @@ CopyCat<StaticConfig>::CopyCat(DB<StaticConfig>* db, uint16_t nloggers,
       nworkers_{nworkers},
       logdir_{logdir},
       workers_{},
-      workers_stop_{false}
-{
+      workers_stop_{false} {
   int ret = pthread_barrier_init(&worker_barrier_, nullptr, nworkers + 1);
   if (ret != 0) {
     throw std::runtime_error("Failed to init worker barrier: " + ret);
@@ -110,10 +109,9 @@ void CopyCat<StaticConfig>::insert_row(Context<StaticConfig>* ctx,
 }
 
 template <class StaticConfig>
-void CopyCat<StaticConfig>::insert_data_row(Context<StaticConfig>* ctx,
-                                            Transaction<StaticConfig>* tx,
-                                            RowAccessHandle<StaticConfig>* rah,
-                                            InsertRowLogEntry<StaticConfig>* le) {
+void CopyCat<StaticConfig>::insert_data_row(
+    Context<StaticConfig>* ctx, Transaction<StaticConfig>* tx,
+    RowAccessHandle<StaticConfig>* rah, InsertRowLogEntry<StaticConfig>* le) {
   auto db = ctx->db();
   Table<StaticConfig>* tbl = db->get_table(std::string{le->tbl_name});
   if (tbl == nullptr) {
@@ -132,7 +130,8 @@ void CopyCat<StaticConfig>::insert_data_row(Context<StaticConfig>* ctx,
     Result result;
     tx->commit_replica(&result);
     if (result != Result::kCommitted) {
-      throw std::runtime_error("insert_data_row: Failed to commit transaction.");
+      throw std::runtime_error(
+          "insert_data_row: Failed to commit transaction.");
     }
 
     if (!tx->begin(false, &txn_ts)) {
@@ -144,11 +143,14 @@ void CopyCat<StaticConfig>::insert_data_row(Context<StaticConfig>* ctx,
 
   if (StaticConfig::kReplUseUpsert) {
     if (!rah->upsert_row(tbl, le->cf_id, le->row_id, false, le->data_size)) {
-      throw std::runtime_error("insert_data_row: Failed to upsert row " + le->row_id);
+      throw std::runtime_error("insert_data_row: Failed to upsert row " +
+                               le->row_id);
     }
   } else {
-    if (!rah->new_row_replica(tbl, le->cf_id, le->row_id, false, le->data_size)) {
-      throw std::runtime_error("insert_data_row: Failed to create new row " + le->row_id);
+    if (!rah->new_row_replica(tbl, le->cf_id, le->row_id, false,
+                              le->data_size)) {
+      throw std::runtime_error("insert_data_row: Failed to create new row " +
+                               le->row_id);
     }
   }
 
@@ -157,10 +159,9 @@ void CopyCat<StaticConfig>::insert_data_row(Context<StaticConfig>* ctx,
 }
 
 template <class StaticConfig>
-void CopyCat<StaticConfig>::insert_hash_idx_row(Context<StaticConfig>* ctx,
-                                                Transaction<StaticConfig>* tx,
-                                                RowAccessHandle<StaticConfig>* rah,
-                                                InsertRowLogEntry<StaticConfig>* le) {
+void CopyCat<StaticConfig>::insert_hash_idx_row(
+    Context<StaticConfig>* ctx, Transaction<StaticConfig>* tx,
+    RowAccessHandle<StaticConfig>* rah, InsertRowLogEntry<StaticConfig>* le) {
   auto db = ctx->db();
 
   auto unique_hash_idx =
@@ -175,7 +176,8 @@ void CopyCat<StaticConfig>::insert_hash_idx_row(Context<StaticConfig>* ctx,
   }
 
   if (tbl == nullptr) {
-    throw std::runtime_error("insert_hash_idx_row: Failed to find index table.");
+    throw std::runtime_error(
+        "insert_hash_idx_row: Failed to find index table.");
   }
 
   typename StaticConfig::Timestamp txn_ts;
@@ -183,30 +185,35 @@ void CopyCat<StaticConfig>::insert_hash_idx_row(Context<StaticConfig>* ctx,
 
   if (!tx->has_began()) {
     if (!tx->begin(false, &txn_ts)) {
-      throw std::runtime_error("insert_hash_idx_row: Failed to begin transaction.");
+      throw std::runtime_error(
+          "insert_hash_idx_row: Failed to begin transaction.");
     }
   } else if (tx->ts() != txn_ts) {
     Result result;
     tx->commit_replica(&result);
     if (result != Result::kCommitted) {
-      throw std::runtime_error("insert_hash_idx_row: Failed to commit transaction.");
+      throw std::runtime_error(
+          "insert_hash_idx_row: Failed to commit transaction.");
     }
 
     if (!tx->begin(false, &txn_ts)) {
-      throw std::runtime_error("insert_hash_idx_row: Failed to begin transaction.");
+      throw std::runtime_error(
+          "insert_hash_idx_row: Failed to begin transaction.");
     }
   }
 
   rah->reset();
 
-
   if (StaticConfig::kReplUseUpsert) {
     if (!rah->upsert_row(tbl, le->cf_id, le->row_id, false, le->data_size)) {
-      throw std::runtime_error("insert_hash_idx_row: Failed to upsert row " + le->row_id);
+      throw std::runtime_error("insert_hash_idx_row: Failed to upsert row " +
+                               le->row_id);
     }
   } else {
-    if (!rah->new_row_replica(tbl, le->cf_id, le->row_id, false, le->data_size)) {
-      throw std::runtime_error("insert_hash_idx_row: Failed to create new row " + le->row_id);
+    if (!rah->new_row_replica(tbl, le->cf_id, le->row_id, false,
+                              le->data_size)) {
+      throw std::runtime_error(
+          "insert_hash_idx_row: Failed to create new row " + le->row_id);
     }
   }
 
@@ -277,10 +284,9 @@ void CopyCat<StaticConfig>::write_data_row(Context<StaticConfig>* ctx,
 }
 
 template <class StaticConfig>
-void CopyCat<StaticConfig>::write_hash_idx_row(Context<StaticConfig>* ctx,
-                                               Transaction<StaticConfig>* tx,
-                                               RowAccessHandle<StaticConfig>* rah,
-                                               WriteRowLogEntry<StaticConfig>* le) {
+void CopyCat<StaticConfig>::write_hash_idx_row(
+    Context<StaticConfig>* ctx, Transaction<StaticConfig>* tx,
+    RowAccessHandle<StaticConfig>* rah, WriteRowLogEntry<StaticConfig>* le) {
   auto db = ctx->db();
   auto unique_hash_idx =
       db->get_hash_index_unique_u64(std::string{le->tbl_name});
@@ -302,17 +308,20 @@ void CopyCat<StaticConfig>::write_hash_idx_row(Context<StaticConfig>* ctx,
 
   if (!tx->has_began()) {
     if (!tx->begin(false, &txn_ts)) {
-      throw std::runtime_error("write_hash_idx_row: Failed to begin transaction.");
+      throw std::runtime_error(
+          "write_hash_idx_row: Failed to begin transaction.");
     }
   } else if (tx->ts() != txn_ts) {
     Result result;
     tx->commit_replica(&result);
     if (result != Result::kCommitted) {
-      throw std::runtime_error("write_hash_idx_row: Failed to commit transaction.");
+      throw std::runtime_error(
+          "write_hash_idx_row: Failed to commit transaction.");
     }
 
     if (!tx->begin(false, &txn_ts)) {
-      throw std::runtime_error("write_hash_idx_row: Failed to begin transaction.");
+      throw std::runtime_error(
+          "write_hash_idx_row: Failed to begin transaction.");
     }
   }
 
@@ -338,15 +347,14 @@ void CopyCat<StaticConfig>::worker_thread(DB<StaticConfig>* db, uint16_t id) {
   db->activate(id);
 
   Context<StaticConfig>* ctx = db->context(id);
-  Transaction<StaticConfig> tx {ctx};
-  RowAccessHandle<StaticConfig> rah {&tx};
+  Transaction<StaticConfig> tx{ctx};
+  RowAccessHandle<StaticConfig> rah{&tx};
 
   pthread_barrier_wait(&worker_barrier_);
 
   while (true) {
     for (uint64_t file_index = 0;; file_index++) {
-      std::string fname = logdir_ + "/out." +
-                          std::to_string(id) + "." +
+      std::string fname = logdir_ + "/out." + std::to_string(id) + "." +
                           std::to_string(file_index) + ".log";
 
       if (!PosixIO::Exists(fname.c_str())) break;
@@ -384,7 +392,8 @@ void CopyCat<StaticConfig>::worker_thread(DB<StaticConfig>* db, uint16_t id) {
           case LogEntryType::CREATE_HASH_IDX:
             break;
           default:
-            throw std::runtime_error("worker_thread: Unexpected log entry type.");
+            throw std::runtime_error(
+                "worker_thread: Unexpected log entry type.");
         }
 
         ptr += le->size;
@@ -411,11 +420,177 @@ void CopyCat<StaticConfig>::worker_thread(DB<StaticConfig>* db, uint16_t id) {
 }
 
 template <class StaticConfig>
-  void CopyCat<StaticConfig>::preprocess_logs() {
+typename CopyCat<StaticConfig>::MmappedLogFile
+CopyCat<StaticConfig>::try_open_log_file(std::string logdir, uint16_t thread_id,
+                                         uint64_t file_index) {
+  std::string fname = logdir + "/out." + std::to_string(thread_id) + "." +
+                      std::to_string(file_index) + ".log";
+
+  if (PosixIO::Exists(fname.c_str())) {
+    int fd = PosixIO::Open(fname.c_str(), O_RDONLY);
+    void* start = PosixIO::Mmap(nullptr, len_, PROT_READ, MAP_SHARED, fd, 0);
+
+    LogFile<StaticConfig>* lf = static_cast<LogFile<StaticConfig>*>(start);
+
+    char* cur_ptr = reinterpret_cast<char*>(&lf->entries[0]);
+    uint64_t nentries = lf->nentries;
+    uint64_t cur_n = 0;
+
+    return MmappedLogFile{thread_id, file_index, start, cur_ptr, nentries, cur_n, len_, fd};
+  } else {
+    return MmappedLogFile{0, 0, nullptr, nullptr, 0, 0, 0, -1};
+  }
+}
+
+template <class StaticConfig>
+void CopyCat<StaticConfig>::preprocess_logs() {
+  const std::string outfname = logdir_ + "/out.log";
+
+  // Find file size
+  std::size_t outf_size = 0;
   for (uint16_t thread_id = 0; thread_id < nloggers_; thread_id++) {
     for (uint64_t file_index = 0;; file_index++) {
-      std::string fname = logdir_ + "/out." +
-                          std::to_string(thread_id) + "." +
+      MmappedLogFile mlf = try_open_log_file(logdir_, thread_id, file_index);
+      if (mlf.fd == -1) break;
+
+      LogFile<StaticConfig>* lf =
+          static_cast<LogFile<StaticConfig>*>(mlf.start);
+      lf->print();
+
+      outf_size += lf->size;
+
+      PosixIO::Munmap(mlf.start, mlf.len);
+      PosixIO::Close(mlf.fd);
+    }
+  }
+
+  // Allocate out file
+  int out_fd = PosixIO::Open(outfname.c_str(), O_RDWR | O_CREAT,
+                             S_IRUSR | S_IWUSR | S_IRGRP | S_IROTH);
+  PosixIO::Ftruncate(out_fd, static_cast<off_t>(outf_size));
+  void* out_addr = PosixIO::Mmap(nullptr, outf_size, PROT_READ | PROT_WRITE,
+                                 MAP_SHARED, out_fd, 0);
+  char* out_cur = static_cast<char*>(out_addr);
+  LogFile<StaticConfig>* lf = reinterpret_cast<LogFile<StaticConfig>*>(out_cur);
+  lf->nentries = 0;
+  lf->size = sizeof(LogFile<StaticConfig>);
+  out_cur = reinterpret_cast<char*>(&lf->entries[0]);
+
+  std::vector<MmappedLogFile> lfs{};
+  std::vector<std::size_t> lfs_to_remove{};
+
+  uint64_t file_index = 0;
+  for (uint16_t thread_id = 0; thread_id < nloggers_; thread_id++) {
+    MmappedLogFile mlf = try_open_log_file(logdir_, thread_id, file_index);
+    if (mlf.fd != -1) {
+      lfs.push_back(mlf);
+    }
+  }
+
+  // Sort log files by transaction timestamp
+  while (true) {
+    uint64_t min_txn_ts = static_cast<uint64_t>(-1);
+    char* min_addr = nullptr;
+    std::size_t min_size = 0;
+
+    // Find log file with min transaction timestamp
+    for (std::size_t i = 0; i < lfs.size(); i++) {
+      MmappedLogFile lf = lfs[i];
+      LogEntry<StaticConfig>* le =
+          reinterpret_cast<LogEntry<StaticConfig>*>(lf.cur_ptr);
+
+      CreateTableLogEntry<StaticConfig>* ctle = nullptr;
+      CreateHashIndexLogEntry<StaticConfig>* chile = nullptr;
+      InsertRowLogEntry<StaticConfig>* irle = nullptr;
+      WriteRowLogEntry<StaticConfig>* wrle = nullptr;
+
+      switch (le->type) {
+        case LogEntryType::CREATE_TABLE:
+          ctle = static_cast<CreateTableLogEntry<StaticConfig>*>(le);
+          // ctle->print();
+          create_table(db_, ctle);
+          lf.cur_ptr += le->size;
+          lf.cur_n += 1;
+          if (lf.cur_n == lf.nentries) {
+            PosixIO::Munmap(lf.start, lf.len);
+            PosixIO::Close(lf.fd);
+
+            lf = try_open_log_file(logdir_, lf.thread_id, lf.file_index + 1);
+            if (lf.fd == -1) {  // No more log files for this thread ID
+              lfs_to_remove.push_back(i);
+            }
+          }
+          break;
+
+        case LogEntryType::CREATE_HASH_IDX:
+          chile = static_cast<CreateHashIndexLogEntry<StaticConfig>*>(le);
+          // chile->print();
+          create_hash_index(db_, chile);
+          lf.cur_ptr += le->size;
+          lf.cur_n += 1;
+          if (lf.cur_n == lf.nentries) {
+            PosixIO::Munmap(lf.start, lf.len);
+            PosixIO::Close(lf.fd);
+
+            lf = try_open_log_file(logdir_, lf.thread_id, lf.file_index + 1);
+            if (lf.fd == -1) {  // No more log files for this thread ID
+              lfs_to_remove.push_back(i);
+            }
+          }
+          break;
+
+        case LogEntryType::INSERT_ROW:
+          irle = static_cast<InsertRowLogEntry<StaticConfig>*>(le);
+          // irle->print();
+          if (irle->txn_ts < min_txn_ts) {
+            min_txn_ts = irle->txn_ts;
+            min_addr = reinterpret_cast<char*>(le);
+            min_size = le->size;
+          }
+          break;
+
+        case LogEntryType::WRITE_ROW:
+          wrle = static_cast<WriteRowLogEntry<StaticConfig>*>(le);
+          // wrle->print();
+          if (wrle->txn_ts < min_txn_ts) {
+            min_txn_ts = irle->txn_ts;
+            min_addr = reinterpret_cast<char*>(le);
+            min_size = le->size;
+          }
+          break;
+
+        default:
+          throw std::runtime_error(
+              "preprocess_logs: Unexpected log entry type.");
+      }
+
+      lfs[i] = lf;
+    }
+
+    // Remove lfs
+    std::sort(lfs_to_remove.begin(), lfs_to_remove.end(), std::greater<int>());
+    for (std::size_t i : lfs_to_remove) {
+      MmappedLogFile lf = lfs[i];
+      PosixIO::Munmap(lf.start, lf.len);
+      PosixIO::Close(lf.fd);
+      lfs.erase(lfs.begin() + static_cast<long int>(i));
+    }
+    lfs_to_remove.clear();
+
+    if (lfs.size() == 0) break;  // No more log files
+    if (min_txn_ts == static_cast<uint64_t>(-1))
+      continue;  // All log files had create table or index entries at front
+
+    std::memcpy(out_cur, min_addr, min_size);
+    out_cur += min_size;
+  }
+
+  PosixIO::Munmap(out_addr, outf_size);
+  PosixIO::Close(out_fd);
+
+  for (uint16_t thread_id = 0; thread_id < nloggers_; thread_id++) {
+    for (uint64_t file_index = 0;; file_index++) {
+      std::string fname = logdir_ + "/out." + std::to_string(thread_id) + "." +
                           std::to_string(file_index) + ".log";
 
       if (!PosixIO::Exists(fname.c_str())) break;
@@ -453,7 +628,8 @@ template <class StaticConfig>
           case LogEntryType::WRITE_ROW:
             break;
           default:
-            throw std::runtime_error("preprocess_logs: Unexpected log entry type.");
+            throw std::runtime_error(
+                "preprocess_logs: Unexpected log entry type.");
         }
 
         ptr += le->size;
@@ -469,8 +645,7 @@ template <class StaticConfig>
 void CopyCat<StaticConfig>::read_logs() {
   for (uint16_t thread_id = 0; thread_id < nloggers_; thread_id++) {
     for (uint64_t file_index = 0;; file_index++) {
-      std::string fname = logdir_ + "/out." +
-                          std::to_string(thread_id) + "." +
+      std::string fname = logdir_ + "/out." + std::to_string(thread_id) + "." +
                           std::to_string(file_index) + ".log";
 
       if (!PosixIO::Exists(fname.c_str())) break;

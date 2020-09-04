@@ -130,6 +130,7 @@ MmapLogger<StaticConfig>::mmap_log_buf(uint16_t thread_id,
 
   LogFile<StaticConfig>* lf = reinterpret_cast<LogFile<StaticConfig>*>(start);
   lf->nentries = 0;
+  lf->size = sizeof(LogFile<StaticConfig>);
 
   LogBuffer lb{start, start + len_, reinterpret_cast<char*>(&lf->entries[0]),
                file_index};
@@ -161,11 +162,12 @@ char* MmapLogger<StaticConfig>::alloc_log_buf(uint16_t thread_id,
 }
 
 template <class StaticConfig>
-void MmapLogger<StaticConfig>::release_log_buf(uint16_t thread_id) {
+void MmapLogger<StaticConfig>::release_log_buf(uint16_t thread_id, std::size_t nbytes) {
   LogBuffer lb = bufs_[thread_id];
   LogFile<StaticConfig>* lf =
       reinterpret_cast<LogFile<StaticConfig>*>(lb.start);
   lf->nentries += 1;
+  lf->size += nbytes;
 }
 
 template <class StaticConfig>
@@ -174,8 +176,8 @@ bool MmapLogger<StaticConfig>::log(const Context<StaticConfig>* ctx,
   if (enabled_) {
     uint16_t thread_id = ctx->thread_id();
 
-    char* buf =
-        alloc_log_buf(thread_id, sizeof(CreateTableLogEntry<StaticConfig>));
+    std::size_t nbytes = sizeof(CreateTableLogEntry<StaticConfig>);
+    char* buf = alloc_log_buf(thread_id, nbytes);
 
     CreateTableLogEntry<StaticConfig>* le =
         reinterpret_cast<CreateTableLogEntry<StaticConfig>*>(buf);
@@ -191,7 +193,7 @@ bool MmapLogger<StaticConfig>::log(const Context<StaticConfig>* ctx,
 
     // le->print();
 
-    release_log_buf(thread_id);
+    release_log_buf(thread_id, nbytes);
   }
 
   return true;
@@ -205,8 +207,8 @@ bool MmapLogger<StaticConfig>::log(
   if (enabled_) {
     uint16_t thread_id = ctx->thread_id();
 
-    char* buf =
-        alloc_log_buf(thread_id, sizeof(CreateHashIndexLogEntry<StaticConfig>));
+    std::size_t nbytes = sizeof(CreateHashIndexLogEntry<StaticConfig>);
+    char* buf = alloc_log_buf(thread_id, nbytes);
 
     CreateHashIndexLogEntry<StaticConfig>* le =
         reinterpret_cast<CreateHashIndexLogEntry<StaticConfig>*>(buf);
@@ -224,7 +226,7 @@ bool MmapLogger<StaticConfig>::log(
 
     // le->print();
 
-    release_log_buf(thread_id);
+    release_log_buf(thread_id, nbytes);
   }
 
   return true;
@@ -248,8 +250,8 @@ bool MmapLogger<StaticConfig>::log(const Context<StaticConfig>* ctx,
       char* data = write_rv->data;
       Table<StaticConfig>* tbl = item.tbl;
 
-      char* buf = alloc_log_buf(
-          thread_id, sizeof(InsertRowLogEntry<StaticConfig>) + data_size);
+      std::size_t nbytes = sizeof(InsertRowLogEntry<StaticConfig>) + data_size;
+      char* buf = alloc_log_buf(thread_id, nbytes);
       InsertRowLogEntry<StaticConfig>* le =
           reinterpret_cast<InsertRowLogEntry<StaticConfig>*>(buf);
 
@@ -274,7 +276,7 @@ bool MmapLogger<StaticConfig>::log(const Context<StaticConfig>* ctx,
 
       // le->print();
 
-      release_log_buf(thread_id);
+      release_log_buf(thread_id, nbytes);
     }
 
     for (auto j = 0; j < tx->wset_size(); j++) {
@@ -285,8 +287,8 @@ bool MmapLogger<StaticConfig>::log(const Context<StaticConfig>* ctx,
       char* data = write_rv->data;
       Table<StaticConfig>* tbl = item.tbl;
 
-      char* buf = alloc_log_buf(
-          thread_id, sizeof(WriteRowLogEntry<StaticConfig>) + data_size);
+      std::size_t nbytes = sizeof(WriteRowLogEntry<StaticConfig>) + data_size;
+      char* buf = alloc_log_buf(thread_id, nbytes);
       WriteRowLogEntry<StaticConfig>* le =
           reinterpret_cast<WriteRowLogEntry<StaticConfig>*>(buf);
 
@@ -310,7 +312,7 @@ bool MmapLogger<StaticConfig>::log(const Context<StaticConfig>* ctx,
 
       // le->print();
 
-      release_log_buf(thread_id);
+      release_log_buf(thread_id, nbytes);
     }
   }
 

@@ -112,12 +112,13 @@ class MmapLogger : public LoggerInterface<StaticConfig> {
 
  private:
   class Mmapping {
-  public:
+   public:
     void* addr;
     std::size_t len;
     int fd;
 
-    Mmapping(void* addr, std::size_t len, int fd) : addr{addr}, len{len}, fd{fd} {}
+    Mmapping(void* addr, std::size_t len, int fd)
+        : addr{addr}, len{len}, fd{fd} {}
     ~Mmapping() {}
   };
 
@@ -154,7 +155,7 @@ class MmapLogger : public LoggerInterface<StaticConfig> {
   LogBuffer mmap_log_buf(uint16_t thread_id, uint64_t file_index);
 
   char* alloc_log_buf(uint16_t thread_id, std::size_t nbytes);
-  void release_log_buf(uint16_t thread_id);
+  void release_log_buf(uint16_t thread_id, std::size_t nbytes);
 };
 
 template <class StaticConfig>
@@ -199,6 +200,7 @@ template <class StaticConfig>
 class LogFile {
  public:
   uint64_t nentries;
+  std::size_t size;
   LogEntry<StaticConfig> entries[0];
 
   void print() {
@@ -206,6 +208,7 @@ class LogFile {
 
     stream << "Log file:" << std::endl;
     stream << "N entries: " << nentries << std::endl;
+    stream << "Size: " << size << std::endl;
     stream << "First entry ptr: " << &entries[0] << std::endl;
 
     std::cout << stream.str();
@@ -392,6 +395,31 @@ class CopyCat : public CCCInterface<StaticConfig> {
   void stop_workers();
 
  private:
+  class MmappedLogFile {
+   public:
+    uint16_t thread_id;
+    uint64_t file_index;
+    void* start;
+    char* cur_ptr;
+    uint64_t nentries;
+    uint64_t cur_n;
+    std::size_t len;
+    int fd;
+
+    MmappedLogFile(uint16_t thread_id, uint64_t file_index, void* start,
+                   char* cur_ptr, uint64_t nentries, uint64_t cur_n,
+                   std::size_t len, int fd)
+        : thread_id{thread_id},
+          file_index{file_index},
+          start{start},
+          cur_ptr{cur_ptr},
+          nentries{nentries},
+          cur_n{cur_n},
+          len{len},
+          fd{fd} {}
+    ~MmappedLogFile() {}
+  };
+
   DB<StaticConfig>* db_;
   std::size_t len_;
 
@@ -404,6 +432,9 @@ class CopyCat : public CCCInterface<StaticConfig> {
   std::vector<std::thread> workers_;
   std::atomic<bool> workers_stop_;
 
+  MmappedLogFile try_open_log_file(std::string logdir, uint16_t thread_id,
+                                   uint64_t file_index);
+
   void worker_thread(DB<StaticConfig>* db, uint16_t id);
 
   void create_table(DB<StaticConfig>* db,
@@ -412,8 +443,7 @@ class CopyCat : public CCCInterface<StaticConfig> {
   void create_hash_index(DB<StaticConfig>* db,
                          CreateHashIndexLogEntry<StaticConfig>* le);
 
-  void insert_row(Context<StaticConfig>* ctx,
-                  Transaction<StaticConfig>* tx,
+  void insert_row(Context<StaticConfig>* ctx, Transaction<StaticConfig>* tx,
                   RowAccessHandle<StaticConfig>* rah,
                   InsertRowLogEntry<StaticConfig>* le);
   void insert_data_row(Context<StaticConfig>* ctx,
@@ -425,12 +455,10 @@ class CopyCat : public CCCInterface<StaticConfig> {
                            RowAccessHandle<StaticConfig>* rah,
                            InsertRowLogEntry<StaticConfig>* le);
 
-  void write_row(Context<StaticConfig>* ctx,
-                 Transaction<StaticConfig>* tx,
+  void write_row(Context<StaticConfig>* ctx, Transaction<StaticConfig>* tx,
                  RowAccessHandle<StaticConfig>* rah,
                  WriteRowLogEntry<StaticConfig>* le);
-  void write_data_row(Context<StaticConfig>* ctx,
-                      Transaction<StaticConfig>* tx,
+  void write_data_row(Context<StaticConfig>* ctx, Transaction<StaticConfig>* tx,
                       RowAccessHandle<StaticConfig>* rah,
                       WriteRowLogEntry<StaticConfig>* le);
   void write_hash_idx_row(Context<StaticConfig>* ctx,

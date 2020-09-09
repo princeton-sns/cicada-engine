@@ -475,12 +475,14 @@ void CopyCat<StaticConfig>::preprocess_logs() {
           ctle = static_cast<CreateTableLogEntry<StaticConfig>*>(le);
           // ctle->print();
           create_table(db_, ctle);
+          mlf->read_next_le();
           break;
 
         case LogEntryType::CREATE_HASH_IDX:
           chile = static_cast<CreateHashIndexLogEntry<StaticConfig>*>(le);
           // chile->print();
           create_hash_index(db_, chile);
+          mlf->read_next_le();
           break;
 
         case LogEntryType::INSERT_ROW:

@@ -11,6 +11,7 @@
 #include <deque>
 #include <fstream>
 #include <iostream>
+#include <memory>
 #include <mutex>
 #include <set>
 #include <sstream>
@@ -30,6 +31,9 @@
 
 namespace mica {
 namespace transaction {
+
+using mica::util::PosixIO;
+
 template <class StaticConfig>
 class LoggerInterface {
  public:
@@ -378,6 +382,125 @@ class WriteRowLogEntry : public LogEntry<StaticConfig> {
 };
 
 template <class StaticConfig>
+class MmappedLogFile {
+ public:
+  std::string fname;
+  void* start;
+  char* cur_read_ptr;
+  char* cur_write_ptr;
+  uint64_t nentries;
+  std::size_t len;
+  int fd;
+
+  static std::shared_ptr<MmappedLogFile<StaticConfig>>
+  open_new(std::string fname, std::size_t len, int prot, int flags) {
+    int fd = PosixIO::Open(fname.c_str(), O_RDWR | O_CREAT,
+                           S_IRUSR | S_IWUSR | S_IRGRP | S_IROTH);
+
+    PosixIO::Ftruncate(fd, static_cast<off_t>(len));
+    void* start = PosixIO::Mmap(nullptr, len, prot, flags, fd, 0);
+
+    LogFile<StaticConfig>* lf = static_cast<LogFile<StaticConfig>*>(start);
+    lf->nentries = 0;
+    lf->size = sizeof(LogFile<StaticConfig>);
+
+    char* cur_read_ptr = reinterpret_cast<char*>(&lf->entries[0]);
+    char* cur_write_ptr = reinterpret_cast<char*>(&lf->entries[0]);
+
+    auto mlf = new MmappedLogFile<StaticConfig>{fname, start, cur_read_ptr, cur_write_ptr, len, fd};
+
+    return std::shared_ptr<MmappedLogFile<StaticConfig>>{mlf};
+  }
+
+  static std::shared_ptr<MmappedLogFile<StaticConfig>>
+  open_existing(std::string fname, int prot, int flags) {
+    if (PosixIO::Exists(fname.c_str())) {
+      int fd = PosixIO::Open(fname.c_str(), O_RDONLY);
+      std::size_t len = PosixIO::Size(fname.c_str());
+      void* start = PosixIO::Mmap(nullptr, len, prot, flags, fd, 0);
+
+      LogFile<StaticConfig>* lf = static_cast<LogFile<StaticConfig>*>(start);
+
+      char* cur_read_ptr = reinterpret_cast<char*>(&lf->entries[0]);
+      char* cur_write_ptr = reinterpret_cast<char*>(&lf->entries[0]);
+
+      auto mlf = new MmappedLogFile<StaticConfig>{fname, start, cur_read_ptr, cur_write_ptr, len, fd};
+
+      return std::shared_ptr<MmappedLogFile<StaticConfig>>{mlf};
+    } else {
+      return std::shared_ptr<MmappedLogFile<StaticConfig>>{nullptr};
+    }
+  }
+
+  MmappedLogFile(std::string fname, void* start,
+                 char* cur_read_ptr, char* cur_write_ptr,
+                 std::size_t len, int fd)
+      : fname{fname},
+        start{start},
+        cur_read_ptr{cur_read_ptr},
+        cur_write_ptr{cur_write_ptr},
+        len{len},
+        fd{fd} {}
+
+  ~MmappedLogFile() {
+    if (start != nullptr) {
+      PosixIO::Munmap(start, len);
+      PosixIO::Close(fd);
+    }
+  }
+
+  LogFile<StaticConfig>* get_lf() {
+    return static_cast<LogFile<StaticConfig>*>(start);
+  }
+
+  LogEntry<StaticConfig>* get_cur_le() {
+    if (start == nullptr) {
+      return nullptr;
+    } else {
+      return reinterpret_cast<LogEntry<StaticConfig>*>(cur_read_ptr);
+    }
+  }
+
+  bool has_next_le() {
+    if (start == nullptr) {
+      return false;
+    } else {
+      return cur_read_ptr < (static_cast<char*>(start) + get_size());
+    }
+  }
+
+  void read_next_le() {
+    auto le = reinterpret_cast<LogEntry<StaticConfig>*>(cur_read_ptr);
+    cur_read_ptr += le->size;
+  }
+
+  void write_next_le(void* src, std::size_t n) {
+    std::memcpy(cur_write_ptr, src, n);
+    cur_write_ptr += n;
+
+    auto lf = get_lf();
+    lf->nentries += 1;
+    lf->size += n;
+  }
+
+  std::size_t get_size() {
+    if (start == nullptr) {
+      return 0;
+    } else {
+      return get_lf()->size;
+    }
+  }
+
+  uint64_t get_nentries() {
+    if (start == nullptr) {
+      return 0;
+    } else {
+      return get_lf()->nentries;
+    }
+  }
+};
+
+template <class StaticConfig>
 class CopyCat : public CCCInterface<StaticConfig> {
  public:
   CopyCat(DB<StaticConfig>* db, uint16_t nloggers, uint16_t nworkers,
@@ -395,31 +518,6 @@ class CopyCat : public CCCInterface<StaticConfig> {
   void stop_workers();
 
  private:
-  class MmappedLogFile {
-   public:
-    uint16_t thread_id;
-    uint64_t file_index;
-    void* start;
-    char* cur_ptr;
-    uint64_t nentries;
-    uint64_t cur_n;
-    std::size_t len;
-    int fd;
-
-    MmappedLogFile(uint16_t thread_id, uint64_t file_index, void* start,
-                   char* cur_ptr, uint64_t nentries, uint64_t cur_n,
-                   std::size_t len, int fd)
-        : thread_id{thread_id},
-          file_index{file_index},
-          start{start},
-          cur_ptr{cur_ptr},
-          nentries{nentries},
-          cur_n{cur_n},
-          len{len},
-          fd{fd} {}
-    ~MmappedLogFile() {}
-  };
-
   DB<StaticConfig>* db_;
   std::size_t len_;
 
@@ -431,9 +529,6 @@ class CopyCat : public CCCInterface<StaticConfig> {
   pthread_barrier_t worker_barrier_;
   std::vector<std::thread> workers_;
   std::atomic<bool> workers_stop_;
-
-  MmappedLogFile try_open_log_file(std::string logdir, uint16_t thread_id,
-                                   uint64_t file_index);
 
   void worker_thread(DB<StaticConfig>* db, uint16_t id);
 

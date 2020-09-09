@@ -31,7 +31,7 @@ class PosixIO {
     }
   }
 
-  static long Seek(int fd, long offset, int whence) {
+  static long LSeek(int fd, long offset, int whence) {
     while (true) {
       long ret = lseek(fd, offset, whence);
       if (ret == -1) {
@@ -41,6 +41,16 @@ class PosixIO {
       }
       return ret;
     }
+  }
+
+  static std::size_t Size(const char* path) {
+    struct stat st;
+    int ret = stat(path, &st);
+    if (ret == -1) {
+      throw std::runtime_error("Failed to get file size with errno " +
+                               std::to_string(errno));
+    }
+    return static_cast<std::size_t>(st.st_size);
   }
 
   static void FSync(int fd) {

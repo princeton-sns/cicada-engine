@@ -222,41 +222,18 @@ class LogFile {
 
 class LogEntryRef {
  public:
-  int fd;
-  long offset;
-  std::size_t size;
-  LogEntryType type;
-  uint64_t txn_ts;
+  std::shared_ptr<LogEntryRef> next;
+  char* ptr;
 
-  static bool compare(const LogEntryRef& r1, const LogEntryRef& r2) {
-    switch (r1.type) {
-      case LogEntryType::CREATE_TABLE:
-        return true;
-      case LogEntryType::CREATE_HASH_IDX:
-        return r2.type != LogEntryType::CREATE_TABLE;
-      case LogEntryType::INSERT_ROW:
-      case LogEntryType::WRITE_ROW:
-        if (r2.type == LogEntryType::CREATE_TABLE ||
-            r2.type == LogEntryType::CREATE_HASH_IDX)
-          return false;
-        else
-          return r1.txn_ts < r2.txn_ts;
-    }
-
-    throw std::runtime_error("Unhandled comparison!");
-  }
+  LogEntryRef(LogEntryRef* next, char* ptr) : next{next}, ptr{ptr} {}
 
   void print() {
     std::stringstream stream;
 
     stream << std::endl;
     stream << "LogEntryRef:" << std::endl;
-    stream << "FD: " << fd << std::endl;
-    stream << "Offset: " << offset << std::endl;
-    stream << "Size: " << size << std::endl;
-    stream << "Type: " << std::to_string(static_cast<uint8_t>(type))
-           << std::endl;
-    stream << "Transaction TS: " << txn_ts << std::endl;
+    stream << "next: " << next << std::endl;
+    stream << "ptr: " << ptr << std::endl;
 
     std::cout << stream.str();
   }
@@ -395,7 +372,6 @@ class MmappedLogFile {
     char* start =
         static_cast<char*>(PosixIO::Mmap(nullptr, len, prot, flags, fd, 0));
 
-    printf("nsegments: %u\n", nsegments);
     std::vector<LogFile<StaticConfig>*> lfs{};
     std::size_t segment_len = len / nsegments;
     for (int s = 0; s < nsegments; s++) {
@@ -406,7 +382,6 @@ class MmappedLogFile {
       LogFile<StaticConfig>* lf =
           reinterpret_cast<LogFile<StaticConfig>*>(start);
 
-      printf("open_new: lf = %p\n", lf);
       lf->nentries = 0;
       lf->size = sizeof(LogFile<StaticConfig>);
 
@@ -428,7 +403,6 @@ class MmappedLogFile {
       char* start =
           static_cast<char*>(PosixIO::Mmap(nullptr, len, prot, flags, fd, 0));
 
-      printf("nsegments: %u\n", nsegments);
       std::vector<LogFile<StaticConfig>*> lfs{};
       std::size_t segment_len = len / nsegments;
       for (int s = 0; s < nsegments; s++) {
@@ -438,8 +412,6 @@ class MmappedLogFile {
 
         LogFile<StaticConfig>* lf =
           reinterpret_cast<LogFile<StaticConfig>*>(start);
-
-        printf("open_existing: lf = %p\n", lf);
 
         lfs.push_back(lf);
         start += segment_len;

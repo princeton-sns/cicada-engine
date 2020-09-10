@@ -3,6 +3,7 @@
 #define MICA_TRANSACTION_COPYCAT_H_
 
 #include <thread>
+#include <unordered_map>
 
 #include "mica/transaction/logging.h"
 #include "mica/util/posix_io.h"
@@ -354,6 +355,9 @@ void CopyCat<StaticConfig>::scheduler_thread(DB<StaticConfig>* db,
                                              uint16_t id) {
   printf("Starting replica scheduler: %u\n", id);
 
+  std::unordered_map<uint64_t, std::shared_ptr<LogEntryRef>> local_fifos{};
+  std::unordered_map<uint64_t, std::shared_ptr<LogEntryRef>> local_fifo_tails{};
+
   mica::util::lcore.pin_thread(id);
   db->activate(id);
 
@@ -363,17 +367,12 @@ void CopyCat<StaticConfig>::scheduler_thread(DB<StaticConfig>* db,
 
   std::size_t nsegments = log_->get_nsegments();
 
-  printf("id: %u\n", id);
-  printf("nsegments: %lu\n", log_->get_nsegments());
-
-  printf("about to wait\n");
   pthread_barrier_wait(&scheduler_barrier_);
-  printf("pass barrier\n");
 
   for (std::size_t cur_segment = id; cur_segment < nsegments;
        cur_segment += nschedulers_) {
     LogFile<StaticConfig>* lf = log_->get_lf(cur_segment);
-    lf->print();
+    // lf->print();
 
     char* ptr = reinterpret_cast<char*>(&lf->entries[0]);
 
@@ -385,29 +384,60 @@ void CopyCat<StaticConfig>::scheduler_thread(DB<StaticConfig>* db,
           reinterpret_cast<LogEntry<StaticConfig>*>(ptr);
       // le->print();
 
+      uint64_t row_id = 0;
       switch (le->type) {
         case LogEntryType::INSERT_ROW:
           irle = static_cast<InsertRowLogEntry<StaticConfig>*>(le);
+          row_id = irle->row_id;
           // irle->print();
           // insert_row(ctx, &tx, &rah, irle);
           break;
 
         case LogEntryType::WRITE_ROW:
           wrle = static_cast<WriteRowLogEntry<StaticConfig>*>(le);
+          row_id = wrle->row_id;
           // wrle->print();
           // write_row(ctx, &tx, &rah, wrle);
           break;
 
-        case LogEntryType::CREATE_TABLE:
-        case LogEntryType::CREATE_HASH_IDX:
-          break;
         default:
           throw std::runtime_error(
               "scheduler_thread: Unexpected log entry type.");
       }
 
+      auto ler = std::shared_ptr<LogEntryRef>{new LogEntryRef{nullptr, ptr}};
+
+      auto search = local_fifos.find(row_id);
+      if (search == local_fifos.end()) {
+        local_fifos[row_id] = ler;
+        local_fifo_tails[row_id] = ler;
+      } else {
+        local_fifo_tails[row_id]->next = ler;
+        local_fifo_tails[row_id] = ler;
+      }
+
       ptr += le->size;
     }
+
+    // printf("printing local_fifos\n");
+    // for (const auto& n : local_fifos) {
+    //   std::cout << "Key:[" << n.first << "] Value:[" << n.second << "]\n";
+
+    //   auto next = n.second->next;
+    //   while (next != nullptr) {
+    //     std::cout << "Key:[" << n.first << "] Value:[" << next << "]\n";
+    //     next = next->next;
+    //   }
+    //   std::cout << std::endl;
+    // }
+
+    // printf("printing local_fifo_tails\n");
+    // for (const auto& n : local_fifo_tails) {
+    //   std::cout << "Key:[" << n.first << "] Value:[" << n.second << "]\n";
+    // }
+
+    local_fifos.clear();
+    local_fifo_tails.clear();
 
     // std::this_thread::sleep_for(std::chrono::milliseconds(10));
     // if (schedulers_stop_) break;

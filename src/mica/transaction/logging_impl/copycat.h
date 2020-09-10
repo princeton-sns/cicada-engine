@@ -14,49 +14,56 @@ using mica::util::PosixIO;
 
 template <class StaticConfig>
 CopyCat<StaticConfig>::CopyCat(DB<StaticConfig>* db, uint16_t nloggers,
-                               uint16_t nworkers, std::string logdir)
+                               uint16_t nschedulers, std::string logdir)
     : db_{db},
       len_{StaticConfig::kPageSize},
       nloggers_{nloggers},
-      nworkers_{nworkers},
+      nschedulers_{nschedulers},
       logdir_{logdir},
-      workers_{},
-      workers_stop_{false} {
-  int ret = pthread_barrier_init(&worker_barrier_, nullptr, nworkers + 1);
+      log_{nullptr},
+      schedulers_{},
+      schedulers_stop_{false} {
+  int ret = pthread_barrier_init(&scheduler_barrier_, nullptr, nschedulers + 1);
   if (ret != 0) {
-    throw std::runtime_error("Failed to init worker barrier: " + ret);
+    throw std::runtime_error("Failed to init scheduler barrier: " + ret);
   }
 }
 
 template <class StaticConfig>
 CopyCat<StaticConfig>::~CopyCat() {
-  int ret = pthread_barrier_destroy(&worker_barrier_);
+  int ret = pthread_barrier_destroy(&scheduler_barrier_);
   if (ret != 0) {
-    throw std::runtime_error("Failed to destroy worker barrier: " + ret);
+    throw std::runtime_error("Failed to destroy scheduler barrier: " + ret);
   }
 }
 
 template <class StaticConfig>
-void CopyCat<StaticConfig>::start_workers() {
-  //log_start_addr_ = ;
-  workers_stop_ = false;
-  for (uint16_t wid = 0; wid < nworkers_; wid++) {
-    workers_.emplace_back(
-        std::thread{&CopyCat<StaticConfig>::worker_thread, this, db_, wid});
+void CopyCat<StaticConfig>::start_schedulers() {
+  const std::string fname = logdir_ + "/out.log";
+  std::size_t len = PosixIO::Size(fname.c_str());
+
+  log_ = MmappedLogFile<StaticConfig>::open_existing(fname, PROT_READ,
+                                                     MAP_SHARED, nsegments(len));
+
+  schedulers_stop_ = false;
+  for (uint16_t wid = 0; wid < nschedulers_; wid++) {
+    schedulers_.emplace_back(
+        std::thread{&CopyCat<StaticConfig>::scheduler_thread, this, db_, wid});
   }
 
-  pthread_barrier_wait(&worker_barrier_);
+  pthread_barrier_wait(&scheduler_barrier_);
 }
 
 template <class StaticConfig>
-void CopyCat<StaticConfig>::stop_workers() {
-  workers_stop_ = true;
+void CopyCat<StaticConfig>::stop_schedulers() {
+  schedulers_stop_ = true;
 
-  for (auto& w : workers_) {
+  for (auto& w : schedulers_) {
     w.join();
   }
 
-  workers_.clear();
+  log_.reset();
+  schedulers_.clear();
 }
 
 template <class StaticConfig>
@@ -343,8 +350,9 @@ void CopyCat<StaticConfig>::write_hash_idx_row(
 }
 
 template <class StaticConfig>
-void CopyCat<StaticConfig>::worker_thread(DB<StaticConfig>* db, uint16_t id) {
-  printf("Starting replica worker: %u\n", id);
+void CopyCat<StaticConfig>::scheduler_thread(DB<StaticConfig>* db,
+                                             uint16_t id) {
+  printf("Starting replica scheduler: %u\n", id);
 
   mica::util::lcore.pin_thread(id);
   db->activate(id);
@@ -353,63 +361,58 @@ void CopyCat<StaticConfig>::worker_thread(DB<StaticConfig>* db, uint16_t id) {
   Transaction<StaticConfig> tx{ctx};
   RowAccessHandle<StaticConfig> rah{&tx};
 
+  std::size_t nsegments = log_->get_nsegments();
+
+  printf("id: %u\n", id);
+  printf("nsegments: %lu\n", log_->get_nsegments());
+
   printf("about to wait\n");
-  pthread_barrier_wait(&worker_barrier_);
+  pthread_barrier_wait(&scheduler_barrier_);
   printf("pass barrier\n");
 
-  while (true) {
-    // for (uint64_t file_index = 0;; file_index++) {
-      std::string fname = logdir_ + "/out.log";
+  for (std::size_t cur_segment = id; cur_segment < nsegments;
+       cur_segment += nschedulers_) {
+    LogFile<StaticConfig>* lf = log_->get_lf(cur_segment);
+    lf->print();
 
-      if (!PosixIO::Exists(fname.c_str())) break;
+    char* ptr = reinterpret_cast<char*>(&lf->entries[0]);
 
-      int fd = PosixIO::Open(fname.c_str(), O_RDONLY);
-      void* start = PosixIO::Mmap(nullptr, len_, PROT_READ, MAP_SHARED, fd, 0);
+    InsertRowLogEntry<StaticConfig>* irle = nullptr;
+    WriteRowLogEntry<StaticConfig>* wrle = nullptr;
 
-      LogFile<StaticConfig>* lf = static_cast<LogFile<StaticConfig>*>(start);
-      lf->print();
+    for (uint64_t i = 0; i < lf->nentries; i++) {
+      LogEntry<StaticConfig>* le =
+          reinterpret_cast<LogEntry<StaticConfig>*>(ptr);
+      // le->print();
 
-      char* ptr = reinterpret_cast<char*>(&lf->entries[0]);
+      switch (le->type) {
+        case LogEntryType::INSERT_ROW:
+          irle = static_cast<InsertRowLogEntry<StaticConfig>*>(le);
+          // irle->print();
+          // insert_row(ctx, &tx, &rah, irle);
+          break;
 
-      InsertRowLogEntry<StaticConfig>* irle = nullptr;
-      WriteRowLogEntry<StaticConfig>* wrle = nullptr;
+        case LogEntryType::WRITE_ROW:
+          wrle = static_cast<WriteRowLogEntry<StaticConfig>*>(le);
+          // wrle->print();
+          // write_row(ctx, &tx, &rah, wrle);
+          break;
 
-      for (uint64_t i = 0; i < lf->nentries; i++) {
-        LogEntry<StaticConfig>* le =
-            reinterpret_cast<LogEntry<StaticConfig>*>(ptr);
-        le->print();
-
-        switch (le->type) {
-          case LogEntryType::INSERT_ROW:
-            irle = static_cast<InsertRowLogEntry<StaticConfig>*>(le);
-            irle->print();
-            insert_row(ctx, &tx, &rah, irle);
-            break;
-
-          case LogEntryType::WRITE_ROW:
-            wrle = static_cast<WriteRowLogEntry<StaticConfig>*>(le);
-            wrle->print();
-            write_row(ctx, &tx, &rah, wrle);
-            break;
-
-          case LogEntryType::CREATE_TABLE:
-          case LogEntryType::CREATE_HASH_IDX:
-            break;
-          default:
-            throw std::runtime_error(
-                "worker_thread: Unexpected log entry type.");
-        }
-
-        ptr += le->size;
+        case LogEntryType::CREATE_TABLE:
+        case LogEntryType::CREATE_HASH_IDX:
+          break;
+        default:
+          throw std::runtime_error(
+              "scheduler_thread: Unexpected log entry type.");
       }
 
-      PosixIO::Munmap(start, len_);
-      PosixIO::Close(fd);
-    // }
+      ptr += le->size;
+    }
 
     // std::this_thread::sleep_for(std::chrono::milliseconds(10));
-    if (workers_stop_) break;
+    // if (schedulers_stop_) break;
   }
+
 
   if (tx.has_began()) {
     Result result;
@@ -420,7 +423,7 @@ void CopyCat<StaticConfig>::worker_thread(DB<StaticConfig>* db, uint16_t id) {
   }
 
   db->deactivate(id);
-  printf("Exiting replica worker: %u\n", id);
+  printf("Exiting replica scheduler: %u\n", id);
 }
 
 template <class StaticConfig>
@@ -434,12 +437,15 @@ void CopyCat<StaticConfig>::preprocess_logs() {
   for (uint16_t thread_id = 0; thread_id < nloggers_; thread_id++) {
     for (uint64_t file_index = 0;; file_index++) {
       std::string fname = logdir_ + "/out." + std::to_string(thread_id) + "." +
-        std::to_string(file_index) + ".log";
+                          std::to_string(file_index) + ".log";
 
-      auto mlf = MmappedLogFile<StaticConfig>::open_existing(fname, PROT_READ, MAP_SHARED);
+      auto mlf = MmappedLogFile<StaticConfig>::open_existing(fname, PROT_READ,
+                                                             MAP_SHARED);
       if (mlf == nullptr || mlf->get_nentries() == 0) {
         break;
       }
+
+      // mlf->get_lf()->print();
 
       out_size += mlf->get_size();
       mlfs.push_back(mlf);
@@ -451,7 +457,9 @@ void CopyCat<StaticConfig>::preprocess_logs() {
 
   // Allocate out file
   std::shared_ptr<MmappedLogFile<StaticConfig>> out_mlf =
-    MmappedLogFile<StaticConfig>::open_new(outfname, out_size, PROT_READ | PROT_WRITE, MAP_SHARED);
+      MmappedLogFile<StaticConfig>::open_new(outfname, out_size,
+                                             PROT_READ | PROT_WRITE, MAP_SHARED,
+                                             nsegments(out_size));
 
   // Sort log files by transaction timestamp
   while (mlfs.size() != 0) {
@@ -513,16 +521,20 @@ void CopyCat<StaticConfig>::preprocess_logs() {
       auto mlf = mlfs[next_i];
       auto le = mlf->get_cur_le();
 
+      // le->print();
+
       out_mlf->write_next_le(le, le->size);
 
       mlf->read_next_le();
     }
 
     // Remove empty mlfs
-    mlfs.erase(std::remove_if(mlfs.begin(), mlfs.end(),
-                              [](std::shared_ptr<MmappedLogFile<StaticConfig>> mlf) {
-                                return !mlf->has_next_le();
-                              }), mlfs.end());
+    mlfs.erase(
+        std::remove_if(mlfs.begin(), mlfs.end(),
+                       [](std::shared_ptr<MmappedLogFile<StaticConfig>> mlf) {
+                         return !mlf->has_next_le();
+                       }),
+        mlfs.end());
   }
 }
 

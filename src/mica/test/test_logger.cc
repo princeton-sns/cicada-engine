@@ -331,7 +331,7 @@ int main(int argc, const char* argv[]) {
   if (argc != 8) {
     printf(
         "%s NUM-ROWS REQS-PER-TX READ-RATIO ZIPF-THETA TX-COUNT "
-        "THREAD-COUNT WORKER-COUNT\n",
+        "THREAD-COUNT SCHEDULER-COUNT\n",
         argv[0]);
     return EXIT_FAILURE;
   }
@@ -344,7 +344,7 @@ int main(int argc, const char* argv[]) {
   double zipf_theta = atof(argv[4]);
   uint64_t tx_count = static_cast<uint64_t>(atol(argv[5]));
   uint64_t num_threads = static_cast<uint64_t>(atol(argv[6]));
-  uint64_t num_workers = static_cast<uint64_t>(atol(argv[7]));
+  uint64_t num_schedulers = static_cast<uint64_t>(atol(argv[7]));
 
   Alloc alloc(config.get("alloc"));
   auto page_pool_size = 1 * uint64_t(1073741824);
@@ -381,7 +381,7 @@ int main(int argc, const char* argv[]) {
   printf("zipf_theta = %lf\n", zipf_theta);
   printf("tx_count = %" PRIu64 "\n", tx_count);
   printf("num_threads = %" PRIu64 "\n", num_threads);
-  printf("num_workers = %" PRIu64 "\n", num_workers);
+  printf("num_schedulers = %" PRIu64 "\n", num_schedulers);
 #ifndef NDEBUG
   printf("!NDEBUG\n");
 #endif
@@ -677,12 +677,12 @@ int main(int argc, const char* argv[]) {
 
   for (auto phase = 0; phase < 2; phase++) {
     if (phase == 0) {
-      logger.change_logdir(std::string{MICA_LOG_WARMUP_DIR});
       printf("warming up\n");
+      logger.change_logdir(std::string{MICA_LOG_WARMUP_DIR});
     } else {
+      printf("executing workload\n");
       logger.change_logdir(std::string{MICA_LOG_WORKLOAD_DIR});
       db.reset_stats();
-      printf("executing workload\n");
     }
 
     running_threads = 0;
@@ -761,19 +761,19 @@ int main(int argc, const char* argv[]) {
                       std::string{MICA_RELAY_WORKLOAD_DIR});
   }
 
-  DB replica{page_pools, &logger, &sw, static_cast<uint16_t>(num_threads)};
+  DB replica{page_pools, &logger, &sw, static_cast<uint16_t>(num_schedulers)};
   logger.disable();
 
   {
-    CCC ccc{&replica, static_cast<uint16_t>(num_workers),
-      static_cast<uint16_t>(num_threads), std::string{MICA_RELAY_INIT_DIR}};
+    CCC ccc{&replica, static_cast<uint16_t>(num_threads),
+      static_cast<uint16_t>(num_schedulers), std::string{MICA_RELAY_INIT_DIR}};
 
     std::vector<std::string> relaydirs = {std::string{MICA_RELAY_INIT_DIR},
       std::string{MICA_RELAY_WARMUP_DIR}, std::string{MICA_RELAY_WORKLOAD_DIR}};
 
-    printf("Preprocessing logs\n");
     for (std::string dir : relaydirs) {
       ccc.set_logdir(dir);
+      printf("Preprocessing logs\n");
       ccc.preprocess_logs();
     }
 
@@ -797,14 +797,29 @@ int main(int argc, const char* argv[]) {
 
       replica.reset_stats();
       replica.reset_backoff();
-      ccc.start_workers();
+
+      struct timeval tv_start;
+      struct timeval tv_end;
+      ccc.start_schedulers();
+      gettimeofday(&tv_start, nullptr);
       // int64_t starttime = get_server_clock();
-      ccc.stop_workers();
+      ccc.stop_schedulers();
+      gettimeofday(&tv_end, nullptr);
       // int64_t endtime = get_server_clock();
+
+
+      double start = (double)tv_start.tv_sec * 1. + (double)tv_start.tv_usec * 0.000001;
+      double end = (double)tv_end.tv_sec * 1. + (double)tv_end.tv_usec * 0.000001;
+
+      double diff = end - start;
+      double total_time = diff * static_cast<double>(num_threads);
+      replica.print_stats(diff, total_time);
 
       i++;
     }
   }
+
+  return 0;
 
   db.activate(0);
   replica.activate(0);

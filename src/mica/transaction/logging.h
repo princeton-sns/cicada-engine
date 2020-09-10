@@ -170,8 +170,8 @@ class CCCInterface {
   void set_logdir(std::string logdir);
   void preprocess_logs();
 
-  void start_workers();
-  void stop_workers();
+  void start_schedulers();
+  void stop_schedulers();
 };
 
 enum class LogEntryType : uint8_t {
@@ -203,6 +203,7 @@ class LogEntry {
 template <class StaticConfig>
 class LogFile {
  public:
+  LogFile<StaticConfig>* next = nullptr;
   uint64_t nentries;
   std::size_t size;
   LogEntry<StaticConfig> entries[0];
@@ -384,47 +385,67 @@ class WriteRowLogEntry : public LogEntry<StaticConfig> {
 template <class StaticConfig>
 class MmappedLogFile {
  public:
-  std::string fname;
-  void* start;
-  char* cur_read_ptr;
-  char* cur_write_ptr;
-  uint64_t nentries;
-  std::size_t len;
-  int fd;
-
-  static std::shared_ptr<MmappedLogFile<StaticConfig>>
-  open_new(std::string fname, std::size_t len, int prot, int flags) {
+  static std::shared_ptr<MmappedLogFile<StaticConfig>> open_new(
+      std::string fname, std::size_t len, int prot, int flags,
+      uint16_t nsegments = 1) {
     int fd = PosixIO::Open(fname.c_str(), O_RDWR | O_CREAT,
                            S_IRUSR | S_IWUSR | S_IRGRP | S_IROTH);
 
     PosixIO::Ftruncate(fd, static_cast<off_t>(len));
-    void* start = PosixIO::Mmap(nullptr, len, prot, flags, fd, 0);
+    char* start =
+        static_cast<char*>(PosixIO::Mmap(nullptr, len, prot, flags, fd, 0));
 
-    LogFile<StaticConfig>* lf = static_cast<LogFile<StaticConfig>*>(start);
-    lf->nentries = 0;
-    lf->size = sizeof(LogFile<StaticConfig>);
+    printf("nsegments: %u\n", nsegments);
+    std::vector<LogFile<StaticConfig>*> lfs{};
+    std::size_t segment_len = len / nsegments;
+    for (int s = 0; s < nsegments; s++) {
+      if (s == nsegments - 1) {
+        segment_len = len - (nsegments - 1) * segment_len;
+      }
 
-    char* cur_read_ptr = reinterpret_cast<char*>(&lf->entries[0]);
-    char* cur_write_ptr = reinterpret_cast<char*>(&lf->entries[0]);
+      LogFile<StaticConfig>* lf =
+          reinterpret_cast<LogFile<StaticConfig>*>(start);
 
-    auto mlf = new MmappedLogFile<StaticConfig>{fname, start, cur_read_ptr, cur_write_ptr, len, fd};
+      printf("open_new: lf = %p\n", lf);
+      lf->nentries = 0;
+      lf->size = sizeof(LogFile<StaticConfig>);
+
+      lfs.push_back(lf);
+      start += segment_len;
+    }
+
+    auto mlf = new MmappedLogFile<StaticConfig>{fname, len, fd, lfs};
 
     return std::shared_ptr<MmappedLogFile<StaticConfig>>{mlf};
   }
 
-  static std::shared_ptr<MmappedLogFile<StaticConfig>>
-  open_existing(std::string fname, int prot, int flags) {
+  static std::shared_ptr<MmappedLogFile<StaticConfig>> open_existing(
+      std::string fname, int prot, int flags, uint16_t nsegments = 1) {
+
     if (PosixIO::Exists(fname.c_str())) {
       int fd = PosixIO::Open(fname.c_str(), O_RDONLY);
       std::size_t len = PosixIO::Size(fname.c_str());
-      void* start = PosixIO::Mmap(nullptr, len, prot, flags, fd, 0);
+      char* start =
+          static_cast<char*>(PosixIO::Mmap(nullptr, len, prot, flags, fd, 0));
 
-      LogFile<StaticConfig>* lf = static_cast<LogFile<StaticConfig>*>(start);
+      printf("nsegments: %u\n", nsegments);
+      std::vector<LogFile<StaticConfig>*> lfs{};
+      std::size_t segment_len = len / nsegments;
+      for (int s = 0; s < nsegments; s++) {
+        if (s == nsegments - 1) {
+          segment_len = len - (nsegments - 1) * segment_len;
+        }
 
-      char* cur_read_ptr = reinterpret_cast<char*>(&lf->entries[0]);
-      char* cur_write_ptr = reinterpret_cast<char*>(&lf->entries[0]);
+        LogFile<StaticConfig>* lf =
+          reinterpret_cast<LogFile<StaticConfig>*>(start);
 
-      auto mlf = new MmappedLogFile<StaticConfig>{fname, start, cur_read_ptr, cur_write_ptr, len, fd};
+        printf("open_existing: lf = %p\n", lf);
+
+        lfs.push_back(lf);
+        start += segment_len;
+      }
+
+      auto mlf = new MmappedLogFile<StaticConfig>{fname, len, fd, lfs};
 
       return std::shared_ptr<MmappedLogFile<StaticConfig>>{mlf};
     } else {
@@ -432,78 +453,96 @@ class MmappedLogFile {
     }
   }
 
-  MmappedLogFile(std::string fname, void* start,
-                 char* cur_read_ptr, char* cur_write_ptr,
-                 std::size_t len, int fd)
-      : fname{fname},
-        start{start},
-        cur_read_ptr{cur_read_ptr},
-        cur_write_ptr{cur_write_ptr},
-        len{len},
-        fd{fd} {}
-
   ~MmappedLogFile() {
-    if (start != nullptr) {
-      PosixIO::Munmap(start, len);
-      PosixIO::Close(fd);
-    }
+    PosixIO::Munmap(get_lf(0), len_);
+    PosixIO::Close(fd_);
   }
 
-  LogFile<StaticConfig>* get_lf() {
-    return static_cast<LogFile<StaticConfig>*>(start);
+  std::size_t get_nsegments() {
+    return lfs_.size();
+  }
+
+  LogFile<StaticConfig>* get_lf(std::size_t segment = 0) {
+    return reinterpret_cast<LogFile<StaticConfig>*>(lfs_[segment]);
   }
 
   LogEntry<StaticConfig>* get_cur_le() {
-    if (start == nullptr) {
-      return nullptr;
-    } else {
-      return reinterpret_cast<LogEntry<StaticConfig>*>(cur_read_ptr);
-    }
+    return reinterpret_cast<LogEntry<StaticConfig>*>(cur_read_ptr_);
+  }
+
+  bool has_next_le(std::size_t segment) {
+    return cur_read_ptr_ <
+           (reinterpret_cast<char*>(get_lf(segment)) + get_size(segment));
   }
 
   bool has_next_le() {
-    if (start == nullptr) {
-      return false;
-    } else {
-      return cur_read_ptr < (static_cast<char*>(start) + get_size());
-    }
+    return has_next_le(cur_segment_) ||
+           (cur_segment_ < get_nsegments() - 1 && get_size(cur_segment_ + 1) != 0);
   }
 
   void read_next_le() {
-    auto le = reinterpret_cast<LogEntry<StaticConfig>*>(cur_read_ptr);
-    cur_read_ptr += le->size;
+    auto le = reinterpret_cast<LogEntry<StaticConfig>*>(cur_read_ptr_);
+    if (has_next_le(cur_segment_)) {
+      cur_read_ptr_ += le->size;
+    } else if (has_next_le()) {
+      cur_segment_ += 1;
+      cur_read_ptr_ = reinterpret_cast<char*>(&lfs_[cur_segment_]->entries[0]);
+    } else {
+      throw std::runtime_error("read_next_le: nothing more to read!");
+    }
+  }
+
+  bool has_space_next_le(std::size_t n) {
+    char* end = reinterpret_cast<char*>(get_lf(0)) + len_;
+    if (cur_segment_ < get_nsegments() - 1) {
+      end = reinterpret_cast<char*>(get_lf(cur_segment_ + 1));
+    }
+
+    return cur_write_ptr_ + n < end;
   }
 
   void write_next_le(void* src, std::size_t n) {
-    std::memcpy(cur_write_ptr, src, n);
-    cur_write_ptr += n;
+    if (!has_space_next_le(n)) {
+      cur_segment_ += 1;
+      cur_write_ptr_ = reinterpret_cast<char*>(&lfs_[cur_segment_]->entries[0]);
+    }
 
-    auto lf = get_lf();
+    std::memcpy(cur_write_ptr_, src, n);
+    cur_write_ptr_ += n;
+    auto lf = get_lf(cur_segment_);
     lf->nentries += 1;
     lf->size += n;
   }
 
-  std::size_t get_size() {
-    if (start == nullptr) {
-      return 0;
-    } else {
-      return get_lf()->size;
-    }
+  std::size_t get_size(std::size_t segment = 0) {
+    return get_lf(segment)->size;
   }
 
-  uint64_t get_nentries() {
-    if (start == nullptr) {
-      return 0;
-    } else {
-      return get_lf()->nentries;
-    }
+  uint64_t get_nentries(std::size_t segment = 0) {
+    return get_lf(segment)->nentries;
+  }
+
+ private:
+  std::string fname_;
+  std::size_t len_;
+  int fd_;
+  char* cur_read_ptr_;
+  char* cur_write_ptr_;
+  std::vector<LogFile<StaticConfig>*> lfs_;
+  std::size_t cur_segment_;
+
+  MmappedLogFile(std::string fname, std::size_t len, int fd,
+                 std::vector<LogFile<StaticConfig>*> lfs)
+      : fname_{fname}, len_{len}, fd_{fd}, lfs_{lfs}, cur_segment_{0} {
+    cur_read_ptr_ = reinterpret_cast<char*>(&lfs_[cur_segment_]->entries[0]);
+    cur_write_ptr_ = reinterpret_cast<char*>(&lfs_[cur_segment_]->entries[0]);
   }
 };
 
 template <class StaticConfig>
 class CopyCat : public CCCInterface<StaticConfig> {
  public:
-  CopyCat(DB<StaticConfig>* db, uint16_t nloggers, uint16_t nworkers,
+  CopyCat(DB<StaticConfig>* db, uint16_t nloggers, uint16_t nschedulers,
           std::string logdir);
 
   ~CopyCat();
@@ -514,23 +553,28 @@ class CopyCat : public CCCInterface<StaticConfig> {
 
   void preprocess_logs();
 
-  void start_workers();
-  void stop_workers();
+  void start_schedulers();
+  void stop_schedulers();
 
  private:
   DB<StaticConfig>* db_;
   std::size_t len_;
 
   uint16_t nloggers_;
-  uint16_t nworkers_;
+  uint16_t nschedulers_;
 
   std::string logdir_;
+  std::shared_ptr<MmappedLogFile<StaticConfig>> log_;
 
-  pthread_barrier_t worker_barrier_;
-  std::vector<std::thread> workers_;
-  std::atomic<bool> workers_stop_;
+  pthread_barrier_t scheduler_barrier_;
+  std::vector<std::thread> schedulers_;
+  std::atomic<bool> schedulers_stop_;
 
-  void worker_thread(DB<StaticConfig>* db, uint16_t id);
+  uint16_t nsegments(std::size_t len) {
+    return static_cast<uint16_t>(len / StaticConfig::kPageSize);
+  }
+
+  void scheduler_thread(DB<StaticConfig>* db, uint16_t id);
 
   void create_table(DB<StaticConfig>* db,
                     CreateTableLogEntry<StaticConfig>* le);

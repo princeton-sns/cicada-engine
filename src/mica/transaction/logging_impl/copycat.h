@@ -54,7 +54,7 @@ void CopyCat<StaticConfig>::start_schedulers() {
     auto lock = &locks[wid];
     auto next_lock = &locks[(wid + 1) % nschedulers_];
     schedulers_.emplace_back(
-        std::thread{&CopyCat<StaticConfig>::scheduler_thread, this, db_, wid,
+        std::thread{&CopyCat<StaticConfig>::scheduler_thread, this, wid,
                     lock, next_lock});
   }
 
@@ -360,20 +360,15 @@ void CopyCat<StaticConfig>::write_hash_idx_row(
 }
 
 template <class StaticConfig>
-void CopyCat<StaticConfig>::scheduler_thread(DB<StaticConfig>* db, uint16_t id,
+void CopyCat<StaticConfig>::scheduler_thread(uint16_t id,
                                              SchedulerLock* my_lock,
                                              SchedulerLock* next_lock) {
   printf("Starting replica scheduler: %u\n", id);
 
+  mica::util::lcore.pin_thread(id);
+
   std::unordered_map<uint64_t, LogEntryRef*> local_fifos{};
   std::unordered_map<uint64_t, LogEntryRef*> local_fifo_tails{};
-
-  mica::util::lcore.pin_thread(id);
-  db->activate(id);
-
-  Context<StaticConfig>* ctx = db->context(id);
-  Transaction<StaticConfig> tx{ctx};
-  RowAccessHandle<StaticConfig> rah{&tx};
 
   std::size_t nsegments = log_->get_nsegments();
 
@@ -383,12 +378,14 @@ void CopyCat<StaticConfig>::scheduler_thread(DB<StaticConfig>* db, uint16_t id,
     my_lock->locked = true;
   }
 
+  auto ler = new LogEntryRef{nullptr, nullptr};
+
   pthread_barrier_wait(&scheduler_barrier_);
 
   for (std::size_t cur_segment = id; cur_segment < nsegments;
        cur_segment += nschedulers_) {
     LogFile<StaticConfig>* lf = log_->get_lf(cur_segment);
-    lf->print();
+    // lf->print();
 
     char* ptr = reinterpret_cast<char*>(&lf->entries[0]);
 
@@ -421,7 +418,7 @@ void CopyCat<StaticConfig>::scheduler_thread(DB<StaticConfig>* db, uint16_t id,
               "scheduler_thread: Unexpected log entry type.");
       }
 
-      auto ler = new LogEntryRef{nullptr, ptr};
+      // auto ler = new LogEntryRef{nullptr, ptr};
 
       auto search = local_fifos.find(row_id);
       if (search == local_fifos.end()) {
@@ -441,9 +438,9 @@ void CopyCat<StaticConfig>::scheduler_thread(DB<StaticConfig>* db, uint16_t id,
     }
     my_lock->locked = true;
 
-    for (const auto& fifo : local_fifos) {
-      queue_.Append(fifo.first, fifo.second, local_fifo_tails[fifo.first]);
-    }
+    // for (const auto& fifo : local_fifos) {
+    //   queue_.Append(fifo.first, fifo.second, local_fifo_tails[fifo.first]);
+    // }
 
     next_lock->locked = false;
 
@@ -454,15 +451,6 @@ void CopyCat<StaticConfig>::scheduler_thread(DB<StaticConfig>* db, uint16_t id,
     // if (schedulers_stop_) break;
   }
 
-  if (tx.has_began()) {
-    Result result;
-    tx.commit_replica(&result);
-    if (result != Result::kCommitted) {
-      throw std::runtime_error("Failed to commit transaction.");
-    }
-  }
-
-  db->deactivate(id);
   printf("Exiting replica scheduler: %u\n", id);
 }
 

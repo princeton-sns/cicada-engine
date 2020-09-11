@@ -16,7 +16,8 @@ using mica::util::PosixIO;
 template <class StaticConfig>
 CopyCat<StaticConfig>::CopyCat(DB<StaticConfig>* db, uint16_t nloggers,
                                uint16_t nschedulers, std::string logdir)
-    : db_{db},
+    : queue_{},
+      db_{db},
       len_{StaticConfig::kPageSize},
       nloggers_{nloggers},
       nschedulers_{nschedulers},
@@ -65,6 +66,9 @@ void CopyCat<StaticConfig>::stop_schedulers() {
 
   log_.reset();
   schedulers_.clear();
+
+  printf("Printing queue:\n");
+  queue_.Print();
 }
 
 template <class StaticConfig>
@@ -355,8 +359,8 @@ void CopyCat<StaticConfig>::scheduler_thread(DB<StaticConfig>* db,
                                              uint16_t id) {
   printf("Starting replica scheduler: %u\n", id);
 
-  std::unordered_map<uint64_t, std::shared_ptr<LogEntryRef>> local_fifos{};
-  std::unordered_map<uint64_t, std::shared_ptr<LogEntryRef>> local_fifo_tails{};
+  std::unordered_map<uint64_t, LogEntryRef*> local_fifos{};
+  std::unordered_map<uint64_t, LogEntryRef*> local_fifo_tails{};
 
   mica::util::lcore.pin_thread(id);
   db->activate(id);
@@ -405,36 +409,23 @@ void CopyCat<StaticConfig>::scheduler_thread(DB<StaticConfig>* db,
               "scheduler_thread: Unexpected log entry type.");
       }
 
-      auto ler = std::shared_ptr<LogEntryRef>{new LogEntryRef{nullptr, ptr}};
+      auto ler = new LogEntryRef{nullptr, ptr};
 
       auto search = local_fifos.find(row_id);
       if (search == local_fifos.end()) {
         local_fifos[row_id] = ler;
         local_fifo_tails[row_id] = ler;
       } else {
-        local_fifo_tails[row_id]->next = ler;
+        local_fifo_tails[row_id]->set_next(ler);
         local_fifo_tails[row_id] = ler;
       }
 
       ptr += le->size;
     }
 
-    // printf("printing local_fifos\n");
-    // for (const auto& n : local_fifos) {
-    //   std::cout << "Key:[" << n.first << "] Value:[" << n.second << "]\n";
-
-    //   auto next = n.second->next;
-    //   while (next != nullptr) {
-    //     std::cout << "Key:[" << n.first << "] Value:[" << next << "]\n";
-    //     next = next->next;
-    //   }
-    //   std::cout << std::endl;
-    // }
-
-    // printf("printing local_fifo_tails\n");
-    // for (const auto& n : local_fifo_tails) {
-    //   std::cout << "Key:[" << n.first << "] Value:[" << n.second << "]\n";
-    // }
+    for (const auto& fifo : local_fifos) {
+      queue_.Append(fifo.first, fifo.second, local_fifo_tails[fifo.first]);
+    }
 
     local_fifos.clear();
     local_fifo_tails.clear();

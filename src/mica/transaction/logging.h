@@ -29,6 +29,8 @@
 #include "mica/transaction/transaction.h"
 #include "mica/util/posix_io.h"
 
+#include "mica/transaction/logging_impl/sched_queue.cc"
+
 namespace mica {
 namespace transaction {
 
@@ -220,25 +222,6 @@ class LogFile {
   }
 };
 
-class LogEntryRef {
- public:
-  std::shared_ptr<LogEntryRef> next;
-  char* ptr;
-
-  LogEntryRef(LogEntryRef* next, char* ptr) : next{next}, ptr{ptr} {}
-
-  void print() {
-    std::stringstream stream;
-
-    stream << std::endl;
-    stream << "LogEntryRef:" << std::endl;
-    stream << "next: " << next << std::endl;
-    stream << "ptr: " << ptr << std::endl;
-
-    std::cout << stream.str();
-  }
-};
-
 template <class StaticConfig>
 class CreateTableLogEntry : public LogEntry<StaticConfig> {
  public:
@@ -396,7 +379,6 @@ class MmappedLogFile {
 
   static std::shared_ptr<MmappedLogFile<StaticConfig>> open_existing(
       std::string fname, int prot, int flags, uint16_t nsegments = 1) {
-
     if (PosixIO::Exists(fname.c_str())) {
       int fd = PosixIO::Open(fname.c_str(), O_RDONLY);
       std::size_t len = PosixIO::Size(fname.c_str());
@@ -411,7 +393,7 @@ class MmappedLogFile {
         }
 
         LogFile<StaticConfig>* lf =
-          reinterpret_cast<LogFile<StaticConfig>*>(start);
+            reinterpret_cast<LogFile<StaticConfig>*>(start);
 
         lfs.push_back(lf);
         start += segment_len;
@@ -430,9 +412,7 @@ class MmappedLogFile {
     PosixIO::Close(fd_);
   }
 
-  std::size_t get_nsegments() {
-    return lfs_.size();
-  }
+  std::size_t get_nsegments() { return lfs_.size(); }
 
   LogFile<StaticConfig>* get_lf(std::size_t segment = 0) {
     return reinterpret_cast<LogFile<StaticConfig>*>(lfs_[segment]);
@@ -448,8 +428,8 @@ class MmappedLogFile {
   }
 
   bool has_next_le() {
-    return has_next_le(cur_segment_) ||
-           (cur_segment_ < get_nsegments() - 1 && get_size(cur_segment_ + 1) != 0);
+    return has_next_le(cur_segment_) || (cur_segment_ < get_nsegments() - 1 &&
+                                         get_size(cur_segment_ + 1) != 0);
   }
 
   void read_next_le() {
@@ -529,6 +509,8 @@ class CopyCat : public CCCInterface<StaticConfig> {
   void stop_schedulers();
 
  private:
+  SchedulerQueue queue_;
+
   DB<StaticConfig>* db_;
   std::size_t len_;
 

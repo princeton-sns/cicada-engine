@@ -44,13 +44,18 @@ void CopyCat<StaticConfig>::start_schedulers() {
   const std::string fname = logdir_ + "/out.log";
   std::size_t len = PosixIO::Size(fname.c_str());
 
-  log_ = MmappedLogFile<StaticConfig>::open_existing(fname, PROT_READ,
-                                                     MAP_SHARED, nsegments(len));
+  log_ = MmappedLogFile<StaticConfig>::open_existing(
+      fname, PROT_READ, MAP_SHARED, nsegments(len));
+
+  SchedulerLock locks[nschedulers_] = {0};
 
   schedulers_stop_ = false;
   for (uint16_t wid = 0; wid < nschedulers_; wid++) {
+    auto lock = &locks[wid];
+    auto next_lock = &locks[(wid + 1) % nschedulers_];
     schedulers_.emplace_back(
-        std::thread{&CopyCat<StaticConfig>::scheduler_thread, this, db_, wid});
+        std::thread{&CopyCat<StaticConfig>::scheduler_thread, this, db_, wid,
+                    lock, next_lock});
   }
 
   pthread_barrier_wait(&scheduler_barrier_);
@@ -67,8 +72,8 @@ void CopyCat<StaticConfig>::stop_schedulers() {
   log_.reset();
   schedulers_.clear();
 
-  printf("Printing queue:\n");
-  queue_.Print();
+  // printf("Printing queue:\n");
+  // queue_.Print();
 }
 
 template <class StaticConfig>
@@ -355,8 +360,9 @@ void CopyCat<StaticConfig>::write_hash_idx_row(
 }
 
 template <class StaticConfig>
-void CopyCat<StaticConfig>::scheduler_thread(DB<StaticConfig>* db,
-                                             uint16_t id) {
+void CopyCat<StaticConfig>::scheduler_thread(DB<StaticConfig>* db, uint16_t id,
+                                             SchedulerLock* my_lock,
+                                             SchedulerLock* next_lock) {
   printf("Starting replica scheduler: %u\n", id);
 
   std::unordered_map<uint64_t, LogEntryRef*> local_fifos{};
@@ -371,12 +377,18 @@ void CopyCat<StaticConfig>::scheduler_thread(DB<StaticConfig>* db,
 
   std::size_t nsegments = log_->get_nsegments();
 
+  if (id == 0) {
+    my_lock->locked = false;
+  } else {
+    my_lock->locked = true;
+  }
+
   pthread_barrier_wait(&scheduler_barrier_);
 
   for (std::size_t cur_segment = id; cur_segment < nsegments;
        cur_segment += nschedulers_) {
     LogFile<StaticConfig>* lf = log_->get_lf(cur_segment);
-    // lf->print();
+    lf->print();
 
     char* ptr = reinterpret_cast<char*>(&lf->entries[0]);
 
@@ -423,9 +435,17 @@ void CopyCat<StaticConfig>::scheduler_thread(DB<StaticConfig>* db,
       ptr += le->size;
     }
 
+    while (my_lock->locked) {
+      std::this_thread::sleep_for(std::chrono::milliseconds(10));
+      mica::util::pause();
+    }
+    my_lock->locked = true;
+
     for (const auto& fifo : local_fifos) {
       queue_.Append(fifo.first, fifo.second, local_fifo_tails[fifo.first]);
     }
+
+    next_lock->locked = false;
 
     local_fifos.clear();
     local_fifo_tails.clear();
@@ -433,7 +453,6 @@ void CopyCat<StaticConfig>::scheduler_thread(DB<StaticConfig>* db,
     // std::this_thread::sleep_for(std::chrono::milliseconds(10));
     // if (schedulers_stop_) break;
   }
-
 
   if (tx.has_began()) {
     Result result;

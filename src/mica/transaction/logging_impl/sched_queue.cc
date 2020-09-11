@@ -25,7 +25,6 @@ void SchedulerQueue::Print() {
 
 void SchedulerQueue::Append(uint64_t row_id, LogEntryRef* head,
                             LogEntryRef* tail) {
-  printf("Append: %lu, %p, %p\n", row_id, head, tail);
   auto search = heads_.find(row_id);
   if (search != heads_.end()) {  // Not found
     FIFOHead* h = heads_[row_id];
@@ -53,7 +52,6 @@ void SchedulerQueue::Append(uint64_t row_id, LogEntryRef* head,
         StatusOrUint64 new_status = status;
         new_status.status.nappends += 1;
         if (__sync_bool_compare_and_swap(&h->status.uint, status.uint, new_status.uint)) {
-          printf("setting next of %p to %p\n", t, head);
           t->set_next(head);
           tails_[row_id] = tail;
           return;

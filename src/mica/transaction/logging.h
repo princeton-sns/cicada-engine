@@ -509,6 +509,10 @@ class CopyCat : public CCCInterface<StaticConfig> {
   void stop_schedulers();
 
  private:
+  struct SchedulerLock {
+    volatile bool locked;
+  } __attribute__((__aligned__(64)));
+
   SchedulerQueue queue_;
 
   DB<StaticConfig>* db_;
@@ -528,7 +532,7 @@ class CopyCat : public CCCInterface<StaticConfig> {
     return static_cast<uint16_t>(len / StaticConfig::kPageSize);
   }
 
-  void scheduler_thread(DB<StaticConfig>* db, uint16_t id);
+  void scheduler_thread(DB<StaticConfig>* db, uint16_t id, SchedulerLock* my_lock, SchedulerLock* next_lock);
 
   void create_table(DB<StaticConfig>* db,
                     CreateTableLogEntry<StaticConfig>* le);

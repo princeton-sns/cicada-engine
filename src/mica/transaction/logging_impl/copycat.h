@@ -379,10 +379,6 @@ void CopyCat<StaticConfig>::scheduler_thread(uint16_t id,
     my_lock->locked = true;
   }
 
-  auto ler = new LogEntryRef{nullptr, nullptr};
-
-  using namespace std::chrono;
-
   std::chrono::microseconds time_waiting {0};
 
   pthread_barrier_wait(&scheduler_barrier_);
@@ -423,7 +419,7 @@ void CopyCat<StaticConfig>::scheduler_thread(uint16_t id,
               "scheduler_thread: Unexpected log entry type.");
       }
 
-      // auto ler = new LogEntryRef{nullptr, ptr};
+      auto ler = new LogEntryRef{nullptr, ptr};
 
       auto search = local_fifos.find(row_id);
       if (search == local_fifos.end()) {
@@ -437,13 +433,13 @@ void CopyCat<StaticConfig>::scheduler_thread(uint16_t id,
       ptr += le->size;
     }
 
-    high_resolution_clock::time_point start = high_resolution_clock::now();
+    std::chrono::high_resolution_clock::time_point start = std::chrono::high_resolution_clock::now();
     while (my_lock->locked) {
       mica::util::pause();
     }
     my_lock->locked = true;
-    high_resolution_clock::time_point end = high_resolution_clock::now();
-    std::chrono::microseconds diff = duration_cast<std::chrono::microseconds>(end - start);
+    std::chrono::high_resolution_clock::time_point end = std::chrono::high_resolution_clock::now();
+    std::chrono::microseconds diff = std::chrono::duration_cast<std::chrono::microseconds>(end - start);
     // printf("Thread %u waited %ld microseconds\n", id, diff.count());
     time_waiting += diff;
 

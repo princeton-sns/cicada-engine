@@ -2,6 +2,7 @@
 #ifndef MICA_TRANSACTION_COPYCAT_H_
 #define MICA_TRANSACTION_COPYCAT_H_
 
+#include <chrono>
 #include <thread>
 #include <unordered_map>
 
@@ -380,6 +381,10 @@ void CopyCat<StaticConfig>::scheduler_thread(uint16_t id,
 
   auto ler = new LogEntryRef{nullptr, nullptr};
 
+  using namespace std::chrono;
+
+  std::chrono::microseconds time_waiting {0};
+
   pthread_barrier_wait(&scheduler_barrier_);
 
   for (std::size_t cur_segment = id; cur_segment < nsegments;
@@ -432,15 +437,19 @@ void CopyCat<StaticConfig>::scheduler_thread(uint16_t id,
       ptr += le->size;
     }
 
+    high_resolution_clock::time_point start = high_resolution_clock::now();
     while (my_lock->locked) {
-      std::this_thread::sleep_for(std::chrono::milliseconds(10));
       mica::util::pause();
     }
     my_lock->locked = true;
+    high_resolution_clock::time_point end = high_resolution_clock::now();
+    std::chrono::microseconds diff = duration_cast<std::chrono::microseconds>(end - start);
+    // printf("Thread %u waited %ld microseconds\n", id, diff.count());
+    time_waiting += diff;
 
-    // for (const auto& fifo : local_fifos) {
-    //   queue_.Append(fifo.first, fifo.second, local_fifo_tails[fifo.first]);
-    // }
+    for (const auto& fifo : local_fifos) {
+      queue_.Append(fifo.first, fifo.second, local_fifo_tails[fifo.first]);
+    }
 
     next_lock->locked = false;
 
@@ -452,6 +461,7 @@ void CopyCat<StaticConfig>::scheduler_thread(uint16_t id,
   }
 
   printf("Exiting replica scheduler: %u\n", id);
+  printf("Time waiting: %ld microseconds\n", time_waiting.count());
 }
 
 template <class StaticConfig>

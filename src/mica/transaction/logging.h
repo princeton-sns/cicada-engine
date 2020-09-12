@@ -27,9 +27,9 @@
 #include "mica/transaction/row.h"
 #include "mica/transaction/row_version_pool.h"
 #include "mica/transaction/transaction.h"
+#include "mica/transaction/sched_pool.h"
+#include "mica/transaction/sched_queue.h"
 #include "mica/util/posix_io.h"
-
-#include "mica/transaction/logging_impl/sched_queue.cc"
 
 namespace mica {
 namespace transaction {
@@ -494,8 +494,8 @@ class MmappedLogFile {
 template <class StaticConfig>
 class CopyCat : public CCCInterface<StaticConfig> {
  public:
-  CopyCat(DB<StaticConfig>* db, uint16_t nloggers, uint16_t nschedulers,
-          std::string logdir);
+  CopyCat(DB<StaticConfig>* db, SchedulerPool<StaticConfig>* pool,
+          uint16_t nloggers, uint16_t nschedulers, std::string logdir);
 
   ~CopyCat();
 
@@ -514,8 +514,9 @@ class CopyCat : public CCCInterface<StaticConfig> {
   } __attribute__((__aligned__(64)));
 
   SchedulerQueue queue_;
-
   DB<StaticConfig>* db_;
+  SchedulerPool<StaticConfig>* pool_;
+
   std::size_t len_;
 
   uint16_t nloggers_;
@@ -532,7 +533,8 @@ class CopyCat : public CCCInterface<StaticConfig> {
     return static_cast<uint16_t>(len / StaticConfig::kPageSize);
   }
 
-  void scheduler_thread(uint16_t id, SchedulerLock* my_lock, SchedulerLock* next_lock);
+  void scheduler_thread(uint16_t id, SchedulerLock* my_lock,
+                        SchedulerLock* next_lock);
 
   void create_table(DB<StaticConfig>* db,
                     CreateTableLogEntry<StaticConfig>* le);

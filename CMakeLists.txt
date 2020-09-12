@@ -91,6 +91,7 @@ SET_SOURCE_FILES_PROPERTIES(src/mica/util/siphash/siphash24.c PROPERTIES LANGUAG
 SET(SOURCES ${SOURCES} src/mica/util/lcore.cc)
 SET(SOURCES ${SOURCES} src/mica/util/stopwatch.cc)
 SET(SOURCES ${SOURCES} src/mica/util/zipf.cc)
+SET(SOURCES ${SOURCES} src/mica/transaction/logging_impl/sched_queue.cc)
 
 SET(LIBRARIES ${LIBRARIES} rt numa pthread)
 

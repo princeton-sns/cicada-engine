@@ -1,4 +1,3 @@
-#pragma once
 #ifndef MICA_TRANSACTION_SCHED_QUEUE_CC_
 #define MICA_TRANSACTION_SCHED_QUEUE_CC_
 

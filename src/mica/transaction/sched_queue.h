@@ -17,7 +17,9 @@ class LogEntryRef {
 
   LogEntryRef* get_next() { return next_; }
   void set_next(LogEntryRef* next) { next_ = next; }
+
   char* get_ptr() { return ptr_; }
+  void set_ptr(char* ptr) { ptr_ = ptr; }
 
   void print() {
     std::stringstream stream;
@@ -33,7 +35,7 @@ class LogEntryRef {
  private:
   LogEntryRef* next_;
   char* ptr_;
-};
+} __attribute__((aligned(64)));
 
 struct Status {
   uint32_t nappends;

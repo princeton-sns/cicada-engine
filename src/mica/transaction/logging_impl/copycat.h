@@ -7,6 +7,7 @@
 #include <unordered_map>
 
 #include "mica/transaction/logging.h"
+#include "mica/transaction/sched_pool.h"
 #include "mica/util/posix_io.h"
 
 namespace mica {
@@ -15,10 +16,13 @@ namespace transaction {
 using mica::util::PosixIO;
 
 template <class StaticConfig>
-CopyCat<StaticConfig>::CopyCat(DB<StaticConfig>* db, uint16_t nloggers,
-                               uint16_t nschedulers, std::string logdir)
+CopyCat<StaticConfig>::CopyCat(DB<StaticConfig>* db,
+                               SchedulerPool<StaticConfig>* pool,
+                               uint16_t nloggers, uint16_t nschedulers,
+                               std::string logdir)
     : queue_{},
       db_{db},
+      pool_{pool},
       len_{StaticConfig::kPageSize},
       nloggers_{nloggers},
       nschedulers_{nschedulers},
@@ -54,9 +58,8 @@ void CopyCat<StaticConfig>::start_schedulers() {
   for (uint16_t wid = 0; wid < nschedulers_; wid++) {
     auto lock = &locks[wid];
     auto next_lock = &locks[(wid + 1) % nschedulers_];
-    schedulers_.emplace_back(
-        std::thread{&CopyCat<StaticConfig>::scheduler_thread, this, wid,
-                    lock, next_lock});
+    schedulers_.emplace_back(std::thread{
+        &CopyCat<StaticConfig>::scheduler_thread, this, wid, lock, next_lock});
   }
 
   pthread_barrier_wait(&scheduler_barrier_);
@@ -379,7 +382,7 @@ void CopyCat<StaticConfig>::scheduler_thread(uint16_t id,
     my_lock->locked = true;
   }
 
-  std::chrono::microseconds time_waiting {0};
+  std::chrono::microseconds time_waiting{0};
 
   pthread_barrier_wait(&scheduler_barrier_);
 
@@ -419,7 +422,8 @@ void CopyCat<StaticConfig>::scheduler_thread(uint16_t id,
               "scheduler_thread: Unexpected log entry type.");
       }
 
-      auto ler = new LogEntryRef{nullptr, ptr};
+      auto ler = pool_->allocate();
+      ler->set_ptr(ptr);
 
       auto search = local_fifos.find(row_id);
       if (search == local_fifos.end()) {
@@ -433,13 +437,16 @@ void CopyCat<StaticConfig>::scheduler_thread(uint16_t id,
       ptr += le->size;
     }
 
-    std::chrono::high_resolution_clock::time_point start = std::chrono::high_resolution_clock::now();
+    std::chrono::high_resolution_clock::time_point start =
+        std::chrono::high_resolution_clock::now();
     while (my_lock->locked) {
       mica::util::pause();
     }
     my_lock->locked = true;
-    std::chrono::high_resolution_clock::time_point end = std::chrono::high_resolution_clock::now();
-    std::chrono::microseconds diff = std::chrono::duration_cast<std::chrono::microseconds>(end - start);
+    std::chrono::high_resolution_clock::time_point end =
+        std::chrono::high_resolution_clock::now();
+    std::chrono::microseconds diff =
+        std::chrono::duration_cast<std::chrono::microseconds>(end - start);
     // printf("Thread %u waited %ld microseconds\n", id, diff.count());
     time_waiting += diff;
 

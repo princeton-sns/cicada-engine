@@ -40,7 +40,7 @@ template <class StaticConfig>
 CopyCat<StaticConfig>::~CopyCat() {
   int ret = pthread_barrier_destroy(&scheduler_barrier_);
   if (ret != 0) {
-    throw std::runtime_error("Failed to destroy scheduler barrier: " + ret);
+    std::cerr << "Failed to destroy scheduler barrier: " + ret;
   }
 }
 
@@ -55,11 +55,13 @@ void CopyCat<StaticConfig>::start_schedulers() {
   SchedulerLock locks[nschedulers_] = {0};
 
   schedulers_stop_ = false;
-  for (uint16_t wid = 0; wid < nschedulers_; wid++) {
-    auto lock = &locks[wid];
-    auto next_lock = &locks[(wid + 1) % nschedulers_];
-    schedulers_.emplace_back(std::thread{
-        &CopyCat<StaticConfig>::scheduler_thread, this, wid, lock, next_lock});
+  for (uint16_t sid = 0; sid < nschedulers_; sid++) {
+    auto lock = &locks[sid];
+    auto next_lock = &locks[(sid + 1) % nschedulers_];
+    auto s = new SchedulerThread<StaticConfig>{log_, scheduler_barrier_, sid, lock, next_lock};
+    s->start();
+
+    schedulers_.push_back(s);
   }
 
   pthread_barrier_wait(&scheduler_barrier_);
@@ -69,8 +71,9 @@ template <class StaticConfig>
 void CopyCat<StaticConfig>::stop_schedulers() {
   schedulers_stop_ = true;
 
-  for (auto& w : schedulers_) {
-    w.join();
+  for (auto s : schedulers_) {
+    s->stop();
+    delete s;
   }
 
   log_.reset();

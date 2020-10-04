@@ -3,8 +3,7 @@
 
 #include "mica/transaction/db.h"
 #include "mica/transaction/logging.h"
-#include "mica/transaction/logging_impl/mmap_logger.h"
-#include "mica/transaction/logging_impl/copycat.h"
+#include "mica/transaction/replication.h"
 
 // For compatibility.
 

@@ -107,4 +107,6 @@ class SchedulerQueue {
 }  // namespace transaction
 };  // namespace mica
 
+#include "replication_impl/sched_queue.h"
+
 #endif

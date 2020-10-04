@@ -25,7 +25,8 @@ class PosixIO {
       if (ret == -1) {
         if (errno == EINTR) continue;
         throw std::runtime_error("Failed to open file with errno " +
-                                 std::to_string(errno));
+                                 std::to_string(errno) + ": " +
+                                 std::strerror(errno));
       }
       return ret;
     }
@@ -37,7 +38,8 @@ class PosixIO {
       if (ret == -1) {
         if (errno == EINTR) continue;
         throw std::runtime_error("Failed to seek file with errno " +
-                                 std::to_string(errno));
+                                 std::to_string(errno) + ": " +
+                                 std::strerror(errno));
       }
       return ret;
     }
@@ -48,7 +50,8 @@ class PosixIO {
     int ret = stat(path, &st);
     if (ret == -1) {
       throw std::runtime_error("Failed to get file size with errno " +
-                               std::to_string(errno));
+                               std::to_string(errno) + ": " +
+                               std::strerror(errno));
     }
     return static_cast<std::size_t>(st.st_size);
   }
@@ -59,7 +62,8 @@ class PosixIO {
       if (ret == -1) {
         if (errno == EINTR) continue;
         throw std::runtime_error("Failed to fsync file with errno " +
-                                 std::to_string(errno));
+                                 std::to_string(errno) + ": " +
+                                 std::strerror(errno));
       }
       return;
     }
@@ -71,7 +75,8 @@ class PosixIO {
       if (ret == -1) {
         if (errno == EINTR) continue;
         throw std::runtime_error("Failed to close file with errno " +
-                                 std::to_string(errno));
+                                 std::to_string(errno) + ": " +
+                                 std::strerror(errno));
       }
       return;
     }
@@ -85,7 +90,8 @@ class PosixIO {
       if (ret == -1) {
         if (errno == EINTR) continue;
         throw std::runtime_error("Read failed with errno " +
-                                 std::to_string(errno));
+                                 std::to_string(errno) + ": " +
+                                 std::strerror(errno));
       }
       if (ret == 0) break;  // no more bytes left in the file
       bytes_read += static_cast<size_t>(ret);
@@ -101,7 +107,8 @@ class PosixIO {
       if (ret == -1) {
         if (errno == EINTR) continue;
         throw std::runtime_error("Write to log file failed with errno " +
-                                 std::to_string(errno));
+                                 std::to_string(errno) + ": " +
+                                 std::strerror(errno));
       }
       written += static_cast<size_t>(ret);
     }
@@ -111,7 +118,8 @@ class PosixIO {
     off_t ret = pread(fd, buf, nbyte, offset);
     if (ret == -1) {
       throw std::runtime_error("PRead failed with errno " +
-                               std::to_string(errno));
+                               std::to_string(errno) + ": " +
+                               std::strerror(errno));
     }
 
     return ret;
@@ -123,7 +131,8 @@ class PosixIO {
       if (ret == -1) {
         if (errno == EINTR) continue;
         throw std::runtime_error("ftruncate failed with errno " +
-                                 std::to_string(errno));
+                                 std::to_string(errno) + ": " +
+                                 std::strerror(errno));
       }
 
       return;
@@ -135,7 +144,8 @@ class PosixIO {
     void* ptr = mmap(addr, len, prot, flags, fd, off);
     if (ptr == MAP_FAILED) {
       throw std::runtime_error("mmap failed with errno " +
-                               std::to_string(errno));
+                               std::to_string(errno) + ": " +
+                               std::strerror(errno));
     }
 
     return ptr;
@@ -145,7 +155,8 @@ class PosixIO {
     int ret = munmap(addr, len);
     if (ret == -1) {
       throw std::runtime_error("munmap failed with errno " +
-                               std::to_string(errno));
+                               std::to_string(errno) + ": " +
+                               std::strerror(errno));
     }
   }
 
@@ -153,7 +164,8 @@ class PosixIO {
     int ret = msync(addr, len, flags);
     if (ret == -1) {
       throw std::runtime_error("msync failed with errno " +
-                               std::to_string(errno));
+                               std::to_string(errno) + ": " +
+                               std::strerror(errno));
     }
   }
 

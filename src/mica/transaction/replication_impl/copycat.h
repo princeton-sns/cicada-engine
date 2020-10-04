@@ -7,7 +7,7 @@
 #include <unordered_map>
 
 #include "mica/transaction/logging.h"
-#include "mica/transaction/sched_pool.h"
+#include "mica/transaction/replication.h"
 #include "mica/util/posix_io.h"
 
 namespace mica {
@@ -58,7 +58,8 @@ void CopyCat<StaticConfig>::start_schedulers() {
   for (uint16_t sid = 0; sid < nschedulers_; sid++) {
     auto lock = &locks[sid];
     auto next_lock = &locks[(sid + 1) % nschedulers_];
-    auto s = new SchedulerThread<StaticConfig>{log_, &scheduler_barrier_, sid, lock, next_lock};
+    auto s = new SchedulerThread<StaticConfig>{log_, pool_, &scheduler_barrier_,
+      sid, nschedulers_, lock, next_lock};
 
     s->start();
 

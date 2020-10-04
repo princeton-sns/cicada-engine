@@ -6,7 +6,7 @@
 #include "mica/test/test_logger_conf.h"
 #include "mica/transaction/db.h"
 #include "mica/transaction/logging.h"
-#include "mica/transaction/sched_pool.h"
+#include "mica/transaction/replication.h"
 #include "mica/util/lcore.h"
 #include "mica/util/posix_io.h"
 #include "mica/util/rand.h"
@@ -768,10 +768,12 @@ int main(int argc, const char* argv[]) {
 
   {
     auto sched_pool_size = 1 * uint64_t(1073741824);
-    auto lcore = 0;
+    std::size_t lcore = 0;
     printf("creating sched pool\n");
     SchedulerPool* sched_pool = new SchedulerPool(&alloc, sched_pool_size, lcore);
     printf("created sched pool\n");
+
+    // return 0;
 
     CCC ccc{&replica, sched_pool, static_cast<uint16_t>(num_threads),
       static_cast<uint16_t>(num_schedulers), std::string{MICA_RELAY_INIT_DIR}};

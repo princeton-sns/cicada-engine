@@ -12,7 +12,7 @@ namespace mica {
   template <class StaticConfig>
   SchedulerThread<StaticConfig>::SchedulerThread(
       std::shared_ptr<MmappedLogFile<StaticConfig>> log,
-      pthread_barrier_t start_barrier, uint16_t id, SchedulerLock* my_lock,
+      pthread_barrier_t* start_barrier, uint16_t id, SchedulerLock* my_lock,
       SchedulerLock* next_lock)
       : log_{log},
         start_barrier_{start_barrier},
@@ -56,7 +56,7 @@ namespace mica {
 
       std::chrono::microseconds time_waiting{0};
 
-      pthread_barrier_wait(&start_barrier_);
+      pthread_barrier_wait(start_barrier_);
 
 
       printf("Exiting replica scheduler: %u\n", id_);

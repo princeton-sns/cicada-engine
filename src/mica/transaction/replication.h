@@ -178,7 +178,7 @@ namespace mica {
  class SchedulerThread {
   public:
    SchedulerThread(std::shared_ptr<MmappedLogFile<StaticConfig>> log,
-                   pthread_barrier_t start_barrier,
+                   pthread_barrier_t* start_barrier,
                    uint16_t id, SchedulerLock* my_lock, SchedulerLock* next_lock);
 
    ~SchedulerThread();
@@ -188,7 +188,7 @@ namespace mica {
 
  private:
    std::shared_ptr<MmappedLogFile<StaticConfig>> log_;
-   pthread_barrier_t start_barrier_;
+   pthread_barrier_t* start_barrier_;
    uint16_t id_;
    SchedulerLock* my_lock_;
    SchedulerLock* next_lock_;

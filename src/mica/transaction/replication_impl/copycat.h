@@ -20,7 +20,7 @@ CopyCat<StaticConfig>::CopyCat(DB<StaticConfig>* db,
                                SchedulerPool<StaticConfig>* pool,
                                uint16_t nloggers, uint16_t nschedulers,
                                std::string logdir)
-    : queue_{},
+    : queue_{pool},
       db_{db},
       pool_{pool},
       len_{StaticConfig::kPageSize},
@@ -58,7 +58,7 @@ void CopyCat<StaticConfig>::start_schedulers() {
   for (uint16_t sid = 0; sid < nschedulers_; sid++) {
     auto lock = &locks[sid];
     auto next_lock = &locks[(sid + 1) % nschedulers_];
-    auto s = new SchedulerThread<StaticConfig>{log_, pool_, &scheduler_barrier_,
+    auto s = new SchedulerThread<StaticConfig>{log_, pool_, &queue_, &scheduler_barrier_,
       sid, nschedulers_, lock, next_lock};
 
     s->start();
@@ -366,110 +366,6 @@ void CopyCat<StaticConfig>::write_hash_idx_row(
 
   char* data = rah->data();
   std::memcpy(data, le->data, le->data_size);
-}
-
-template <class StaticConfig>
-void CopyCat<StaticConfig>::scheduler_thread(uint16_t id,
-                                             SchedulerLock* my_lock,
-                                             SchedulerLock* next_lock) {
-  printf("Starting replica scheduler: %u\n", id);
-
-  mica::util::lcore.pin_thread(id);
-
-  std::unordered_map<uint64_t, LogEntryRef*> local_fifos{};
-  std::unordered_map<uint64_t, LogEntryRef*> local_fifo_tails{};
-
-  std::size_t nsegments = log_->get_nsegments();
-
-  if (id == 0) {
-    my_lock->locked = false;
-  } else {
-    my_lock->locked = true;
-  }
-
-  std::chrono::microseconds time_waiting{0};
-
-  pthread_barrier_wait(&scheduler_barrier_);
-
-  for (std::size_t cur_segment = id; cur_segment < nsegments;
-       cur_segment += nschedulers_) {
-    LogFile<StaticConfig>* lf = log_->get_lf(cur_segment);
-    // lf->print();
-
-    char* ptr = reinterpret_cast<char*>(&lf->entries[0]);
-
-    InsertRowLogEntry<StaticConfig>* irle = nullptr;
-    WriteRowLogEntry<StaticConfig>* wrle = nullptr;
-
-    for (uint64_t i = 0; i < lf->nentries; i++) {
-      LogEntry<StaticConfig>* le =
-          reinterpret_cast<LogEntry<StaticConfig>*>(ptr);
-      // le->print();
-
-      uint64_t row_id = 0;
-      switch (le->type) {
-        case LogEntryType::INSERT_ROW:
-          irle = static_cast<InsertRowLogEntry<StaticConfig>*>(le);
-          row_id = irle->row_id;
-          // irle->print();
-          // insert_row(ctx, &tx, &rah, irle);
-          break;
-
-        case LogEntryType::WRITE_ROW:
-          wrle = static_cast<WriteRowLogEntry<StaticConfig>*>(le);
-          row_id = wrle->row_id;
-          // wrle->print();
-          // write_row(ctx, &tx, &rah, wrle);
-          break;
-
-        default:
-          throw std::runtime_error(
-              "scheduler_thread: Unexpected log entry type.");
-      }
-
-      auto ler = pool_->allocate();
-      ler->set_ptr(ptr);
-
-      auto search = local_fifos.find(row_id);
-      if (search == local_fifos.end()) {
-        local_fifos[row_id] = ler;
-        local_fifo_tails[row_id] = ler;
-      } else {
-        local_fifo_tails[row_id]->set_next(ler);
-        local_fifo_tails[row_id] = ler;
-      }
-
-      ptr += le->size;
-    }
-
-    std::chrono::high_resolution_clock::time_point start =
-        std::chrono::high_resolution_clock::now();
-    while (my_lock->locked) {
-      mica::util::pause();
-    }
-    my_lock->locked = true;
-    std::chrono::high_resolution_clock::time_point end =
-        std::chrono::high_resolution_clock::now();
-    std::chrono::microseconds diff =
-        std::chrono::duration_cast<std::chrono::microseconds>(end - start);
-    // printf("Thread %u waited %ld microseconds\n", id, diff.count());
-    time_waiting += diff;
-
-    for (const auto& fifo : local_fifos) {
-      queue_.Append(fifo.first, fifo.second, local_fifo_tails[fifo.first]);
-    }
-
-    next_lock->locked = false;
-
-    local_fifos.clear();
-    local_fifo_tails.clear();
-
-    // std::this_thread::sleep_for(std::chrono::milliseconds(10));
-    // if (schedulers_stop_) break;
-  }
-
-  printf("Exiting replica scheduler: %u\n", id);
-  printf("Time waiting: %ld microseconds\n", time_waiting.count());
 }
 
 template <class StaticConfig>

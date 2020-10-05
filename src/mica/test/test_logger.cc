@@ -817,6 +817,7 @@ int main(int argc, const char* argv[]) {
       gettimeofday(&tv_end, nullptr);
       // int64_t endtime = get_server_clock();
 
+      // ccc.print_scheduler_queue();
 
       double start = (double)tv_start.tv_sec * 1. + (double)tv_start.tv_usec * 0.000001;
       double end = (double)tv_end.tv_sec * 1. + (double)tv_end.tv_usec * 0.000001;

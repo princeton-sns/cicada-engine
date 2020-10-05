@@ -6,12 +6,12 @@
 #include <stdio.h>
 
 #include <memory>
+#include <sstream>
 #include <string>
 
 #include "mica/util/posix_io.h"
 #include "mica/transaction/db.h"
 #include "mica/transaction/logging.h"
-#include "mica/transaction/sched_queue.h"
 
 namespace mica {
   namespace transaction {
@@ -174,26 +174,59 @@ namespace mica {
     public:
       LogEntryNode* next;
       void* ptr;
+
+      void print() {
+        std::stringstream stream;
+
+        stream << "LogEntryNode: " << this << std::endl;
+        stream << "next: " << next << std::endl;
+        stream << "ptr: " << ptr << std::endl;
+
+        std::cout << stream.str();
+      }
     }  __attribute__((aligned(64)));
 
     class LogEntryList {
     public:
-      void append(LogEntryNode* node) {
-        if (tail == nullptr) {
-          list = node;
-          tail = node;
-        } else {
-          tail->next = node;
-          tail = node;
-        }
-      };
-
       LogEntryList* next;
       LogEntryNode* list;
       LogEntryNode* tail;
 
       uint32_t status;
       volatile uint32_t lock;
+
+      void append(LogEntryNode* node, LogEntryNode* new_tail) {
+        tail->next = node;
+        tail = new_tail;
+      }
+
+      void append(LogEntryNode* node) {
+        if (tail == nullptr) {
+          list = node;
+          tail = node;
+        } else {
+          append(node, node);
+        }
+      };
+
+      void print() {
+        std::stringstream stream;
+
+        stream << "LogEntryList: " << this << std::endl;
+        stream << "next:" << next << std::endl;
+        stream << "status:" << status << std::endl;
+        stream << "tail:" << tail << std::endl;
+        stream << "list:" << std::endl;
+
+        std::cout << stream.str();
+
+        LogEntryNode* next = list;
+        while (next != nullptr) {
+          next->print();
+          next = next->next;
+        }
+      }
+
     }  __attribute__((aligned(64)));
 
     template <class StaticConfig>
@@ -256,10 +289,33 @@ namespace mica {
     } __attribute__((__aligned__(64)));
 
     template <class StaticConfig>
+    class SchedulerQueue {
+    public:
+      SchedulerQueue(SchedulerPool<StaticConfig>* pool);
+      ~SchedulerQueue();
+
+      void append(uint64_t row_id, LogEntryList* list);
+
+      void print();
+
+    private:
+      std::unordered_map<uint64_t, LogEntryList*> heads_;
+
+      LogEntryList head_;
+      LogEntryList* tail_;
+
+      SchedulerPool<StaticConfig>* pool_;
+
+      void deallocate_list(LogEntryList* list);
+    };
+
+
+    template <class StaticConfig>
     class SchedulerThread {
     public:
       SchedulerThread(std::shared_ptr<MmappedLogFile<StaticConfig>> log,
                       SchedulerPool<StaticConfig>* pool,
+                      SchedulerQueue<StaticConfig>* queue,
                       pthread_barrier_t* start_barrier,
                       uint16_t id, uint16_t nschedulers,
                       SchedulerLock* my_lock, SchedulerLock* next_lock);
@@ -272,6 +328,7 @@ namespace mica {
     private:
       std::shared_ptr<MmappedLogFile<StaticConfig>> log_;
       SchedulerPool<StaticConfig>* pool_;
+      SchedulerQueue<StaticConfig>* queue_;
       pthread_barrier_t* start_barrier_;
       uint16_t id_;
       uint16_t nschedulers_;
@@ -314,8 +371,12 @@ namespace mica {
       void start_schedulers();
       void stop_schedulers();
 
+      void print_scheduler_queue() {
+        queue_.print();
+      }
+
     private:
-      SchedulerQueue queue_;
+      SchedulerQueue<StaticConfig> queue_;
       DB<StaticConfig>* db_;
       SchedulerPool<StaticConfig>* pool_;
 
@@ -334,9 +395,6 @@ namespace mica {
       uint16_t nsegments(std::size_t len) {
         return static_cast<uint16_t>(len / StaticConfig::kPageSize);
       }
-
-      void scheduler_thread(uint16_t id, SchedulerLock* my_lock,
-                            SchedulerLock* next_lock);
 
       void create_table(DB<StaticConfig>* db,
                         CreateTableLogEntry<StaticConfig>* le);
@@ -373,5 +431,6 @@ namespace mica {
 #include "replication_impl/copycat.h"
 #include "replication_impl/scheduler_pool.h"
 #include "replication_impl/scheduler_thread.h"
+#include "replication_impl/scheduler_queue.h"
 
 #endif

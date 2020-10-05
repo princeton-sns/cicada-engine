@@ -9,6 +9,8 @@
 namespace mica {
   namespace transaction {
 
+    using std::chrono::high_resolution_clock;
+
     template <class StaticConfig>
     SchedulerThread<StaticConfig>::SchedulerThread(std::shared_ptr<MmappedLogFile<StaticConfig>> log,
                                                    SchedulerPool<StaticConfig>* pool,
@@ -54,25 +56,30 @@ namespace mica {
         my_lock_->locked = true;
       }
 
+      std::chrono::microseconds time_preprocessing{0};
       std::chrono::microseconds time_waiting{0};
+      std::chrono::microseconds time_critical{0};
 
       pthread_barrier_wait(start_barrier_);
 
+      high_resolution_clock::time_point start = high_resolution_clock::now();
       std::unordered_map<uint64_t, LogEntryList*> local_lists = build_local_lists();
+      high_resolution_clock::time_point end = high_resolution_clock::now();
+      std::chrono::microseconds diff =
+        std::chrono::duration_cast<std::chrono::microseconds>(end - start);
+      time_preprocessing += diff;
 
-      std::chrono::high_resolution_clock::time_point start =
-        std::chrono::high_resolution_clock::now();
+      start = high_resolution_clock::now();
       while (my_lock_->locked) {
         mica::util::pause();
       }
       my_lock_->locked = true;
-      std::chrono::high_resolution_clock::time_point end =
-        std::chrono::high_resolution_clock::now();
-      std::chrono::microseconds diff =
-        std::chrono::duration_cast<std::chrono::microseconds>(end - start);
+      end = high_resolution_clock::now();
+      diff = std::chrono::duration_cast<std::chrono::microseconds>(end - start);
       // printf("Thread %u waited %ld microseconds\n", id, diff.count());
       time_waiting += diff;
 
+      start = high_resolution_clock::now();
       for (const auto& item : local_lists) {
         auto row_id = item.first;
         auto list = item.second;
@@ -81,8 +88,14 @@ namespace mica {
       }
 
       next_lock_->locked = false;
+      end = high_resolution_clock::now();
+      diff = std::chrono::duration_cast<std::chrono::microseconds>(end - start);
+      // printf("Thread %u waited %ld microseconds\n", id, diff.count());
+      time_critical += diff;
 
       printf("Exiting replica scheduler: %u\n", id_);
+      printf("Time preprocessing: %ld microseconds\n", time_preprocessing.count());
+      printf("Time critical: %ld microseconds\n", time_critical.count());
       printf("Time waiting: %ld microseconds\n", time_waiting.count());
     };
 

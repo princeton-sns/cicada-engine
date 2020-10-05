@@ -240,10 +240,10 @@ namespace mica {
       SchedulerPool(Alloc* alloc, uint64_t size, size_t lcore);
       ~SchedulerPool();
 
-      LogEntryList* allocate_list();
+      LogEntryList* allocate_list(uint64_t n = 1);
       void free_list(LogEntryList* p);
 
-      LogEntryNode* allocate_node();
+      LogEntryNode* allocate_node(uint64_t n = 1);
       void free_node(LogEntryNode* p);
 
       void print_status() const {
@@ -328,6 +328,8 @@ namespace mica {
     private:
       std::shared_ptr<MmappedLogFile<StaticConfig>> log_;
       SchedulerPool<StaticConfig>* pool_;
+      LogEntryNode* allocated_nodes_;
+      LogEntryList* allocated_lists_;
       SchedulerQueue<StaticConfig>* queue_;
       pthread_barrier_t* start_barrier_;
       uint16_t id_;
@@ -340,6 +342,9 @@ namespace mica {
       void run();
 
       std::unordered_map<uint64_t, LogEntryList*> build_local_lists();
+
+      LogEntryList* allocate_list();
+      LogEntryNode* allocate_node();
     };
 
     template <class StaticConfig>

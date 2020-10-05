@@ -20,6 +20,8 @@ namespace mica {
                                                    SchedulerLock* my_lock, SchedulerLock* next_lock)
       : log_{log},
         pool_{pool},
+        allocated_nodes_{nullptr},
+        allocated_lists_{nullptr},
         queue_{queue},
         start_barrier_{start_barrier},
         id_{id},
@@ -100,6 +102,30 @@ namespace mica {
     };
 
     template <class StaticConfig>
+    LogEntryList* SchedulerThread<StaticConfig>::allocate_list() {
+      if (allocated_lists_ == nullptr) {
+        allocated_lists_ = pool_->allocate_list(1024);
+      }
+
+      LogEntryList* next = allocated_lists_;
+      allocated_lists_ = allocated_lists_->next;
+
+      return next;
+    }
+
+    template <class StaticConfig>
+    LogEntryNode* SchedulerThread<StaticConfig>::allocate_node() {
+      if (allocated_nodes_ == nullptr) {
+        allocated_nodes_ = pool_->allocate_node(1024);
+      }
+
+      LogEntryNode* next = allocated_nodes_;
+      allocated_nodes_ = allocated_nodes_->next;
+
+      return next;
+    }
+
+    template <class StaticConfig>
     std::unordered_map<uint64_t, LogEntryList*> SchedulerThread<StaticConfig>::build_local_lists() {
 
       std::size_t nsegments = log_->get_nsegments();
@@ -139,14 +165,14 @@ namespace mica {
             throw std::runtime_error("build_local_lists: Unexpected log entry type.");
           }
 
-          LogEntryNode* node = pool_->allocate_node();
+          LogEntryNode* node = allocate_node();
           std::memset(node, 0, sizeof *node);
           node->ptr = ptr;
 
           LogEntryList* list = nullptr;
           auto search = lists.find(row_id);
           if (search == lists.end()) {
-            list = pool_->allocate_list();
+            list = allocate_list();
             list->tail = nullptr;
             while (__sync_lock_test_and_set(&list->lock, 1) == 1) {
               ::mica::util::pause();

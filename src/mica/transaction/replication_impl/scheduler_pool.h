@@ -73,18 +73,25 @@ namespace mica {
     };
 
     template <class StaticConfig>
-    LogEntryList* SchedulerPool<StaticConfig>::allocate_list() {
+    LogEntryList* SchedulerPool<StaticConfig>::allocate_list(uint64_t n) {
       while (__sync_lock_test_and_set(&lock_, 1) == 1) ::mica::util::pause();
 
-      LogEntryList* p = next_list_;
-      if (next_list_) {
-        next_list_ = reinterpret_cast<LogEntryList*>(p->list);
+      LogEntryList* start = next_list_;
+      LogEntryList* end = next_list_;
+
+      for (uint64_t i = 1; i < n && end != nullptr; i++) {
+        end = reinterpret_cast<LogEntryList*>(end->list);
         free_lists_--;
+      }
+
+      if (end != nullptr) {
+        next_list_ = reinterpret_cast<LogEntryList*>(end->list);
+        end->list = nullptr;
       }
 
       __sync_lock_release(&lock_);
 
-      return p;
+      return start;
     };
 
     template <class StaticConfig>
@@ -99,18 +106,24 @@ namespace mica {
     };
 
     template <class StaticConfig>
-    LogEntryNode* SchedulerPool<StaticConfig>::allocate_node() {
+    LogEntryNode* SchedulerPool<StaticConfig>::allocate_node(uint64_t n) {
       while (__sync_lock_test_and_set(&lock_, 1) == 1) ::mica::util::pause();
 
-      auto p = next_node_;
-      if (next_node_) {
-        next_node_ = p->next;
+      LogEntryNode* start = next_node_;
+      LogEntryNode* end = next_node_;
+      for (uint64_t i = 1; i < n && end != nullptr; i++) {
+        end = end->next;
         free_nodes_--;
+      }
+
+      if (end != nullptr) {
+        next_node_ = end->next;
+        end->next = nullptr;
       }
 
       __sync_lock_release(&lock_);
 
-      return p;
+      return start;
     };
 
     template <class StaticConfig>

@@ -9,6 +9,8 @@
 namespace mica {
   namespace transaction {
 
+    using std::chrono::duration_cast;
+    using std::chrono::microseconds;
     using std::chrono::high_resolution_clock;
 
     template <class StaticConfig>
@@ -58,9 +60,9 @@ namespace mica {
         my_lock_->locked = true;
       }
 
-      std::chrono::microseconds time_preprocessing{0};
-      std::chrono::microseconds time_waiting{0};
-      std::chrono::microseconds time_critical{0};
+      microseconds time_preprocessing{0};
+      microseconds time_waiting{0};
+      microseconds time_critical{0};
 
       std::size_t nsegments = log_->get_nsegments();
 
@@ -74,8 +76,7 @@ namespace mica {
         high_resolution_clock::time_point start = high_resolution_clock::now();
         build_local_lists(cur_segment, local_lists);
         high_resolution_clock::time_point end = high_resolution_clock::now();
-        std::chrono::microseconds diff =
-          std::chrono::duration_cast<std::chrono::microseconds>(end - start);
+        microseconds diff = duration_cast<microseconds>(end - start);
         time_preprocessing += diff;
 
         start = high_resolution_clock::now();
@@ -84,7 +85,7 @@ namespace mica {
         }
         my_lock_->locked = true;
         end = high_resolution_clock::now();
-        diff = std::chrono::duration_cast<std::chrono::microseconds>(end - start);
+        diff = duration_cast<microseconds>(end - start);
         // printf("Thread %u waited %ld microseconds\n", id, diff.count());
         time_waiting += diff;
 
@@ -98,7 +99,7 @@ namespace mica {
 
         next_lock_->locked = false;
         end = high_resolution_clock::now();
-        diff = std::chrono::duration_cast<std::chrono::microseconds>(end - start);
+        diff = duration_cast<microseconds>(end - start);
         // printf("Thread %u waited %ld microseconds\n", id, diff.count());
         time_critical += diff;
 

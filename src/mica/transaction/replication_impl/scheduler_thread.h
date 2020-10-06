@@ -62,38 +62,48 @@ namespace mica {
       std::chrono::microseconds time_waiting{0};
       std::chrono::microseconds time_critical{0};
 
+      std::size_t nsegments = log_->get_nsegments();
+
+      std::unordered_map<uint64_t, LogEntryList*> local_lists{};
+
       pthread_barrier_wait(start_barrier_);
 
-      high_resolution_clock::time_point start = high_resolution_clock::now();
-      std::unordered_map<uint64_t, LogEntryList*> local_lists = build_local_lists();
-      high_resolution_clock::time_point end = high_resolution_clock::now();
-      std::chrono::microseconds diff =
-        std::chrono::duration_cast<std::chrono::microseconds>(end - start);
-      time_preprocessing += diff;
+      for (std::size_t cur_segment = id_; cur_segment < nsegments;
+           cur_segment += nschedulers_) {
 
-      start = high_resolution_clock::now();
-      while (my_lock_->locked) {
-        mica::util::pause();
+        high_resolution_clock::time_point start = high_resolution_clock::now();
+        build_local_lists(cur_segment, local_lists);
+        high_resolution_clock::time_point end = high_resolution_clock::now();
+        std::chrono::microseconds diff =
+          std::chrono::duration_cast<std::chrono::microseconds>(end - start);
+        time_preprocessing += diff;
+
+        start = high_resolution_clock::now();
+        while (my_lock_->locked) {
+          mica::util::pause();
+        }
+        my_lock_->locked = true;
+        end = high_resolution_clock::now();
+        diff = std::chrono::duration_cast<std::chrono::microseconds>(end - start);
+        // printf("Thread %u waited %ld microseconds\n", id, diff.count());
+        time_waiting += diff;
+
+        start = high_resolution_clock::now();
+        for (const auto& item : local_lists) {
+          auto row_id = item.first;
+          auto list = item.second;
+
+          queue_->append(row_id, list);
+        }
+
+        next_lock_->locked = false;
+        end = high_resolution_clock::now();
+        diff = std::chrono::duration_cast<std::chrono::microseconds>(end - start);
+        // printf("Thread %u waited %ld microseconds\n", id, diff.count());
+        time_critical += diff;
+
+        local_lists.clear();
       }
-      my_lock_->locked = true;
-      end = high_resolution_clock::now();
-      diff = std::chrono::duration_cast<std::chrono::microseconds>(end - start);
-      // printf("Thread %u waited %ld microseconds\n", id, diff.count());
-      time_waiting += diff;
-
-      start = high_resolution_clock::now();
-      for (const auto& item : local_lists) {
-        auto row_id = item.first;
-        auto list = item.second;
-
-        queue_->append(row_id, list);
-      }
-
-      next_lock_->locked = false;
-      end = high_resolution_clock::now();
-      diff = std::chrono::duration_cast<std::chrono::microseconds>(end - start);
-      // printf("Thread %u waited %ld microseconds\n", id, diff.count());
-      time_critical += diff;
 
       printf("Exiting replica scheduler: %u\n", id_);
       printf("Time preprocessing: %ld microseconds\n", time_preprocessing.count());
@@ -133,70 +143,62 @@ namespace mica {
     }
 
     template <class StaticConfig>
-    std::unordered_map<uint64_t, LogEntryList*> SchedulerThread<StaticConfig>::build_local_lists() {
+    void SchedulerThread<StaticConfig>::build_local_lists(std::size_t segment,
+                                                          std::unordered_map<uint64_t, LogEntryList*>& lists) {
 
-      std::size_t nsegments = log_->get_nsegments();
+      LogFile<StaticConfig>* lf = log_->get_lf(segment);
+      // lf->print();
 
-      std::unordered_map<uint64_t, LogEntryList*> lists{};
+      char* ptr = reinterpret_cast<char*>(&lf->entries[0]);
 
-      for (std::size_t cur_segment = id_; cur_segment < nsegments;
-           cur_segment += nschedulers_) {
-        LogFile<StaticConfig>* lf = log_->get_lf(cur_segment);
-        // lf->print();
+      InsertRowLogEntry<StaticConfig>* irle = nullptr;
+      WriteRowLogEntry<StaticConfig>* wrle = nullptr;
 
-        char* ptr = reinterpret_cast<char*>(&lf->entries[0]);
+      for (uint64_t i = 0; i < lf->nentries; i++) {
+        LogEntry<StaticConfig>* le =
+          reinterpret_cast<LogEntry<StaticConfig>*>(ptr);
+        // le->print();
 
-        InsertRowLogEntry<StaticConfig>* irle = nullptr;
-        WriteRowLogEntry<StaticConfig>* wrle = nullptr;
+        uint64_t row_id = 0;
+        switch (le->type) {
+        case LogEntryType::INSERT_ROW:
+          irle = static_cast<InsertRowLogEntry<StaticConfig>*>(le);
+          row_id = irle->row_id;
+          // irle->print();
+          break;
 
-        for (uint64_t i = 0; i < lf->nentries; i++) {
-          LogEntry<StaticConfig>* le =
-            reinterpret_cast<LogEntry<StaticConfig>*>(ptr);
-          // le->print();
+        case LogEntryType::WRITE_ROW:
+          wrle = static_cast<WriteRowLogEntry<StaticConfig>*>(le);
+          row_id = wrle->row_id;
+          // wrle->print();
+          break;
 
-          uint64_t row_id = 0;
-          switch (le->type) {
-          case LogEntryType::INSERT_ROW:
-            irle = static_cast<InsertRowLogEntry<StaticConfig>*>(le);
-            row_id = irle->row_id;
-            // irle->print();
-            break;
-
-          case LogEntryType::WRITE_ROW:
-            wrle = static_cast<WriteRowLogEntry<StaticConfig>*>(le);
-            row_id = wrle->row_id;
-            // wrle->print();
-            break;
-
-          default:
-            throw std::runtime_error("build_local_lists: Unexpected log entry type.");
-          }
-
-          LogEntryNode* node = allocate_node();
-          std::memset(node, 0, sizeof *node);
-          node->ptr = ptr;
-
-          LogEntryList* list = nullptr;
-          auto search = lists.find(row_id);
-          if (search == lists.end()) {
-            // printf("allocting list for row_id: %lu\n", row_id);
-            list = allocate_list();
-            list->tail = nullptr;
-            while (__sync_lock_test_and_set(&list->lock, 1) == 1) {
-              ::mica::util::pause();
-            }
-            lists[row_id] = list;
-          } else {
-            list = lists[row_id];
-          }
-
-          list->append(node);
-
-          ptr += le->size;
+        default:
+          throw std::runtime_error("build_local_lists: Unexpected log entry type.");
         }
-      }
 
-      return lists;
+        LogEntryNode* node = allocate_node();
+        std::memset(node, 0, sizeof *node);
+        node->ptr = ptr;
+
+        LogEntryList* list = nullptr;
+        auto search = lists.find(row_id);
+        if (search == lists.end()) {
+          // printf("allocting list for row_id: %lu\n", row_id);
+          list = allocate_list();
+          list->tail = nullptr;
+          while (__sync_lock_test_and_set(&list->lock, 1) == 1) {
+            ::mica::util::pause();
+          }
+          lists[row_id] = list;
+        } else {
+          list = lists[row_id];
+        }
+
+        list->append(node);
+
+        ptr += le->size;
+      }
     };
   };  // namespace transaction
 };

@@ -341,7 +341,7 @@ namespace mica {
 
       void run();
 
-      std::unordered_map<uint64_t, LogEntryList*> build_local_lists();
+      void build_local_lists(std::size_t segment, std::unordered_map<uint64_t, LogEntryList*>& lists);
 
       LogEntryList* allocate_list();
       LogEntryNode* allocate_node();

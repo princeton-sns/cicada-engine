@@ -57,7 +57,9 @@ namespace mica {
     }
 
     template <class StaticConfig>
-    void SchedulerQueue<StaticConfig>::append(uint64_t row_id, LogEntryList* list) {
+    LogEntryList* SchedulerQueue<StaticConfig>::append(uint64_t row_id, LogEntryList* list) {
+      // row_id = 0;
+      LogEntryList* to_deallocate = nullptr;
       bool new_list = true;
 
       auto search = heads_.find(row_id);
@@ -83,7 +85,7 @@ namespace mica {
         head->lock = 0;
 
         if (head->status & STATUS_REMOVED) {
-          deallocate_list(head);
+          to_deallocate = head;
         }
       // } else {
         // printf("Not found list for row_id: %lu\n", row_id);
@@ -99,8 +101,10 @@ namespace mica {
         heads_[row_id] = list;
       } else {
         list->lock = 0;
-        deallocate_list(list);
+        to_deallocate = list;
       }
+
+      return to_deallocate;
     }
   };  // namespace transaction
 };  // namespace mica

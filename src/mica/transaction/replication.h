@@ -294,7 +294,7 @@ namespace mica {
       SchedulerQueue(SchedulerPool<StaticConfig>* pool);
       ~SchedulerQueue();
 
-      void append(uint64_t row_id, LogEntryList* list);
+      LogEntryList* append(uint64_t row_id, LogEntryList* list);
 
       void print();
 
@@ -341,10 +341,15 @@ namespace mica {
 
       void run();
 
-      void build_local_lists(std::size_t segment, std::unordered_map<uint64_t, LogEntryList*>& lists);
+      uint64_t build_local_lists(std::size_t segment, std::unordered_map<uint64_t, LogEntryList*>& lists);
+
+      void free_nodes_and_list(LogEntryList* list);
 
       LogEntryList* allocate_list();
+      void free_list(LogEntryList* list);
+
       LogEntryNode* allocate_node();
+      void free_node(LogEntryNode* node);
     };
 
     template <class StaticConfig>

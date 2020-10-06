@@ -31,6 +31,8 @@ namespace mica {
       lock_ = 0;
       total_nodes_ = node_count;
       free_nodes_ = node_count;
+      total_lists_ = list_count;
+      free_lists_ = list_count;
 
       node_pages_ = reinterpret_cast<char*>(alloc_->malloc_contiguous(node_count * node_size, lcore));
       if (!node_pages_) {
@@ -68,8 +70,8 @@ namespace mica {
 
     template <class StaticConfig>
     SchedulerPool<StaticConfig>::~SchedulerPool() {
-      alloc_->free_striped(node_pages_);
-      alloc_->free_striped(list_pages_);
+      alloc_->free_contiguous(node_pages_);
+      alloc_->free_contiguous(list_pages_);
     };
 
     template <class StaticConfig>
@@ -87,6 +89,7 @@ namespace mica {
       if (end != nullptr) {
         next_list_ = reinterpret_cast<LogEntryList*>(end->list);
         end->list = nullptr;
+        free_lists_--;
       }
 
       __sync_lock_release(&lock_);
@@ -119,6 +122,7 @@ namespace mica {
       if (end != nullptr) {
         next_node_ = end->next;
         end->next = nullptr;
+        free_nodes_--;
       }
 
       __sync_lock_release(&lock_);

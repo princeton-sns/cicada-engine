@@ -104,11 +104,15 @@ namespace mica {
     template <class StaticConfig>
     LogEntryList* SchedulerThread<StaticConfig>::allocate_list() {
       if (allocated_lists_ == nullptr) {
+        // printf("callling pool->allocate_list()\n");
         allocated_lists_ = pool_->allocate_list(1024);
+        if (allocated_lists_ == nullptr) {
+          printf("pool->allocate_list() returned nullptr\n");
+        }
       }
 
       LogEntryList* next = allocated_lists_;
-      allocated_lists_ = allocated_lists_->next;
+      allocated_lists_ = reinterpret_cast<LogEntryList*>(allocated_lists_->list);
 
       return next;
     }
@@ -117,6 +121,9 @@ namespace mica {
     LogEntryNode* SchedulerThread<StaticConfig>::allocate_node() {
       if (allocated_nodes_ == nullptr) {
         allocated_nodes_ = pool_->allocate_node(1024);
+        if (allocated_nodes_ == nullptr) {
+          printf("pool->allocate_node() returned nullptr\n");
+        }
       }
 
       LogEntryNode* next = allocated_nodes_;
@@ -172,6 +179,7 @@ namespace mica {
           LogEntryList* list = nullptr;
           auto search = lists.find(row_id);
           if (search == lists.end()) {
+            // printf("allocting list for row_id: %lu\n", row_id);
             list = allocate_list();
             list->tail = nullptr;
             while (__sync_lock_test_and_set(&list->lock, 1) == 1) {

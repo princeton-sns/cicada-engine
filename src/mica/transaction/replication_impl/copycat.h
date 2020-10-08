@@ -4,7 +4,7 @@
 
 #include <chrono>
 #include <thread>
-#include <unordered_map>
+/* #include <unordered_map> */
 
 #include "mica/transaction/logging.h"
 #include "mica/transaction/replication.h"

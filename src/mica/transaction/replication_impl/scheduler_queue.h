@@ -58,7 +58,7 @@ namespace mica {
 
     template <class StaticConfig>
     LogEntryList* SchedulerQueue<StaticConfig>::append(uint64_t row_id, LogEntryList* list) {
-      // row_id = 0;
+      /* row_id = 0; */
       LogEntryList* to_deallocate = nullptr;
       bool new_list = true;
 

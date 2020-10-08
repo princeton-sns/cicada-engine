@@ -67,7 +67,7 @@ namespace mica {
 
       std::size_t nsegments = log_->get_nsegments();
 
-      std::unordered_map<uint64_t, LogEntryList*> local_lists{};
+      robin_hood::unordered_map<uint64_t, LogEntryList*> local_lists{};
 
       pthread_barrier_wait(start_barrier_);
 
@@ -180,7 +180,7 @@ namespace mica {
 
     template <class StaticConfig>
     uint64_t SchedulerThread<StaticConfig>::build_local_lists(std::size_t segment,
-                                                          std::unordered_map<uint64_t, LogEntryList*>& lists) {
+                                                          robin_hood::unordered_map<uint64_t, LogEntryList*>& lists) {
 
       LogFile<StaticConfig>* lf = log_->get_lf(segment);
       // lf->print();

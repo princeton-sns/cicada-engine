@@ -9,9 +9,10 @@
 #include <sstream>
 #include <string>
 
-#include "mica/util/posix_io.h"
 #include "mica/transaction/db.h"
 #include "mica/transaction/logging.h"
+#include "mica/util/posix_io.h"
+#include "mica/util/robin_hood.h"
 
 namespace mica {
   namespace transaction {
@@ -299,7 +300,7 @@ namespace mica {
       void print();
 
     private:
-      std::unordered_map<uint64_t, LogEntryList*> heads_;
+      robin_hood::unordered_map<uint64_t, LogEntryList*> heads_;
 
       LogEntryList head_;
       LogEntryList* tail_;
@@ -341,7 +342,7 @@ namespace mica {
 
       void run();
 
-      uint64_t build_local_lists(std::size_t segment, std::unordered_map<uint64_t, LogEntryList*>& lists);
+      uint64_t build_local_lists(std::size_t segment, robin_hood::unordered_map<uint64_t, LogEntryList*>& lists);
 
       void free_nodes_and_list(LogEntryList* list);
 

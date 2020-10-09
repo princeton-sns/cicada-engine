@@ -70,12 +70,15 @@ void SchedulerThread<StaticConfig>::acquire_scheduler_lock() {
 };
 
 template <class StaticConfig>
-void SchedulerThread<StaticConfig>::release_scheduler_lock() {
+void SchedulerThread<StaticConfig>::release_scheduler_lock(bool done) {
   volatile SchedulerLock* next = my_lock_->next;
   while (next->done) {
     next = next->next;
   }
   my_lock_->next = next;
+  if (my_lock_->next != my_lock_) {
+    my_lock_->done = done;
+  }
   next->locked = false;
 };
 
@@ -167,6 +170,7 @@ void SchedulerThread<StaticConfig>::run() {
     start = high_resolution_clock::now();
     ack_executed_rows();
     waiting_size = waiting_queues_.size();
+
     release_scheduler_lock();
     end = high_resolution_clock::now();
 
@@ -178,10 +182,7 @@ void SchedulerThread<StaticConfig>::run() {
 
   // Mark my lock as done
   acquire_scheduler_lock();
-  if (my_lock_->next != my_lock_) {
-    my_lock_->done = true;
-  }
-  release_scheduler_lock();
+  release_scheduler_lock(true);
 
   printf("Exiting replica scheduler: %u\n", id_);
   printf("Time noncritical: %ld microseconds\n", time_noncritical.count());

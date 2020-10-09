@@ -344,7 +344,7 @@ class SchedulerThread {
   void run();
 
   void acquire_scheduler_lock();
-  void release_scheduler_lock();
+  void release_scheduler_lock(bool done = false);
 
   void ack_executed_rows();
 

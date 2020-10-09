@@ -119,7 +119,8 @@ void CopyCat<StaticConfig>::start_schedulers() {
   }
 
   for (uint16_t sid = 0; sid < nschedulers_; sid++) {
-    scheduler_locks_[sid].next = &scheduler_locks_[(sid + 1) % nschedulers_];
+    std::size_t next_sid = static_cast<std::size_t>((sid + 1) % nschedulers_);
+    scheduler_locks_[sid].next = &scheduler_locks_[next_sid];
   }
 
   for (uint16_t sid = 0; sid < nschedulers_; sid++) {

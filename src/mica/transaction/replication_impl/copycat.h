@@ -44,7 +44,7 @@ CopyCat<StaticConfig>::CopyCat(DB<StaticConfig>* db,
   }
 
   for (uint16_t wid = 0; wid < nworkers_; wid++) {
-    done_queues_.emplace_back();
+    done_queues_.push_back(new tbb::concurrent_queue<uint64_t>{});
   }
 }
 
@@ -60,16 +60,19 @@ CopyCat<StaticConfig>::~CopyCat() {
     std::cerr << "Failed to destroy worker barrier: " + ret;
   }
 
+  for (auto done_queue : done_queues_) {
+    delete done_queue;
+  }
+
   done_queues_.clear();
 }
 
 template <class StaticConfig>
 void CopyCat<StaticConfig>::start_workers() {
   for (uint16_t wid = 0; wid < nworkers_; wid++) {
-    auto done_queue = done_queues_[wid];
-    auto w = new WorkerThread<StaticConfig>{db_,        &scheduler_queue_,
-                                            done_queue, &worker_barrier_,
-                                            wid,        nschedulers_};
+    auto w = new WorkerThread<StaticConfig>{
+        db_, &scheduler_queue_, done_queues_[wid], &worker_barrier_,
+        wid, nschedulers_};
 
     w->start();
 
@@ -83,7 +86,14 @@ template <class StaticConfig>
 void CopyCat<StaticConfig>::stop_workers() {
   for (auto w : workers_) {
     w->stop();
+  }
+
+  for (auto w : workers_) {
     delete w;
+  }
+
+  for (auto queue : done_queues_) {
+    queue->clear();
   }
 
   log_.reset();
@@ -103,9 +113,15 @@ void CopyCat<StaticConfig>::start_schedulers() {
   for (uint16_t sid = 0; sid < nschedulers_; sid++) {
     auto lock = &locks[sid];
     auto next_lock = &locks[(sid + 1) % nschedulers_];
-    auto s = new SchedulerThread<StaticConfig>{
-        log_,         pool_, &scheduler_queue_, &scheduler_barrier_, sid,
-        nschedulers_, lock,  next_lock};
+    auto s = new SchedulerThread<StaticConfig>{log_,
+                                               pool_,
+                                               &scheduler_queue_,
+                                               done_queues_,
+                                               &scheduler_barrier_,
+                                               sid,
+                                               nschedulers_,
+                                               lock,
+                                               next_lock};
 
     s->start();
 

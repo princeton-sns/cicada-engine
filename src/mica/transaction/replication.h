@@ -313,7 +313,8 @@ class SchedulerThread {
  public:
   SchedulerThread(std::shared_ptr<MmappedLogFile<StaticConfig>> log,
                   SchedulerPool<StaticConfig>* pool,
-                  tbb::concurrent_queue<LogEntryList*>* queue,
+                  tbb::concurrent_queue<LogEntryList*>* scheduler_queue,
+                  std::vector<tbb::concurrent_queue<uint64_t>*> done_queues,
                   pthread_barrier_t* start_barrier, uint16_t id,
                   uint16_t nschedulers, SchedulerLock* my_lock,
                   SchedulerLock* next_lock);
@@ -324,11 +325,14 @@ class SchedulerThread {
   void stop();
 
  private:
+  static robin_hood::unordered_map<uint64_t,LogEntryList*> waiting_queues_;
+
   std::shared_ptr<MmappedLogFile<StaticConfig>> log_;
   SchedulerPool<StaticConfig>* pool_;
   LogEntryNode* allocated_nodes_;
   LogEntryList* allocated_lists_;
-  tbb::concurrent_queue<LogEntryList*>* queue_;
+  tbb::concurrent_queue<LogEntryList*>* scheduler_queue_;
+  std::vector<tbb::concurrent_queue<uint64_t>*> done_queues_;
   pthread_barrier_t* start_barrier_;
   uint16_t id_;
   uint16_t nschedulers_;
@@ -338,6 +342,8 @@ class SchedulerThread {
   std::thread thread_;
 
   void run();
+
+  void ack_executed_rows();
 
   uint64_t build_local_lists(
       std::size_t segment,
@@ -357,7 +363,7 @@ class WorkerThread {
  public:
   WorkerThread(DB<StaticConfig>* db,
                tbb::concurrent_queue<LogEntryList*>* scheduler_queue,
-               tbb::concurrent_queue<LogEntryList*> done_queue,
+               tbb::concurrent_queue<uint64_t>* done_queue,
                pthread_barrier_t* start_barrier, uint16_t id, uint16_t nschedulers);
 
   ~WorkerThread();
@@ -368,7 +374,7 @@ class WorkerThread {
  private:
   DB<StaticConfig>* db_;
   tbb::concurrent_queue<LogEntryList*>* scheduler_queue_;
-  tbb::concurrent_queue<LogEntryList*> done_queue_;
+  tbb::concurrent_queue<uint64_t>* done_queue_;
   pthread_barrier_t* start_barrier_;
   uint16_t id_;
   uint16_t nschedulers_;
@@ -456,7 +462,7 @@ class CopyCat : public CCCInterface<StaticConfig> {
 
   pthread_barrier_t worker_barrier_;
   std::vector<WorkerThread<StaticConfig>*> workers_;
-  std::vector<tbb::concurrent_queue<LogEntryList*>> done_queues_;
+  std::vector<tbb::concurrent_queue<uint64_t>*> done_queues_;
 
   uint16_t nsegments(std::size_t len) {
     return static_cast<uint16_t>(len / StaticConfig::kPageSize);

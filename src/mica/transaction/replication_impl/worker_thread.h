@@ -11,7 +11,7 @@ namespace transaction {
 template <class StaticConfig>
 WorkerThread<StaticConfig>::WorkerThread(
     DB<StaticConfig>* db, tbb::concurrent_queue<LogEntryList*>* scheduler_queue,
-    tbb::concurrent_queue<LogEntryList*> done_queue,
+    tbb::concurrent_queue<uint64_t>* done_queue,
     pthread_barrier_t* start_barrier, uint16_t id, uint16_t nschedulers)
     : db_{db},
       scheduler_queue_{scheduler_queue},
@@ -23,7 +23,11 @@ WorkerThread<StaticConfig>::WorkerThread(
       thread_{} {};
 
 template <class StaticConfig>
-WorkerThread<StaticConfig>::~WorkerThread(){};
+WorkerThread<StaticConfig>::~WorkerThread() {
+  if (thread_.joinable()) {
+    thread_.join();
+  }
+};
 
 template <class StaticConfig>
 void WorkerThread<StaticConfig>::start() {
@@ -34,7 +38,6 @@ void WorkerThread<StaticConfig>::start() {
 template <class StaticConfig>
 void WorkerThread<StaticConfig>::stop() {
   stop_ = true;
-  thread_.join();
 };
 
 template <class StaticConfig>
@@ -48,12 +51,14 @@ void WorkerThread<StaticConfig>::run() {
   Context<StaticConfig>* ctx = db_->context(id_);
   Transaction<StaticConfig> tx{ctx};
   RowAccessHandle<StaticConfig> rah{&tx};
+  uint64_t row_id = static_cast<uint64_t>(-1);
 
   pthread_barrier_wait(start_barrier_);
 
   while (true) {
     LogEntryList* queue = nullptr;
     if (scheduler_queue_->try_pop(queue)) {
+      row_id = static_cast<uint64_t>(-1);
       LogEntryNode* node = queue->list;
       while (node != nullptr) {
         LogEntry<StaticConfig>* le =
@@ -66,12 +71,14 @@ void WorkerThread<StaticConfig>::run() {
         switch (le->type) {
           case LogEntryType::INSERT_ROW:
             irle = static_cast<InsertRowLogEntry<StaticConfig>*>(le);
+            row_id = irle->row_id;
             // irle->print();
             insert_row(ctx, &tx, &rah, irle);
             break;
 
           case LogEntryType::WRITE_ROW:
             wrle = static_cast<WriteRowLogEntry<StaticConfig>*>(le);
+            row_id = wrle->row_id;
             // wrle->print();
             write_row(ctx, &tx, &rah, wrle);
             break;
@@ -82,6 +89,10 @@ void WorkerThread<StaticConfig>::run() {
         }
 
         node = node->next;
+      }
+
+      if (row_id != static_cast<uint64_t>(-1)) {
+        done_queue_->push(row_id);
       }
     } else if (scheduler_queue_->unsafe_size() == 0 && stop_) {
       break;
@@ -98,6 +109,7 @@ void WorkerThread<StaticConfig>::run() {
 
   db_->deactivate(id_);
 
+  printf("Done queue size: %lu\n", done_queue_->unsafe_size());
   printf("Exiting replica worker: %u\n", id_);
 };
 

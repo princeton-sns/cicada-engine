@@ -12,7 +12,6 @@
 #include "mica/transaction/db.h"
 #include "mica/transaction/logging.h"
 #include "mica/util/posix_io.h"
-#include "mica/util/robin_hood.h"
 #include "tbb/concurrent_queue.h"
 
 namespace mica {
@@ -300,7 +299,7 @@ class SchedulerQueue {
   void print();
 
  private:
-  robin_hood::unordered_map<uint64_t, LogEntryList*> heads_;
+  std::unordered_map<uint64_t, LogEntryList*> heads_;
 
   LogEntryList head_;
   LogEntryList* tail_;
@@ -326,7 +325,7 @@ class SchedulerThread {
   void stop();
 
  private:
-  static robin_hood::unordered_map<uint64_t,LogEntryList*> waiting_queues_;
+  static std::unordered_map<uint64_t,LogEntryList*> waiting_queues_;
 
   std::shared_ptr<MmappedLogFile<StaticConfig>> log_;
   SchedulerPool<StaticConfig>* pool_;
@@ -350,7 +349,7 @@ class SchedulerThread {
 
   uint64_t build_local_lists(
       std::size_t segment,
-      robin_hood::unordered_map<uint64_t, LogEntryList*>& lists);
+      std::unordered_map<uint64_t, LogEntryList*>& lists);
 
   void free_nodes_and_list(LogEntryList* list);
 

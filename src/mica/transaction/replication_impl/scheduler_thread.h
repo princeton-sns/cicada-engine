@@ -14,7 +14,7 @@ using std::chrono::high_resolution_clock;
 using std::chrono::microseconds;
 
 template <class StaticConfig>
-robin_hood::unordered_map<uint64_t, LogEntryList*>
+std::unordered_map<uint64_t, LogEntryList*>
     SchedulerThread<StaticConfig>::waiting_queues_{};
 
 template <class StaticConfig>
@@ -95,7 +95,7 @@ void SchedulerThread<StaticConfig>::run() {
 
   std::size_t nsegments = log_->get_nsegments();
 
-  robin_hood::unordered_map<uint64_t, LogEntryList*> local_lists{};
+  std::unordered_map<uint64_t, LogEntryList*> local_lists{};
 
   high_resolution_clock::time_point start;
   high_resolution_clock::time_point end;
@@ -269,7 +269,7 @@ void SchedulerThread<StaticConfig>::free_node(LogEntryNode* node) {
 template <class StaticConfig>
 uint64_t SchedulerThread<StaticConfig>::build_local_lists(
     std::size_t segment,
-    robin_hood::unordered_map<uint64_t, LogEntryList*>& lists) {
+    std::unordered_map<uint64_t, LogEntryList*>& lists) {
   LogFile<StaticConfig>* lf = log_->get_lf(segment);
   // lf->print();
 

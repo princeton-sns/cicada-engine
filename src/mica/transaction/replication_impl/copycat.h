@@ -29,6 +29,7 @@ CopyCat<StaticConfig>::CopyCat(DB<StaticConfig>* db,
       nworkers_{nworkers},
       logdir_{logdir},
       log_{nullptr},
+      scheduler_locks_{},
       schedulers_{},
       workers_{},
       done_queues_{} {
@@ -108,11 +109,20 @@ void CopyCat<StaticConfig>::start_schedulers() {
   log_ = MmappedLogFile<StaticConfig>::open_existing(
       fname, PROT_READ, MAP_SHARED, nsegments(len));
 
-  SchedulerLock locks[nschedulers_] = {0};
+  for (uint16_t sid = 0; sid < nschedulers_; sid++) {
+    bool locked = true;
+    if (sid == 0) {
+      locked = false;
+    }
+
+    scheduler_locks_.push_back({nullptr, locked, false});
+  }
 
   for (uint16_t sid = 0; sid < nschedulers_; sid++) {
-    auto lock = &locks[sid];
-    auto next_lock = &locks[(sid + 1) % nschedulers_];
+    scheduler_locks_[sid].next = &scheduler_locks_[(sid + 1) % nschedulers_];
+  }
+
+  for (uint16_t sid = 0; sid < nschedulers_; sid++) {
     auto s = new SchedulerThread<StaticConfig>{log_,
                                                pool_,
                                                &scheduler_queue_,
@@ -120,8 +130,7 @@ void CopyCat<StaticConfig>::start_schedulers() {
                                                &scheduler_barrier_,
                                                sid,
                                                nschedulers_,
-                                               lock,
-                                               next_lock};
+                                               &scheduler_locks_[sid]};
 
     s->start();
 
@@ -138,6 +147,7 @@ void CopyCat<StaticConfig>::stop_schedulers() {
     delete s;
   }
 
+  scheduler_locks_.clear();
   schedulers_.clear();
 }
 

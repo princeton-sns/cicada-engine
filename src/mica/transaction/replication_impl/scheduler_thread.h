@@ -14,7 +14,8 @@ using std::chrono::high_resolution_clock;
 using std::chrono::microseconds;
 
 template <class StaticConfig>
-robin_hood::unordered_map<uint64_t,LogEntryList*> SchedulerThread<StaticConfig>::waiting_queues_{};
+robin_hood::unordered_map<uint64_t, LogEntryList*>
+    SchedulerThread<StaticConfig>::waiting_queues_{};
 
 template <class StaticConfig>
 SchedulerThread<StaticConfig>::SchedulerThread(
@@ -23,7 +24,7 @@ SchedulerThread<StaticConfig>::SchedulerThread(
     tbb::concurrent_queue<LogEntryList*>* scheduler_queue,
     std::vector<tbb::concurrent_queue<uint64_t>*> done_queues,
     pthread_barrier_t* start_barrier, uint16_t id, uint16_t nschedulers,
-    SchedulerLock* my_lock, SchedulerLock* next_lock)
+    SchedulerLock* my_lock)
     : log_{log},
       pool_{pool},
       allocated_nodes_{nullptr},
@@ -34,11 +35,8 @@ SchedulerThread<StaticConfig>::SchedulerThread(
       id_{id},
       nschedulers_{nschedulers},
       my_lock_{my_lock},
-      next_lock_{next_lock},
       stop_{false},
-      thread_{}
-{
-};
+      thread_{} {};
 
 template <class StaticConfig>
 SchedulerThread<StaticConfig>::~SchedulerThread() {
@@ -64,16 +62,28 @@ void SchedulerThread<StaticConfig>::stop() {
 };
 
 template <class StaticConfig>
+void SchedulerThread<StaticConfig>::acquire_scheduler_lock() {
+  while (my_lock_->locked) {
+    mica::util::pause();
+  }
+  my_lock_->locked = true;
+};
+
+template <class StaticConfig>
+void SchedulerThread<StaticConfig>::release_scheduler_lock() {
+  volatile SchedulerLock* next = my_lock_->next;
+  while (next->done) {
+    next = next->next;
+  }
+  my_lock_->next = next;
+  next->locked = false;
+};
+
+template <class StaticConfig>
 void SchedulerThread<StaticConfig>::run() {
   printf("Starting replica scheduler: %u\n", id_);
 
   mica::util::lcore.pin_thread(id_);
-
-  if (id_ == 0) {
-    my_lock_->locked = false;
-  } else {
-    my_lock_->locked = true;
-  }
 
   microseconds time_noncritical{0};
   microseconds time_waiting{0};
@@ -94,7 +104,6 @@ void SchedulerThread<StaticConfig>::run() {
 
   for (std::size_t cur_segment = id_; cur_segment < nsegments;
        cur_segment += nschedulers_) {
-
     start = high_resolution_clock::now();
     nentries += build_local_lists(cur_segment, local_lists);
     end = high_resolution_clock::now();
@@ -102,10 +111,7 @@ void SchedulerThread<StaticConfig>::run() {
     time_noncritical += diff;
 
     start = high_resolution_clock::now();
-    while (my_lock_->locked) {
-      mica::util::pause();
-    }
-    my_lock_->locked = true;
+    acquire_scheduler_lock();
     end = high_resolution_clock::now();
     diff = duration_cast<microseconds>(end - start);
     time_waiting += diff;
@@ -120,10 +126,10 @@ void SchedulerThread<StaticConfig>::run() {
       auto queue = item.second;
 
       auto search = waiting_queues_.find(row_id);
-      if (search == waiting_queues_.end()) { // Not found
+      if (search == waiting_queues_.end()) {  // Not found
         scheduler_queue_->push(queue);
         waiting_queues_[row_id] = nullptr;
-      } else { // Found
+      } else {  // Found
         LogEntryList* queue2 = waiting_queues_[row_id];
         if (queue2 == nullptr) {
           waiting_queues_[row_id] = queue;
@@ -138,7 +144,7 @@ void SchedulerThread<StaticConfig>::run() {
 
     waiting_size = waiting_queues_.size();
 
-    next_lock_->locked = false;
+    release_scheduler_lock();
     end = high_resolution_clock::now();
     diff = duration_cast<microseconds>(end - start);
     time_critical += diff;
@@ -152,10 +158,7 @@ void SchedulerThread<StaticConfig>::run() {
 
   while (waiting_size != 0) {
     start = high_resolution_clock::now();
-    while (my_lock_->locked) {
-      mica::util::pause();
-    }
-    my_lock_->locked = true;
+    acquire_scheduler_lock();
     end = high_resolution_clock::now();
 
     diff = duration_cast<microseconds>(end - start);
@@ -164,20 +167,26 @@ void SchedulerThread<StaticConfig>::run() {
     start = high_resolution_clock::now();
     ack_executed_rows();
     waiting_size = waiting_queues_.size();
-    next_lock_->locked = false;
+    release_scheduler_lock();
     end = high_resolution_clock::now();
 
     diff = duration_cast<microseconds>(end - start);
     time_critical += diff;
+
+    // std::this_thread::sleep_for(std::chrono::seconds(1));
   }
 
-  printf("Queue size: %lu\n", scheduler_queue_->unsafe_size());
+  // Mark my lock as done
+  acquire_scheduler_lock();
+  if (my_lock_->next != my_lock_) {
+    my_lock_->done = true;
+  }
+  release_scheduler_lock();
 
   printf("Exiting replica scheduler: %u\n", id_);
   printf("Time noncritical: %ld microseconds\n", time_noncritical.count());
   printf("Time critical: %ld microseconds\n", time_critical.count());
   printf("Time waiting: %ld microseconds\n", time_waiting.count());
-  printf("N entries: %ld\n", nentries);
 };
 
 template <class StaticConfig>
@@ -186,7 +195,7 @@ void SchedulerThread<StaticConfig>::ack_executed_rows() {
     uint64_t row_id;
     while (done_queue->try_pop(row_id)) {
       auto search = waiting_queues_.find(row_id);
-      if (search != waiting_queues_.end()) { // Found
+      if (search != waiting_queues_.end()) {  // Found
         LogEntryList* queue = search->second;
         if (queue != nullptr) {
           scheduler_queue_->push(queue);

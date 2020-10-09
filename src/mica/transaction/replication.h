@@ -284,7 +284,9 @@ class SchedulerPool {
 } __attribute__((aligned(64)));
 
 struct SchedulerLock {
+  volatile SchedulerLock* next;
   volatile bool locked;
+  volatile bool done;
 } __attribute__((__aligned__(64)));
 
 template <class StaticConfig>
@@ -316,8 +318,7 @@ class SchedulerThread {
                   tbb::concurrent_queue<LogEntryList*>* scheduler_queue,
                   std::vector<tbb::concurrent_queue<uint64_t>*> done_queues,
                   pthread_barrier_t* start_barrier, uint16_t id,
-                  uint16_t nschedulers, SchedulerLock* my_lock,
-                  SchedulerLock* next_lock);
+                  uint16_t nschedulers, SchedulerLock* my_lock);
 
   ~SchedulerThread();
 
@@ -337,11 +338,13 @@ class SchedulerThread {
   uint16_t id_;
   uint16_t nschedulers_;
   SchedulerLock* my_lock_;
-  SchedulerLock* next_lock_;
   volatile bool stop_;
   std::thread thread_;
 
   void run();
+
+  void acquire_scheduler_lock();
+  void release_scheduler_lock();
 
   void ack_executed_rows();
 
@@ -457,6 +460,7 @@ class CopyCat : public CCCInterface<StaticConfig> {
   std::string logdir_;
   std::shared_ptr<MmappedLogFile<StaticConfig>> log_;
 
+  std::vector<SchedulerLock> scheduler_locks_;
   pthread_barrier_t scheduler_barrier_;
   std::vector<SchedulerThread<StaticConfig>*> schedulers_;
 

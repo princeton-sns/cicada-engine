@@ -330,10 +330,10 @@ void worker_proc(Task* task) {
 }
 
 int main(int argc, const char* argv[]) {
-  if (argc != 8) {
+  if (argc != 9) {
     printf(
         "%s NUM-ROWS REQS-PER-TX READ-RATIO ZIPF-THETA TX-COUNT "
-        "THREAD-COUNT SCHEDULER-COUNT\n",
+        "THREAD-COUNT SCHEDULER-COUNT WORKER-COUNT\n",
         argv[0]);
     return EXIT_FAILURE;
   }
@@ -347,6 +347,7 @@ int main(int argc, const char* argv[]) {
   uint64_t tx_count = static_cast<uint64_t>(atol(argv[5]));
   uint64_t num_threads = static_cast<uint64_t>(atol(argv[6]));
   uint64_t num_schedulers = static_cast<uint64_t>(atol(argv[7]));
+  uint64_t num_workers = static_cast<uint64_t>(atol(argv[8]));
 
   Alloc alloc(config.get("alloc"));
   auto page_pool_size = 1 * uint64_t(1073741824);
@@ -384,6 +385,7 @@ int main(int argc, const char* argv[]) {
   printf("tx_count = %" PRIu64 "\n", tx_count);
   printf("num_threads = %" PRIu64 "\n", num_threads);
   printf("num_schedulers = %" PRIu64 "\n", num_schedulers);
+  printf("num_workers = %" PRIu64 "\n", num_workers);
 #ifndef NDEBUG
   printf("!NDEBUG\n");
 #endif
@@ -763,7 +765,7 @@ int main(int argc, const char* argv[]) {
                       std::string{MICA_RELAY_WORKLOAD_DIR});
   }
 
-  DB replica{page_pools, &logger, &sw, static_cast<uint16_t>(num_schedulers)};
+  DB replica{page_pools, &logger, &sw, static_cast<uint16_t>(num_workers)};
   logger.disable();
 
   {
@@ -776,7 +778,8 @@ int main(int argc, const char* argv[]) {
     // return 0;
 
     CCC ccc{&replica, sched_pool, static_cast<uint16_t>(num_threads),
-      static_cast<uint16_t>(num_schedulers), std::string{MICA_RELAY_INIT_DIR}};
+      static_cast<uint16_t>(num_schedulers), static_cast<uint16_t>(num_workers),
+      std::string{MICA_RELAY_INIT_DIR}};
 
     std::vector<std::string> relaydirs = {std::string{MICA_RELAY_INIT_DIR},
       std::string{MICA_RELAY_WARMUP_DIR}, std::string{MICA_RELAY_WORKLOAD_DIR}};
@@ -810,10 +813,12 @@ int main(int argc, const char* argv[]) {
 
       struct timeval tv_start;
       struct timeval tv_end;
+      ccc.start_workers();
       ccc.start_schedulers();
       gettimeofday(&tv_start, nullptr);
       // int64_t starttime = get_server_clock();
       ccc.stop_schedulers();
+      ccc.stop_workers();
       gettimeofday(&tv_end, nullptr);
       // int64_t endtime = get_server_clock();
 

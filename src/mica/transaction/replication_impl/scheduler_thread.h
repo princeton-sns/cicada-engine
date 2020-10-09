@@ -16,7 +16,7 @@ namespace mica {
     template <class StaticConfig>
     SchedulerThread<StaticConfig>::SchedulerThread(std::shared_ptr<MmappedLogFile<StaticConfig>> log,
                                                    SchedulerPool<StaticConfig>* pool,
-                                                   SchedulerQueue<StaticConfig>* queue,
+                                                   tbb::concurrent_queue<LogEntryList*>* queue,
                                                    pthread_barrier_t* start_barrier,
                                                    uint16_t id, uint16_t nschedulers,
                                                    SchedulerLock* my_lock, SchedulerLock* next_lock)
@@ -91,15 +91,15 @@ namespace mica {
         time_waiting += diff;
 
         start = high_resolution_clock::now();
-        LogEntryList* to_deallocate = nullptr;
+        // LogEntryList* to_deallocate = nullptr;
         for (const auto& item : local_lists) {
           auto row_id = item.first;
           auto list = item.second;
 
-          to_deallocate = queue_->append(row_id, list);
-          if (to_deallocate != nullptr) {
-            free_nodes_and_list(to_deallocate);
-          }
+          queue_->push(list);
+          // if (to_deallocate != nullptr) {
+          //   free_nodes_and_list(to_deallocate);
+          // }
         }
 
         next_lock_->locked = false;
@@ -113,6 +113,8 @@ namespace mica {
         diff = duration_cast<microseconds>(end - start);
         time_noncritical += diff;
       }
+
+      printf("Queue size: %lu\n", queue_->unsafe_size());
 
       printf("Exiting replica scheduler: %u\n", id_);
       printf("Time noncritical: %ld microseconds\n", time_noncritical.count());
@@ -221,7 +223,6 @@ namespace mica {
         LogEntryList* list = nullptr;
         auto search = lists.find(row_id);
         if (search == lists.end()) { // Not found
-          // printf("allocting list for row_id: %lu\n", row_id);
           list = allocate_list();
           list->tail = nullptr;
           while (__sync_lock_test_and_set(&list->lock, 1) == 1) {

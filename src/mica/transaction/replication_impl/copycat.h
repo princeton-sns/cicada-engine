@@ -19,20 +19,32 @@ template <class StaticConfig>
 CopyCat<StaticConfig>::CopyCat(DB<StaticConfig>* db,
                                SchedulerPool<StaticConfig>* pool,
                                uint16_t nloggers, uint16_t nschedulers,
-                               std::string logdir)
-    : queue_{pool},
+                               uint16_t nworkers, std::string logdir)
+    : scheduler_queue_{},
       db_{db},
       pool_{pool},
       len_{StaticConfig::kPageSize},
       nloggers_{nloggers},
       nschedulers_{nschedulers},
+      nworkers_{nworkers},
       logdir_{logdir},
       log_{nullptr},
       schedulers_{},
-      schedulers_stop_{false} {
-  int ret = pthread_barrier_init(&scheduler_barrier_, nullptr, nschedulers + 1);
+      workers_{},
+      done_queues_{} {
+  int ret =
+      pthread_barrier_init(&scheduler_barrier_, nullptr, nschedulers_ + 1);
   if (ret != 0) {
     throw std::runtime_error("Failed to init scheduler barrier: " + ret);
+  }
+
+  ret = pthread_barrier_init(&worker_barrier_, nullptr, nworkers_ + 1);
+  if (ret != 0) {
+    throw std::runtime_error("Failed to init worker barrier: " + ret);
+  }
+
+  for (uint16_t wid = 0; wid < nworkers_; wid++) {
+    done_queues_.emplace_back();
   }
 }
 
@@ -42,6 +54,40 @@ CopyCat<StaticConfig>::~CopyCat() {
   if (ret != 0) {
     std::cerr << "Failed to destroy scheduler barrier: " + ret;
   }
+
+  ret = pthread_barrier_destroy(&worker_barrier_);
+  if (ret != 0) {
+    std::cerr << "Failed to destroy worker barrier: " + ret;
+  }
+
+  done_queues_.clear();
+}
+
+template <class StaticConfig>
+void CopyCat<StaticConfig>::start_workers() {
+  for (uint16_t wid = 0; wid < nworkers_; wid++) {
+    auto done_queue = done_queues_[wid];
+    auto w = new WorkerThread<StaticConfig>{db_,        &scheduler_queue_,
+                                            done_queue, &worker_barrier_,
+                                            wid,        nschedulers_};
+
+    w->start();
+
+    workers_.push_back(w);
+  }
+
+  pthread_barrier_wait(&worker_barrier_);
+}
+
+template <class StaticConfig>
+void CopyCat<StaticConfig>::stop_workers() {
+  for (auto w : workers_) {
+    w->stop();
+    delete w;
+  }
+
+  log_.reset();
+  workers_.clear();
 }
 
 template <class StaticConfig>
@@ -54,12 +100,12 @@ void CopyCat<StaticConfig>::start_schedulers() {
 
   SchedulerLock locks[nschedulers_] = {0};
 
-  schedulers_stop_ = false;
   for (uint16_t sid = 0; sid < nschedulers_; sid++) {
     auto lock = &locks[sid];
     auto next_lock = &locks[(sid + 1) % nschedulers_];
-    auto s = new SchedulerThread<StaticConfig>{log_, pool_, &queue_, &scheduler_barrier_,
-      sid, nschedulers_, lock, next_lock};
+    auto s = new SchedulerThread<StaticConfig>{
+        log_,         pool_, &scheduler_queue_, &scheduler_barrier_, sid,
+        nschedulers_, lock,  next_lock};
 
     s->start();
 
@@ -71,18 +117,12 @@ void CopyCat<StaticConfig>::start_schedulers() {
 
 template <class StaticConfig>
 void CopyCat<StaticConfig>::stop_schedulers() {
-  schedulers_stop_ = true;
-
   for (auto s : schedulers_) {
     s->stop();
     delete s;
   }
 
-  log_.reset();
   schedulers_.clear();
-
-  // printf("Printing queue:\n");
-  // queue_.Print();
 }
 
 template <class StaticConfig>
@@ -114,258 +154,6 @@ void CopyCat<StaticConfig>::create_hash_index(
     throw std::runtime_error("Failed to create unique index: " +
                              std::string{chile->name});
   }
-}
-
-template <class StaticConfig>
-void CopyCat<StaticConfig>::insert_row(Context<StaticConfig>* ctx,
-                                       Transaction<StaticConfig>* tx,
-                                       RowAccessHandle<StaticConfig>* rah,
-                                       InsertRowLogEntry<StaticConfig>* le) {
-  TableType tbl_type = static_cast<TableType>(le->tbl_type);
-
-  switch (tbl_type) {
-    case TableType::DATA:
-      insert_data_row(ctx, tx, rah, le);
-      break;
-    case TableType::HASH_IDX:
-      insert_hash_idx_row(ctx, tx, rah, le);
-      break;
-    default:
-      throw std::runtime_error("Insert: Unsupported table type.");
-  }
-}
-
-template <class StaticConfig>
-void CopyCat<StaticConfig>::insert_data_row(
-    Context<StaticConfig>* ctx, Transaction<StaticConfig>* tx,
-    RowAccessHandle<StaticConfig>* rah, InsertRowLogEntry<StaticConfig>* le) {
-  auto db = ctx->db();
-  Table<StaticConfig>* tbl = db->get_table(std::string{le->tbl_name});
-  if (tbl == nullptr) {
-    throw std::runtime_error("insert_data_row: Failed to find table " +
-                             std::string{le->tbl_name});
-  }
-
-  typename StaticConfig::Timestamp txn_ts;
-  txn_ts.t2 = le->txn_ts;
-
-  if (!tx->has_began()) {
-    if (!tx->begin(false, &txn_ts)) {
-      throw std::runtime_error("insert_data_row: Failed to begin transaction.");
-    }
-  } else if (tx->ts() != txn_ts) {
-    Result result;
-    tx->commit_replica(&result);
-    if (result != Result::kCommitted) {
-      throw std::runtime_error(
-          "insert_data_row: Failed to commit transaction.");
-    }
-
-    if (!tx->begin(false, &txn_ts)) {
-      throw std::runtime_error("insert_data_row: Failed to begin transaction.");
-    }
-  }
-
-  rah->reset();
-
-  if (StaticConfig::kReplUseUpsert) {
-    if (!rah->upsert_row(tbl, le->cf_id, le->row_id, false, le->data_size)) {
-      throw std::runtime_error("insert_data_row: Failed to upsert row " +
-                               le->row_id);
-    }
-  } else {
-    if (!rah->new_row_replica(tbl, le->cf_id, le->row_id, false,
-                              le->data_size)) {
-      throw std::runtime_error("insert_data_row: Failed to create new row " +
-                               le->row_id);
-    }
-  }
-
-  char* data = rah->data();
-  std::memcpy(data, le->data, le->data_size);
-}
-
-template <class StaticConfig>
-void CopyCat<StaticConfig>::insert_hash_idx_row(
-    Context<StaticConfig>* ctx, Transaction<StaticConfig>* tx,
-    RowAccessHandle<StaticConfig>* rah, InsertRowLogEntry<StaticConfig>* le) {
-  auto db = ctx->db();
-
-  auto unique_hash_idx =
-      db->get_hash_index_unique_u64(std::string{le->tbl_name});
-  auto nonunique_hash_idx =
-      db->get_hash_index_nonunique_u64(std::string{le->tbl_name});
-  Table<StaticConfig>* tbl = nullptr;
-  if (unique_hash_idx != nullptr) {
-    tbl = unique_hash_idx->index_table();
-  } else if (nonunique_hash_idx != nullptr) {
-    tbl = nonunique_hash_idx->index_table();
-  }
-
-  if (tbl == nullptr) {
-    throw std::runtime_error(
-        "insert_hash_idx_row: Failed to find index table.");
-  }
-
-  typename StaticConfig::Timestamp txn_ts;
-  txn_ts.t2 = le->txn_ts;
-
-  if (!tx->has_began()) {
-    if (!tx->begin(false, &txn_ts)) {
-      throw std::runtime_error(
-          "insert_hash_idx_row: Failed to begin transaction.");
-    }
-  } else if (tx->ts() != txn_ts) {
-    Result result;
-    tx->commit_replica(&result);
-    if (result != Result::kCommitted) {
-      throw std::runtime_error(
-          "insert_hash_idx_row: Failed to commit transaction.");
-    }
-
-    if (!tx->begin(false, &txn_ts)) {
-      throw std::runtime_error(
-          "insert_hash_idx_row: Failed to begin transaction.");
-    }
-  }
-
-  rah->reset();
-
-  if (StaticConfig::kReplUseUpsert) {
-    if (!rah->upsert_row(tbl, le->cf_id, le->row_id, false, le->data_size)) {
-      throw std::runtime_error("insert_hash_idx_row: Failed to upsert row " +
-                               le->row_id);
-    }
-  } else {
-    if (!rah->new_row_replica(tbl, le->cf_id, le->row_id, false,
-                              le->data_size)) {
-      throw std::runtime_error(
-          "insert_hash_idx_row: Failed to create new row " + le->row_id);
-    }
-  }
-
-  char* data = rah->data();
-  std::memcpy(data, le->data, le->data_size);
-}
-
-template <class StaticConfig>
-void CopyCat<StaticConfig>::write_row(Context<StaticConfig>* ctx,
-                                      Transaction<StaticConfig>* tx,
-                                      RowAccessHandle<StaticConfig>* rah,
-                                      WriteRowLogEntry<StaticConfig>* le) {
-  TableType tbl_type = static_cast<TableType>(le->tbl_type);
-
-  switch (tbl_type) {
-    case TableType::DATA:
-      write_data_row(ctx, tx, rah, le);
-      break;
-    case TableType::HASH_IDX:
-      write_hash_idx_row(ctx, tx, rah, le);
-      break;
-    default:
-      throw std::runtime_error("Insert: Unsupported table type.");
-  }
-}
-
-template <class StaticConfig>
-void CopyCat<StaticConfig>::write_data_row(Context<StaticConfig>* ctx,
-                                           Transaction<StaticConfig>* tx,
-                                           RowAccessHandle<StaticConfig>* rah,
-                                           WriteRowLogEntry<StaticConfig>* le) {
-  auto db = ctx->db();
-
-  Table<StaticConfig>* tbl = db->get_table(std::string{le->tbl_name});
-  if (tbl == nullptr) {
-    throw std::runtime_error("write_data_row: Failed to find table " +
-                             std::string{le->tbl_name});
-  }
-
-  typename StaticConfig::Timestamp txn_ts;
-  txn_ts.t2 = le->txn_ts;
-
-  if (!tx->has_began()) {
-    if (!tx->begin(false, &txn_ts)) {
-      throw std::runtime_error("write_data_row: Failed to begin transaction.");
-    }
-  } else if (tx->ts() != txn_ts) {
-    Result result;
-    tx->commit_replica(&result);
-    if (result != Result::kCommitted) {
-      throw std::runtime_error("write_data_row: Failed to commit transaction.");
-    }
-
-    if (!tx->begin(false, &txn_ts)) {
-      throw std::runtime_error("write_data_row: Failed to begin transaction.");
-    }
-  }
-
-  rah->reset();
-
-  printf("peeking and writing\n");
-  if (!rah->peek_row_replica(tbl, le->cf_id, le->row_id, false, false, true) ||
-      !rah->write_row(le->data_size)) {
-    throw std::runtime_error("write_data_row: Failed to write row.");
-  }
-  printf("wrote\n");
-
-  char* data = rah->data();
-  std::memcpy(data, le->data, le->data_size);
-}
-
-template <class StaticConfig>
-void CopyCat<StaticConfig>::write_hash_idx_row(
-    Context<StaticConfig>* ctx, Transaction<StaticConfig>* tx,
-    RowAccessHandle<StaticConfig>* rah, WriteRowLogEntry<StaticConfig>* le) {
-  auto db = ctx->db();
-  auto unique_hash_idx =
-      db->get_hash_index_unique_u64(std::string{le->tbl_name});
-  auto nonunique_hash_idx =
-      db->get_hash_index_nonunique_u64(std::string{le->tbl_name});
-  Table<StaticConfig>* tbl = nullptr;
-  if (unique_hash_idx != nullptr) {
-    tbl = unique_hash_idx->index_table();
-  } else if (nonunique_hash_idx != nullptr) {
-    tbl = nonunique_hash_idx->index_table();
-  }
-
-  if (tbl == nullptr) {
-    throw std::runtime_error("write_hash_idx_row: Failed to find index table.");
-  }
-
-  typename StaticConfig::Timestamp txn_ts;
-  txn_ts.t2 = le->txn_ts;
-
-  if (!tx->has_began()) {
-    if (!tx->begin(false, &txn_ts)) {
-      throw std::runtime_error(
-          "write_hash_idx_row: Failed to begin transaction.");
-    }
-  } else if (tx->ts() != txn_ts) {
-    Result result;
-    tx->commit_replica(&result);
-    if (result != Result::kCommitted) {
-      throw std::runtime_error(
-          "write_hash_idx_row: Failed to commit transaction.");
-    }
-
-    if (!tx->begin(false, &txn_ts)) {
-      throw std::runtime_error(
-          "write_hash_idx_row: Failed to begin transaction.");
-    }
-  }
-
-  rah->reset();
-
-  if (!rah->peek_row_replica(tbl, le->cf_id, le->row_id, false, false, true)) {
-    throw std::runtime_error("write_hash_idx_row: Failed to write row: peek");
-  }
-
-  if (!rah->write_row(le->data_size)) {
-    throw std::runtime_error("write_hash_idx_row: Failed to write row: write");
-  }
-
-  char* data = rah->data();
-  std::memcpy(data, le->data, le->data_size);
 }
 
 template <class StaticConfig>

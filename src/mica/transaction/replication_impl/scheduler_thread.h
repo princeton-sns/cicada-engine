@@ -91,11 +91,15 @@ void SchedulerThread<StaticConfig>::run() {
   microseconds time_noncritical{0};
   microseconds time_waiting{0};
   microseconds time_critical{0};
+  microseconds time_total{0};
   uint64_t nentries = 0;
 
   std::size_t nsegments = log_->get_nsegments();
 
   std::unordered_map<uint64_t, LogEntryList*> local_lists{};
+
+  high_resolution_clock::time_point run_start;
+  high_resolution_clock::time_point run_end;
 
   high_resolution_clock::time_point start;
   high_resolution_clock::time_point end;
@@ -104,6 +108,7 @@ void SchedulerThread<StaticConfig>::run() {
   std::size_t waiting_size = 0;
 
   pthread_barrier_wait(start_barrier_);
+  run_start = high_resolution_clock::now();
 
   for (std::size_t cur_segment = id_; cur_segment < nsegments;
        cur_segment += nschedulers_) {
@@ -159,11 +164,16 @@ void SchedulerThread<StaticConfig>::run() {
     time_noncritical += diff;
   }
 
+  run_end = high_resolution_clock::now();
+  diff = duration_cast<microseconds>(run_end - run_start);
+  time_total += diff;
+  printf("Time total1: %ld microseconds\n", time_total.count());
+  run_start = high_resolution_clock::now();
+
   while (waiting_size != 0) {
     start = high_resolution_clock::now();
     acquire_scheduler_lock();
     end = high_resolution_clock::now();
-
     diff = duration_cast<microseconds>(end - start);
     time_waiting += diff;
 
@@ -173,18 +183,37 @@ void SchedulerThread<StaticConfig>::run() {
 
     release_scheduler_lock();
     end = high_resolution_clock::now();
-
     diff = duration_cast<microseconds>(end - start);
     time_critical += diff;
 
     // std::this_thread::sleep_for(std::chrono::seconds(1));
   }
 
+  run_end = high_resolution_clock::now();
+  diff = duration_cast<microseconds>(run_end - run_start);
+  time_total += diff;
+  printf("Time total2: %ld microseconds\n", time_total.count());
+  run_start = high_resolution_clock::now();
+
   // Mark my lock as done
+  start = high_resolution_clock::now();
   acquire_scheduler_lock();
+  end = high_resolution_clock::now();
+  diff = duration_cast<microseconds>(end - start);
+  time_waiting += diff;
+
+  start = high_resolution_clock::now();
   release_scheduler_lock(true);
+  end = high_resolution_clock::now();
+  diff = duration_cast<microseconds>(end - start);
+  time_critical += diff;
+
+  run_end = high_resolution_clock::now();
+  diff = duration_cast<microseconds>(run_end - run_start);
+  time_total += diff;
 
   printf("Exiting replica scheduler: %u\n", id_);
+  printf("Time total: %ld microseconds\n", time_total.count());
   printf("Time noncritical: %ld microseconds\n", time_noncritical.count());
   printf("Time critical: %ld microseconds\n", time_critical.count());
   printf("Time waiting: %ld microseconds\n", time_waiting.count());

@@ -43,9 +43,6 @@ class LoggerInterface {
 
   void change_logdir(std::string logdir);
   void copy_logs(std::string srcdir, std::string dstdir);
-
-  void enable();
-  void disable();
 };
 
 template <class StaticConfig>
@@ -79,9 +76,6 @@ class NullLogger : public LoggerInterface<StaticConfig> {
     (void)srcdir;
     (void)dstdir;
   }
-
-  void enable() {}
-  void disable() {}
 };
 
 template <class StaticConfig>
@@ -103,9 +97,6 @@ class MmapLogger : public LoggerInterface<StaticConfig> {
 
   void change_logdir(std::string logdir);
   void copy_logs(std::string srcdir, std::string dstdir);
-
-  void enable() { enabled_ = true; }
-  void disable() { enabled_ = false; }
 
  private:
   class Mmapping {
@@ -146,8 +137,6 @@ class MmapLogger : public LoggerInterface<StaticConfig> {
 
   std::vector<std::vector<Mmapping>> mappings_;
   std::vector<LogBuffer> bufs_;
-
-  bool enabled_;
 
   LogBuffer mmap_log_buf(uint16_t thread_id, uint64_t file_index);
 

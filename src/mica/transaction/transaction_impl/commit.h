@@ -439,20 +439,6 @@ bool Transaction<StaticConfig>::commit_replica(Result* detail,
   }
 
   {
-    t.switch_to(&Stats::logging);
-    if (StaticConfig::kVerbose) printf("logging: ts=%" PRIu64 "\n", ts_.t2);
-    if (!ctx_->db_->logger()->log(ctx_, this)) {
-      if (StaticConfig::kCollectExtraCommitStats) {
-        abort_reason_target_count_ = &ctx_->stats().aborted_by_logging_count;
-        abort_reason_target_time_ = &ctx_->stats().aborted_by_logging_time;
-      }
-      abort();
-      if (detail != nullptr) *detail = Result::kAbortedByLogging;
-      return false;
-    }
-  }
-
-  {
     t.switch_to(&Stats::write);
     if (StaticConfig::kVerbose) printf("write: ts=%" PRIu64 "\n", ts_.t2);
 

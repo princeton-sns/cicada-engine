@@ -86,8 +86,8 @@ template <class StaticConfig>
 void SchedulerThread<StaticConfig>::run() {
   printf("Starting replica scheduler: %u\n", id_);
 
-  printf("pinning to thread %lu\n", id_ + nschedulers_);
-  mica::util::lcore.pin_thread(id_ + nschedulers_);
+  printf("pinning to thread %lu\n", (id_ + 1) + nschedulers_);
+  mica::util::lcore.pin_thread((id_ + 1) + nschedulers_);
 
   microseconds time_noncritical{0};
   microseconds time_waiting{0};

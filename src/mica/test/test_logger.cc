@@ -766,7 +766,6 @@ int main(int argc, const char* argv[]) {
   }
 
   DB replica{page_pools, &logger, &sw, static_cast<uint16_t>(num_workers)};
-  logger.disable();
 
   {
     auto sched_pool_size = 1 * uint64_t(1073741824);

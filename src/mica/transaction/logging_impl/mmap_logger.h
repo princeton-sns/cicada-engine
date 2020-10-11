@@ -16,8 +16,7 @@ MmapLogger<StaticConfig>::MmapLogger(uint16_t nthreads, std::string logdir)
       logdir_{logdir},
       len_{StaticConfig::kPageSize},
       mappings_{},
-      bufs_{},
-      enabled_{true} {
+      bufs_{} {
   for (uint16_t i = 0; i < nthreads_; i++) {
     mappings_.emplace_back();
   }
@@ -70,13 +69,11 @@ void MmapLogger<StaticConfig>::copy_logs(std::string srcdir,
                                          std::string dstdir) {
   for (uint16_t thread_id = 0; thread_id < nthreads_; thread_id++) {
     for (uint64_t file_index = 0;; file_index++) {
-      std::string infname = srcdir + "/out." +
-                            std::to_string(thread_id) + "." +
+      std::string infname = srcdir + "/out." + std::to_string(thread_id) + "." +
                             std::to_string(file_index) + ".log";
 
-      std::string outfname = dstdir + "/out." +
-                             std::to_string(thread_id) + "." +
-                             std::to_string(file_index) + ".log";
+      std::string outfname = dstdir + "/out." + std::to_string(thread_id) +
+                             "." + std::to_string(file_index) + ".log";
 
       if (!PosixIO::Exists(infname.c_str())) break;
 
@@ -162,7 +159,8 @@ char* MmapLogger<StaticConfig>::alloc_log_buf(uint16_t thread_id,
 }
 
 template <class StaticConfig>
-void MmapLogger<StaticConfig>::release_log_buf(uint16_t thread_id, std::size_t nbytes) {
+void MmapLogger<StaticConfig>::release_log_buf(uint16_t thread_id,
+                                               std::size_t nbytes) {
   LogBuffer lb = bufs_[thread_id];
   LogFile<StaticConfig>* lf =
       reinterpret_cast<LogFile<StaticConfig>*>(lb.start);
@@ -173,28 +171,26 @@ void MmapLogger<StaticConfig>::release_log_buf(uint16_t thread_id, std::size_t n
 template <class StaticConfig>
 bool MmapLogger<StaticConfig>::log(const Context<StaticConfig>* ctx,
                                    const Table<StaticConfig>* tbl) {
-  if (enabled_) {
-    uint16_t thread_id = ctx->thread_id();
+  uint16_t thread_id = ctx->thread_id();
 
-    std::size_t nbytes = sizeof(CreateTableLogEntry<StaticConfig>);
-    char* buf = alloc_log_buf(thread_id, nbytes);
+  std::size_t nbytes = sizeof(CreateTableLogEntry<StaticConfig>);
+  char* buf = alloc_log_buf(thread_id, nbytes);
 
-    CreateTableLogEntry<StaticConfig>* le =
-        reinterpret_cast<CreateTableLogEntry<StaticConfig>*>(buf);
+  CreateTableLogEntry<StaticConfig>* le =
+      reinterpret_cast<CreateTableLogEntry<StaticConfig>*>(buf);
 
-    le->size = sizeof *le;
-    le->type = LogEntryType::CREATE_TABLE;
-    le->cf_count = tbl->cf_count();
+  le->size = sizeof *le;
+  le->type = LogEntryType::CREATE_TABLE;
+  le->cf_count = tbl->cf_count();
 
-    std::memcpy(&le->name[0], tbl->name().c_str(), 1 + tbl->name().size());
-    for (uint16_t cf_id = 0; cf_id < le->cf_count; cf_id++) {
-      le->data_size_hints[cf_id] = tbl->data_size_hint(cf_id);
-    }
-
-    // le->print();
-
-    release_log_buf(thread_id, nbytes);
+  std::memcpy(&le->name[0], tbl->name().c_str(), 1 + tbl->name().size());
+  for (uint16_t cf_id = 0; cf_id < le->cf_count; cf_id++) {
+    le->data_size_hints[cf_id] = tbl->data_size_hint(cf_id);
   }
+
+  // le->print();
+
+  release_log_buf(thread_id, nbytes);
 
   return true;
 }
@@ -204,30 +200,28 @@ template <bool UniqueKey>
 bool MmapLogger<StaticConfig>::log(
     const Context<StaticConfig>* ctx,
     const HashIndex<StaticConfig, UniqueKey, uint64_t>* idx) {
-  if (enabled_) {
-    uint16_t thread_id = ctx->thread_id();
+  uint16_t thread_id = ctx->thread_id();
 
-    std::size_t nbytes = sizeof(CreateHashIndexLogEntry<StaticConfig>);
-    char* buf = alloc_log_buf(thread_id, nbytes);
+  std::size_t nbytes = sizeof(CreateHashIndexLogEntry<StaticConfig>);
+  char* buf = alloc_log_buf(thread_id, nbytes);
 
-    CreateHashIndexLogEntry<StaticConfig>* le =
-        reinterpret_cast<CreateHashIndexLogEntry<StaticConfig>*>(buf);
+  CreateHashIndexLogEntry<StaticConfig>* le =
+      reinterpret_cast<CreateHashIndexLogEntry<StaticConfig>*>(buf);
 
-    le->size = sizeof *le;
-    le->type = LogEntryType::CREATE_HASH_IDX;
-    le->expected_num_rows = idx->expected_num_rows();
-    le->unique_key = UniqueKey;
+  le->size = sizeof *le;
+  le->type = LogEntryType::CREATE_HASH_IDX;
+  le->expected_num_rows = idx->expected_num_rows();
+  le->unique_key = UniqueKey;
 
-    std::memcpy(&le->name[0], idx->index_table()->name().c_str(),
-                1 + idx->index_table()->name().size());
+  std::memcpy(&le->name[0], idx->index_table()->name().c_str(),
+              1 + idx->index_table()->name().size());
 
-    std::memcpy(&le->main_tbl_name[0], idx->main_table()->name().c_str(),
-                1 + idx->main_table()->name().size());
+  std::memcpy(&le->main_tbl_name[0], idx->main_table()->name().c_str(),
+              1 + idx->main_table()->name().size());
 
-    // le->print();
+  // le->print();
 
-    release_log_buf(thread_id, nbytes);
-  }
+  release_log_buf(thread_id, nbytes);
 
   return true;
 }
@@ -235,85 +229,83 @@ bool MmapLogger<StaticConfig>::log(
 template <class StaticConfig>
 bool MmapLogger<StaticConfig>::log(const Context<StaticConfig>* ctx,
                                    const Transaction<StaticConfig>* tx) {
-  if (enabled_) {
-    uint16_t thread_id = ctx->thread_id();
+  uint16_t thread_id = ctx->thread_id();
 
-    auto accesses = tx->accesses();
-    auto iset_idx = tx->iset_idx();
-    auto wset_idx = tx->wset_idx();
+  auto accesses = tx->accesses();
+  auto iset_idx = tx->iset_idx();
+  auto wset_idx = tx->wset_idx();
 
-    for (auto j = 0; j < tx->iset_size(); j++) {
-      int i = iset_idx[j];
-      RowAccessItem<StaticConfig> item = accesses[i];
-      RowVersion<StaticConfig>* write_rv = item.write_rv;
-      uint32_t data_size = write_rv->data_size;
-      char* data = write_rv->data;
-      Table<StaticConfig>* tbl = item.tbl;
+  for (auto j = 0; j < tx->iset_size(); j++) {
+    int i = iset_idx[j];
+    RowAccessItem<StaticConfig> item = accesses[i];
+    RowVersion<StaticConfig>* write_rv = item.write_rv;
+    uint32_t data_size = write_rv->data_size;
+    char* data = write_rv->data;
+    Table<StaticConfig>* tbl = item.tbl;
 
-      std::size_t nbytes = sizeof(InsertRowLogEntry<StaticConfig>) + data_size;
-      char* buf = alloc_log_buf(thread_id, nbytes);
-      InsertRowLogEntry<StaticConfig>* le =
-          reinterpret_cast<InsertRowLogEntry<StaticConfig>*>(buf);
+    std::size_t nbytes = sizeof(InsertRowLogEntry<StaticConfig>) + data_size;
+    char* buf = alloc_log_buf(thread_id, nbytes);
+    InsertRowLogEntry<StaticConfig>* le =
+      reinterpret_cast<InsertRowLogEntry<StaticConfig>*>(buf);
 
-      std::size_t size = sizeof *le + data_size;
+    std::size_t size = sizeof *le + data_size;
 
-      le->size = size;
-      le->type = LogEntryType::INSERT_ROW;
+    le->size = size;
+    le->type = LogEntryType::INSERT_ROW;
 
-      le->txn_ts = tx->ts().t2;
-      le->cf_id = item.cf_id;
-      le->row_id = item.row_id;
+    le->txn_ts = tx->ts().t2;
+    le->cf_id = item.cf_id;
+    le->row_id = item.row_id;
 
-      le->wts = write_rv->wts.t2;
-      le->rts = write_rv->rts.get().t2;
+    le->wts = write_rv->wts.t2;
+    le->rts = write_rv->rts.get().t2;
 
-      le->data_size = data_size;
-      le->tbl_type = static_cast<uint8_t>(tbl->type());
+    le->data_size = data_size;
+    le->tbl_type = static_cast<uint8_t>(tbl->type());
 
-      std::memcpy(&le->tbl_name[0], tbl->name().c_str(),
-                  1 + tbl->name().size());
-      std::memcpy(le->data, data, data_size);
+    std::memcpy(&le->tbl_name[0], tbl->name().c_str(),
+                1 + tbl->name().size());
+    std::memcpy(le->data, data, data_size);
 
-      // le->print();
+    // le->print();
 
-      release_log_buf(thread_id, nbytes);
-    }
+    release_log_buf(thread_id, nbytes);
+  }
 
-    for (auto j = 0; j < tx->wset_size(); j++) {
-      int i = wset_idx[j];
-      RowAccessItem<StaticConfig> item = accesses[i];
-      RowVersion<StaticConfig>* write_rv = item.write_rv;
-      uint32_t data_size = write_rv->data_size;
-      char* data = write_rv->data;
-      Table<StaticConfig>* tbl = item.tbl;
+  for (auto j = 0; j < tx->wset_size(); j++) {
+    int i = wset_idx[j];
+    RowAccessItem<StaticConfig> item = accesses[i];
+    RowVersion<StaticConfig>* write_rv = item.write_rv;
+    uint32_t data_size = write_rv->data_size;
+    char* data = write_rv->data;
+    Table<StaticConfig>* tbl = item.tbl;
 
-      std::size_t nbytes = sizeof(WriteRowLogEntry<StaticConfig>) + data_size;
-      char* buf = alloc_log_buf(thread_id, nbytes);
-      WriteRowLogEntry<StaticConfig>* le =
-          reinterpret_cast<WriteRowLogEntry<StaticConfig>*>(buf);
+    std::size_t nbytes = sizeof(WriteRowLogEntry<StaticConfig>) + data_size;
+    char* buf = alloc_log_buf(thread_id, nbytes);
+    WriteRowLogEntry<StaticConfig>* le =
+      reinterpret_cast<WriteRowLogEntry<StaticConfig>*>(buf);
 
-      std::size_t size = sizeof *le + data_size;
-      le->size = size;
-      le->type = LogEntryType::WRITE_ROW;
+    std::size_t size = sizeof *le + data_size;
+    le->size = size;
+    le->type = LogEntryType::WRITE_ROW;
 
-      le->txn_ts = tx->ts().t2;
-      le->cf_id = item.cf_id;
-      le->row_id = item.row_id;
+    le->txn_ts = tx->ts().t2;
+    le->cf_id = item.cf_id;
+    le->row_id = item.row_id;
 
-      le->wts = write_rv->wts.t2;
-      le->rts = write_rv->rts.get().t2;
+    le->wts = write_rv->wts.t2;
+    le->rts = write_rv->rts.get().t2;
 
-      le->data_size = data_size;
-      le->tbl_type = static_cast<uint8_t>(tbl->type());
+    le->data_size = data_size;
+    le->tbl_type = static_cast<uint8_t>(tbl->type());
 
-      std::memcpy(&le->tbl_name[0], tbl->name().c_str(),
-                  1 + tbl->name().size());
-      std::memcpy(le->data, data, data_size);
+    std::memcpy(&le->tbl_name[0], tbl->name().c_str(),
+                1 + tbl->name().size());
+    std::memcpy(le->data, data, data_size);
 
-      // le->print();
+    // le->print();
 
-      release_log_buf(thread_id, nbytes);
-    }
+    release_log_buf(thread_id, nbytes);
   }
 
   return true;

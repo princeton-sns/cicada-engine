@@ -86,7 +86,8 @@ template <class StaticConfig>
 void SchedulerThread<StaticConfig>::run() {
   printf("Starting replica scheduler: %u\n", id_);
 
-  mica::util::lcore.pin_thread(id_);
+  printf("pinning to thread %lu\n", id_ + nschedulers_);
+  mica::util::lcore.pin_thread(id_ + nschedulers_);
 
   microseconds time_noncritical{0};
   microseconds time_waiting{0};
@@ -112,6 +113,10 @@ void SchedulerThread<StaticConfig>::run() {
 
   for (std::size_t cur_segment = id_; cur_segment < nsegments;
        cur_segment += nschedulers_) {
+
+    printf("starting segment %lu at %lu\n", cur_segment,
+           duration_cast<microseconds>(high_resolution_clock::now().time_since_epoch()).count());
+
     start = high_resolution_clock::now();
     nentries += build_local_lists(cur_segment, local_lists);
     end = high_resolution_clock::now();
@@ -135,6 +140,8 @@ void SchedulerThread<StaticConfig>::run() {
 
       auto search = waiting_queues_.find(row_id);
       if (search == waiting_queues_.end()) {  // Not found
+        printf("pushed row id %lu at %lu\n", row_id,
+               duration_cast<microseconds>(high_resolution_clock::now().time_since_epoch()).count());
         scheduler_queue_->push(queue);
         waiting_queues_[row_id] = nullptr;
       } else {  // Found
@@ -162,13 +169,10 @@ void SchedulerThread<StaticConfig>::run() {
     end = high_resolution_clock::now();
     diff = duration_cast<microseconds>(end - start);
     time_noncritical += diff;
-  }
 
-  run_end = high_resolution_clock::now();
-  diff = duration_cast<microseconds>(run_end - run_start);
-  time_total += diff;
-  printf("Time total1: %ld microseconds\n", time_total.count());
-  run_start = high_resolution_clock::now();
+    printf("finished segment %lu at %lu\n", cur_segment,
+           duration_cast<microseconds>(high_resolution_clock::now().time_since_epoch()).count());
+  }
 
   while (waiting_size != 0) {
     start = high_resolution_clock::now();
@@ -189,12 +193,6 @@ void SchedulerThread<StaticConfig>::run() {
     // std::this_thread::sleep_for(std::chrono::seconds(1));
   }
 
-  run_end = high_resolution_clock::now();
-  diff = duration_cast<microseconds>(run_end - run_start);
-  time_total += diff;
-  printf("Time total2: %ld microseconds\n", time_total.count());
-  run_start = high_resolution_clock::now();
-
   // Mark my lock as done
   start = high_resolution_clock::now();
   acquire_scheduler_lock();
@@ -205,7 +203,7 @@ void SchedulerThread<StaticConfig>::run() {
   start = high_resolution_clock::now();
   release_scheduler_lock(true);
   end = high_resolution_clock::now();
-  diff = duration_cast<microseconds>(end - start);
+  diff += duration_cast<microseconds>(end - start);
   time_critical += diff;
 
   run_end = high_resolution_clock::now();
@@ -224,10 +222,14 @@ void SchedulerThread<StaticConfig>::ack_executed_rows() {
   for (auto done_queue : done_queues_) {
     uint64_t row_id;
     while (done_queue->try_pop(row_id)) {
+      printf("acking row id %lu at %lu\n", row_id,
+             duration_cast<microseconds>(high_resolution_clock::now().time_since_epoch()).count());
       auto search = waiting_queues_.find(row_id);
       if (search != waiting_queues_.end()) {  // Found
         LogEntryList* queue = search->second;
         if (queue != nullptr) {
+          printf("pushed row id %lu at %lu\n", row_id,
+                 duration_cast<microseconds>(high_resolution_clock::now().time_since_epoch()).count());
           scheduler_queue_->push(queue);
           waiting_queues_[row_id] = nullptr;
         } else {

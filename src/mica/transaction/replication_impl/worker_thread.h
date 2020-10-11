@@ -44,7 +44,8 @@ template <class StaticConfig>
 void WorkerThread<StaticConfig>::run() {
   printf("Starting replica worker: %u\n", id_);
 
-  mica::util::lcore.pin_thread(id_ + nschedulers_);
+  printf("pinning to thread %lu\n", id_);
+  mica::util::lcore.pin_thread(id_);
 
   db_->activate(id_);
 
@@ -58,6 +59,8 @@ void WorkerThread<StaticConfig>::run() {
   while (true) {
     LogEntryList* queue = nullptr;
     if (scheduler_queue_->try_pop(queue)) {
+      printf("popped queue at %lu\n",
+             duration_cast<microseconds>(high_resolution_clock::now().time_since_epoch()).count());
       row_id = static_cast<uint64_t>(-1);
       LogEntryNode* node = queue->list;
       while (node != nullptr) {
@@ -92,6 +95,8 @@ void WorkerThread<StaticConfig>::run() {
       }
 
       if (row_id != static_cast<uint64_t>(-1)) {
+        printf("done processing row id %lu at %lu\n", row_id,
+               duration_cast<microseconds>(high_resolution_clock::now().time_since_epoch()).count());
         done_queue_->push(row_id);
       }
     } else if (scheduler_queue_->unsafe_size() == 0 && stop_) {
@@ -296,8 +301,11 @@ void WorkerThread<StaticConfig>::write_data_row(
 
   rah->reset();
 
-  if (!rah->peek_row_replica(tbl, le->cf_id, le->row_id, false, false, true) ||
-      !rah->write_row(le->data_size)) {
+  if (!rah->peek_row_replica(tbl, le->cf_id, le->row_id, false, false, true)) {
+    throw std::runtime_error("write_data_row: Failed to peek row.");
+  }
+
+  if (!rah->write_row(le->data_size)) {
     throw std::runtime_error("write_data_row: Failed to write row.");
   }
 

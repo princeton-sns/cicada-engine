@@ -82,9 +82,10 @@ void WorkerThread<StaticConfig>::run() {
       row_id = static_cast<uint64_t>(-1);
       tbl = nullptr;
       uint64_t nentries = queue->nentries;
+      char* ptr = queue->buf;
       for (uint64_t i = 0; i < nentries; i++) {
         LogEntry<StaticConfig>* le =
-            reinterpret_cast<LogEntry<StaticConfig>*>(queue->buf[i]);
+            reinterpret_cast<LogEntry<StaticConfig>*>(ptr);
 
         // le->print();
 
@@ -116,6 +117,8 @@ void WorkerThread<StaticConfig>::run() {
             throw std::runtime_error(
                 "WorkerThread::run: Unexpected log entry type.");
         }
+
+        ptr += le->size;
       }
       working_end_ = high_resolution_clock::now();
       time_working_ += duration_cast<nanoseconds>(working_end_ - working_start_);

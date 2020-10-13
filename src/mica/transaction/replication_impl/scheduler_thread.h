@@ -273,6 +273,7 @@ LogEntryList<StaticConfig>* SchedulerThread<StaticConfig>::allocate_list() {
 
   list->next = nullptr;
   list->tail = list;
+  list->cur = list->buf;
   list->nentries = 0;
 
   // printf("allocated new queue at %p\n", list);
@@ -375,9 +376,9 @@ uint64_t SchedulerThread<StaticConfig>::build_local_lists(
       list = search->second;
     }
 
-    if (!list->tail->push(le)) {
+    if (!list->tail->push(le, size)) {
       LogEntryList<StaticConfig>* list2 = allocate_list();
-      list2->push(le);
+      list2->push(le, size);
       list->append(list2);
     }
 

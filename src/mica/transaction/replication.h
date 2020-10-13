@@ -191,12 +191,13 @@ class LogEntryNode {
 template <class StaticConfig>
 class LogEntryList {
  public:
-  static const std::size_t kBufSize = 509; // Total bytes: (509 * 8) + 8 + 8 + 8 = 4096
+  static const std::size_t kBufSize = 4064; // Total bytes: 4064 + 8 + 8 + 8 + 8 = 4096
 
   LogEntryList<StaticConfig>* next;
   LogEntryList<StaticConfig>* tail;
   uint64_t nentries;
-  LogEntry<StaticConfig>* buf[kBufSize]; // TODO: make this a constant parameter
+  char* cur;
+  char buf[kBufSize]; // TODO: make this a constant parameter
 
   void append(LogEntryList<StaticConfig>* list) {
     tail->next = list;
@@ -206,12 +207,15 @@ class LogEntryList {
     // printf("updated tail to %p\n", tail);
   }
 
-  bool push(LogEntry<StaticConfig>* le) {
-    if (nentries >= kBufSize) {
+  bool push(LogEntry<StaticConfig>* le, std::size_t size) {
+    if ((cur + size) >= (buf + kBufSize)) {
       return false;
     }
 
-    buf[nentries++] = le;
+    std::memcpy(cur, le, size);
+
+    nentries += 1;
+    cur += size;
 
     // printf("Pushed le at %p to queue at %p: %lu\n", le, this, nentries);
 

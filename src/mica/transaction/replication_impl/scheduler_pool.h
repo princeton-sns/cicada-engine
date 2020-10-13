@@ -18,8 +18,9 @@ namespace mica {
 
       numa_id_ = static_cast<uint8_t>(numa_id);
 
-      uint64_t node_count = (size/2 + node_size - 1) / node_size;
-      uint64_t list_count = (size/2 + list_size - 1) / list_size;
+      // uint64_t node_count = (size/2 + node_size - 1) / node_size;
+      uint64_t node_count = 0;
+      uint64_t list_count = (size + list_size - 1) / list_size;
       size_ = (node_count * node_size) + (list_count * list_size);
 
       printf("node_size: %lu\n", node_size);
@@ -34,11 +35,12 @@ namespace mica {
       total_lists_ = list_count;
       free_lists_ = list_count;
 
-      node_pages_ = reinterpret_cast<char*>(alloc_->malloc_contiguous(node_count * node_size, lcore));
-      if (!node_pages_) {
-        printf("failed to initialize SchedulerPool\n");
-        return;
-      }
+      // node_pages_ = reinterpret_cast<char*>(alloc_->malloc_contiguous(node_count * node_size, lcore));
+      // if (!node_pages_) {
+      //   printf("failed to initialize SchedulerPool\n");
+      //   return;
+      // }
+      node_pages_ = nullptr;
 
       list_pages_ = reinterpret_cast<char*>(alloc_->malloc_contiguous(list_count * list_size, lcore));
       if (!list_pages_) {
@@ -48,21 +50,20 @@ namespace mica {
 
       LogEntryNode* node = reinterpret_cast<LogEntryNode*>(node_pages_);
       next_node_ = node;
-      for (uint64_t i = 0; i < node_count - 1; i++) {
-        node->next = reinterpret_cast<LogEntryNode*>(node_pages_ + (i + 1) * node_size);
-        node = node->next;
-      }
-      node->next = nullptr;
+      // for (uint64_t i = 0; i < node_count - 1; i++) {
+      //   node->next = reinterpret_cast<LogEntryNode*>(node_pages_ + (i + 1) * node_size);
+      //   node = node->next;
+      // }
+      // node->next = nullptr;
 
-      // Use list->list instead of list->next ptr to avoid concurrency bugs
-      LogEntryList* list = reinterpret_cast<LogEntryList*>(list_pages_);
+      // Use list->next instead of list->next ptr to avoid concurrency bugs
+      LogEntryList<StaticConfig>* list = reinterpret_cast<LogEntryList<StaticConfig>*>(list_pages_);
       next_list_ = list;
       for (uint64_t i = 0; i < list_count - 1; i++) {
-        list->next = nullptr;
-        list->list = reinterpret_cast<LogEntryNode*>(list_pages_ + (i + 1) * list_size);
-        list = reinterpret_cast<LogEntryList*>(list->list);
+        list->next = reinterpret_cast<LogEntryList<StaticConfig>*>(list_pages_ + (i + 1) * list_size);
+        list = list->next;
       }
-      list->list = nullptr;
+      list->next = nullptr;
 
       printf("initialized SchedulerPool on numa node %" PRIu8 " with %.3lf GB\n",
              numa_id_, static_cast<double>(size) / 1000000000.);
@@ -75,20 +76,20 @@ namespace mica {
     };
 
     template <class StaticConfig>
-    LogEntryList* SchedulerPool<StaticConfig>::allocate_list(uint64_t n) {
+    LogEntryList<StaticConfig>* SchedulerPool<StaticConfig>::allocate_list(uint64_t n) {
       while (__sync_lock_test_and_set(&lock_, 1) == 1) ::mica::util::pause();
 
-      LogEntryList* start = next_list_;
-      LogEntryList* end = next_list_;
+      LogEntryList<StaticConfig>* start = next_list_;
+      LogEntryList<StaticConfig>* end = next_list_;
 
       for (uint64_t i = 1; i < n && end != nullptr; i++) {
-        end = reinterpret_cast<LogEntryList*>(end->list);
+        end = reinterpret_cast<LogEntryList<StaticConfig>*>(end->next);
         free_lists_--;
       }
 
       if (end != nullptr) {
-        next_list_ = reinterpret_cast<LogEntryList*>(end->list);
-        end->list = nullptr;
+        next_list_ = reinterpret_cast<LogEntryList<StaticConfig>*>(end->next);
+        end->next = nullptr;
         free_lists_--;
       }
 
@@ -98,10 +99,10 @@ namespace mica {
     };
 
     template <class StaticConfig>
-    void SchedulerPool<StaticConfig>::free_list(LogEntryList* p) {
+    void SchedulerPool<StaticConfig>::free_list(LogEntryList<StaticConfig>* p) {
       while (__sync_lock_test_and_set(&lock_, 1) == 1) ::mica::util::pause();
 
-      p->list = reinterpret_cast<LogEntryNode*>(next_list_);
+      p->next = next_list_;
       next_list_ = p;
       free_lists_++;
 

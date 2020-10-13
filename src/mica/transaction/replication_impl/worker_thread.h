@@ -14,7 +14,8 @@ using std::chrono::nanoseconds;
 
 template <class StaticConfig>
 WorkerThread<StaticConfig>::WorkerThread(
-    DB<StaticConfig>* db, tbb::concurrent_queue<LogEntryList*>* scheduler_queue,
+    DB<StaticConfig>* db,
+    tbb::concurrent_queue<LogEntryList<StaticConfig>*>* scheduler_queue,
     tbb::concurrent_queue<uint64_t>* done_queue,
     pthread_barrier_t* start_barrier, uint16_t id, uint16_t nschedulers)
     : db_{db},
@@ -72,18 +73,18 @@ void WorkerThread<StaticConfig>::run() {
 
   total_start = high_resolution_clock::now();
   while (true) {
-    LogEntryList* queue = nullptr;
+    LogEntryList<StaticConfig>* queue = nullptr;
     if (scheduler_queue_->try_pop(queue)) {
+      // printf("popped queue with %lu entries\n", queue->nentries);
       // printf("popped queue at %lu\n",
-      //        duration_cast<nanoseconds>(
-      //            high_resolution_clock::now().time_since_epoch())
-      //            .count());
+      //        scheduler_queue_->unsafe_size());
+      working_start_ = high_resolution_clock::now();
       row_id = static_cast<uint64_t>(-1);
       tbl = nullptr;
-      LogEntryNode* node = queue->list;
-      while (node != nullptr) {
+      uint64_t nentries = queue->nentries;
+      for (uint64_t i = 0; i < nentries; i++) {
         LogEntry<StaticConfig>* le =
-            reinterpret_cast<LogEntry<StaticConfig>*>(node->ptr);
+            reinterpret_cast<LogEntry<StaticConfig>*>(queue->buf[i]);
 
         // le->print();
 
@@ -108,19 +109,16 @@ void WorkerThread<StaticConfig>::run() {
               }
             }
             // wrle->print();
-            // working_start_ = high_resolution_clock::now();
             write_row(tbl, &tx, &rah, wrle);
-            // working_end_ = high_resolution_clock::now();
-            // time_working_ += duration_cast<nanoseconds>(working_end_ - working_start_);
             break;
 
           default:
             throw std::runtime_error(
                 "WorkerThread::run: Unexpected log entry type.");
         }
-
-        node = node->next;
       }
+      working_end_ = high_resolution_clock::now();
+      time_working_ += duration_cast<nanoseconds>(working_end_ - working_start_);
 
       if (row_id != static_cast<uint64_t>(-1)) {
         // printf("done processing row id %lu at %lu\n", row_id,
@@ -306,17 +304,16 @@ template <class StaticConfig>
 void WorkerThread<StaticConfig>::write_data_row(
     Table<StaticConfig>* tbl, Transaction<StaticConfig>* tx,
     RowAccessHandle<StaticConfig>* rah, WriteRowLogEntry<StaticConfig>* le) {
-
   typename StaticConfig::Timestamp txn_ts;
   txn_ts.t2 = le->txn_ts;
 
   if (!tx->has_began()) {
     if (!tx->begin(false, &txn_ts)) {
-    // if (!tx->begin(false)) {
+      // if (!tx->begin(false)) {
       throw std::runtime_error("write_data_row: Failed to begin transaction.");
     }
   } else if (tx->ts() != txn_ts) {
-  // } else {
+    // } else {
     Result result;
     tx->commit_replica(&result);
     // tx->commit1_replica(&result);
@@ -326,7 +323,7 @@ void WorkerThread<StaticConfig>::write_data_row(
     }
 
     if (!tx->begin(false, &txn_ts)) {
-    // if (!tx->begin(false)) {
+      // if (!tx->begin(false)) {
       throw std::runtime_error("write_data_row: Failed to begin transaction.");
     }
   }

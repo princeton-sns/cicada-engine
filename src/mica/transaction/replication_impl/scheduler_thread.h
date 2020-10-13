@@ -14,14 +14,14 @@ using std::chrono::high_resolution_clock;
 using std::chrono::nanoseconds;
 
 template <class StaticConfig>
-std::unordered_map<uint64_t, LogEntryList*>
+std::unordered_map<uint64_t, LogEntryList<StaticConfig>*>
     SchedulerThread<StaticConfig>::waiting_queues_{};
 
 template <class StaticConfig>
 SchedulerThread<StaticConfig>::SchedulerThread(
     std::shared_ptr<MmappedLogFile<StaticConfig>> log,
     SchedulerPool<StaticConfig>* pool,
-    tbb::concurrent_queue<LogEntryList*>* scheduler_queue,
+    tbb::concurrent_queue<LogEntryList<StaticConfig>*>* scheduler_queue,
     std::vector<tbb::concurrent_queue<uint64_t>*> done_queues,
     pthread_barrier_t* start_barrier, uint16_t id, uint16_t nschedulers,
     SchedulerLock* my_lock)
@@ -97,7 +97,7 @@ void SchedulerThread<StaticConfig>::run() {
 
   std::size_t nsegments = log_->get_nsegments();
 
-  std::unordered_map<uint64_t, LogEntryList*> local_lists{};
+  std::unordered_map<uint64_t, LogEntryList<StaticConfig>*> local_lists{};
 
   high_resolution_clock::time_point run_start;
   high_resolution_clock::time_point run_end;
@@ -137,23 +137,28 @@ void SchedulerThread<StaticConfig>::run() {
     for (const auto& item : local_lists) {
       auto row_id = item.first;
       auto queue = item.second;
+      auto next = queue->next;
+      auto tail = queue->tail;
 
       auto search = waiting_queues_.find(row_id);
       if (search == waiting_queues_.end()) {  // Not found
+        // printf("pushing queue at %p with %lu entries\n", queue, queue->nentries);
         scheduler_queue_->push(queue);
-        waiting_queues_[row_id] = nullptr;
+        // printf("setting waiting queue at %p\n", next);
+        waiting_queues_[row_id] = next;
+        if (next != nullptr) {
+          next->tail = tail;
+        }
         // printf("pushed row id %lu at %lu, %lu\n", row_id,
         //        duration_cast<nanoseconds>(high_resolution_clock::now().time_since_epoch()).count(),
         //        scheduler_queue_->unsafe_size());
       } else {  // Found
-        LogEntryList* queue2 = waiting_queues_[row_id];
+        auto queue2 = waiting_queues_[row_id];
         if (queue2 == nullptr) {
           waiting_queues_[row_id] = queue;
+          // printf("setting waiting queue at %p\n", queue);
         } else {
-          queue2->append(queue->list, queue->tail);
-          queue->list = nullptr;
-          queue->lock = 0;
-          free_nodes_and_list(queue);
+          queue2->append(queue);
         }
       }
     }
@@ -227,15 +232,25 @@ void SchedulerThread<StaticConfig>::ack_executed_rows() {
       //        duration_cast<nanoseconds>(high_resolution_clock::now().time_since_epoch()).count());
       auto search = waiting_queues_.find(row_id);
       if (search != waiting_queues_.end()) {  // Found
-        LogEntryList* queue = search->second;
+        auto queue = search->second;
         if (queue != nullptr) {
+          auto next = queue->next;
+          auto tail = queue->tail;
+
+          // printf("pushing queue at %p with %lu entries\n", queue, queue->nentries);
           scheduler_queue_->push(queue);
-          waiting_queues_[row_id] = nullptr;
+
+          waiting_queues_[row_id] = next;
+          // printf("setting waiting queue at %p\n", next);
+          if (next != nullptr) {
+            next->tail = tail;
+          }
           // printf("pushed row id %lu at %lu, %lu\n", row_id,
           //        duration_cast<nanoseconds>(high_resolution_clock::now().time_since_epoch()).count(),
           //        scheduler_queue_->unsafe_size());
         } else {
           waiting_queues_.erase(row_id);
+          // printf("erasing nullptr waiting queue\n");
         }
       } else {
         throw std::runtime_error("unexpected row id: " + row_id);
@@ -245,7 +260,7 @@ void SchedulerThread<StaticConfig>::ack_executed_rows() {
 };
 
 template <class StaticConfig>
-LogEntryList* SchedulerThread<StaticConfig>::allocate_list() {
+LogEntryList<StaticConfig>* SchedulerThread<StaticConfig>::allocate_list() {
   if (allocated_lists_ == nullptr) {
     allocated_lists_ = pool_->allocate_list(1024);
     if (allocated_lists_ == nullptr) {
@@ -253,28 +268,34 @@ LogEntryList* SchedulerThread<StaticConfig>::allocate_list() {
     }
   }
 
-  LogEntryList* next = allocated_lists_;
-  allocated_lists_ = reinterpret_cast<LogEntryList*>(allocated_lists_->list);
+  LogEntryList<StaticConfig>* list = allocated_lists_;
+  allocated_lists_ = reinterpret_cast<LogEntryList<StaticConfig>*>(allocated_lists_->next);
 
-  return next;
+  list->next = nullptr;
+  list->tail = list;
+  list->nentries = 0;
+
+  // printf("allocated new queue at %p\n", list);
+
+  return list;
 }
 
 template <class StaticConfig>
-void SchedulerThread<StaticConfig>::free_nodes_and_list(LogEntryList* list) {
-  LogEntryNode* next = list->list;
-  while (next != nullptr) {
-    LogEntryNode* temp = next->next;
-    free_node(next);
-    next = temp;
-  }
+void SchedulerThread<StaticConfig>::free_nodes_and_list(LogEntryList<StaticConfig>* list) {
+  // LogEntryNode* next = list->list;
+  // while (next != nullptr) {
+  //   LogEntryNode* temp = next->next;
+  //   free_node(next);
+  //   next = temp;
+  // }
 
-  list->list = nullptr;
+  // list->list = nullptr;
   free_list(list);
 }
 
 template <class StaticConfig>
-void SchedulerThread<StaticConfig>::free_list(LogEntryList* list) {
-  list->list = reinterpret_cast<LogEntryNode*>(allocated_lists_);
+void SchedulerThread<StaticConfig>::free_list(LogEntryList<StaticConfig>* list) {
+  list->next = allocated_lists_;
   allocated_lists_ = list;
 }
 
@@ -302,7 +323,7 @@ void SchedulerThread<StaticConfig>::free_node(LogEntryNode* node) {
 template <class StaticConfig>
 uint64_t SchedulerThread<StaticConfig>::build_local_lists(
     std::size_t segment,
-    std::unordered_map<uint64_t, LogEntryList*>& lists) {
+    std::unordered_map<uint64_t, LogEntryList<StaticConfig>*>& lists) {
   LogFile<StaticConfig>* lf = log_->get_lf(segment);
   // lf->print();
 
@@ -313,10 +334,12 @@ uint64_t SchedulerThread<StaticConfig>::build_local_lists(
 
   for (uint64_t i = 0; i < lf->nentries; i++) {
     LogEntry<StaticConfig>* le = reinterpret_cast<LogEntry<StaticConfig>*>(ptr);
+    LogEntryType type = le->type;
+    std::size_t size = le->size;
     // le->print();
 
     uint64_t row_id = 0;
-    switch (le->type) {
+    switch (type) {
       case LogEntryType::INSERT_ROW:
         irle = static_cast<InsertRowLogEntry<StaticConfig>*>(le);
         row_id = irle->row_id;
@@ -334,27 +357,31 @@ uint64_t SchedulerThread<StaticConfig>::build_local_lists(
             "build_local_lists: Unexpected log entry type.");
     }
 
-    LogEntryNode* node = allocate_node();
-    std::memset(node, 0, sizeof *node);
-    node->ptr = ptr;
+    // LogEntryNode* node = allocate_node();
+    // std::memset(node, 0, sizeof *node);
+    // node->ptr = ptr;
 
     // row_id = 0;
-    LogEntryList* list = nullptr;
+    LogEntryList<StaticConfig>* list = nullptr;
     auto search = lists.find(row_id);
     if (search == lists.end()) {  // Not found
       list = allocate_list();
-      list->tail = nullptr;
-      while (__sync_lock_test_and_set(&list->lock, 1) == 1) {
-        ::mica::util::pause();
-      }
+      // list->tail = nullptr;
+      // while (__sync_lock_test_and_set(&list->lock, 1) == 1) {
+      //   ::mica::util::pause();
+      // }
       lists[row_id] = list;
     } else {
       list = search->second;
     }
 
-    list->append(node);
+    if (!list->tail->push(le)) {
+      LogEntryList<StaticConfig>* list2 = allocate_list();
+      list2->push(le);
+      list->append(list2);
+    }
 
-    ptr += le->size;
+    ptr += size;
   }
 
   return lf->nentries;

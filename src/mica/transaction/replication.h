@@ -188,46 +188,53 @@ class LogEntryNode {
   }
 } __attribute__((aligned(64)));
 
+template <class StaticConfig>
 class LogEntryList {
  public:
-  LogEntryList* next;
-  LogEntryNode* list;
-  LogEntryNode* tail;
+  static const std::size_t kBufSize = 509; // Total bytes: (509 * 8) + 8 + 8 + 8 = 4096
 
-  uint32_t status;
-  volatile uint32_t lock;
+  LogEntryList<StaticConfig>* next;
+  LogEntryList<StaticConfig>* tail;
+  uint64_t nentries;
+  LogEntry<StaticConfig>* buf[kBufSize]; // TODO: make this a constant parameter
 
-  void append(LogEntryNode* node, LogEntryNode* new_tail) {
-    tail->next = node;
-    tail = new_tail;
+  void append(LogEntryList<StaticConfig>* list) {
+    tail->next = list;
+    tail = list->tail;
+
+    // printf("appended queue at %p with %lu entries to queue at %p\n", list, list->nentries, this);
+    // printf("updated tail to %p\n", tail);
   }
 
-  void append(LogEntryNode* node) {
-    if (tail == nullptr) {
-      list = node;
-      tail = node;
-    } else {
-      append(node, node);
+  bool push(LogEntry<StaticConfig>* le) {
+    if (nentries >= kBufSize) {
+      return false;
     }
-  };
 
-  void print() {
-    std::stringstream stream;
+    buf[nentries++] = le;
 
-    stream << "LogEntryList: " << this << std::endl;
-    stream << "next:" << next << std::endl;
-    stream << "status:" << status << std::endl;
-    stream << "tail:" << tail << std::endl;
-    stream << "list:" << std::endl;
+    // printf("Pushed le at %p to queue at %p: %lu\n", le, this, nentries);
 
-    std::cout << stream.str();
-
-    LogEntryNode* next = list;
-    while (next != nullptr) {
-      next->print();
-      next = next->next;
-    }
+    return true;
   }
+
+  // void print() {
+  //   std::stringstream stream;
+
+  //   stream << "LogEntryList: " << this << std::endl;
+  //   stream << "next:" << next << std::endl;
+  //   stream << "status:" << status << std::endl;
+  //   stream << "tail:" << tail << std::endl;
+  //   stream << "list:" << std::endl;
+
+  //   std::cout << stream.str();
+
+  //   LogEntryNode* next = list;
+  //   while (next != nullptr) {
+  //     next->print();
+  //     next = next->next;
+  //   }
+  // }
 
 } __attribute__((aligned(64)));
 
@@ -236,14 +243,14 @@ class SchedulerPool {
  public:
   typedef typename StaticConfig::Alloc Alloc;
 
-  static constexpr uint64_t list_size = sizeof(LogEntryList);
+  static constexpr uint64_t list_size = sizeof(LogEntryList<StaticConfig>);
   static constexpr uint64_t node_size = sizeof(LogEntryNode);
 
   SchedulerPool(Alloc* alloc, uint64_t size, size_t lcore);
   ~SchedulerPool();
 
-  LogEntryList* allocate_list(uint64_t n = 1);
-  void free_list(LogEntryList* p);
+  LogEntryList<StaticConfig>* allocate_list(uint64_t n = 1);
+  void free_list(LogEntryList<StaticConfig>* p);
 
   LogEntryNode* allocate_node(uint64_t n = 1);
   void free_node(LogEntryNode* p);
@@ -281,7 +288,7 @@ class SchedulerPool {
   uint64_t total_lists_;
   uint64_t free_lists_;
   char* list_pages_;
-  LogEntryList* next_list_;
+  LogEntryList<StaticConfig>* next_list_;
 
   volatile uint32_t lock_;
 } __attribute__((aligned(64)));
@@ -293,32 +300,11 @@ struct SchedulerLock {
 } __attribute__((__aligned__(64)));
 
 template <class StaticConfig>
-class SchedulerQueue {
- public:
-  SchedulerQueue(SchedulerPool<StaticConfig>* pool);
-  ~SchedulerQueue();
-
-  LogEntryList* append(uint64_t row_id, LogEntryList* list);
-
-  void print();
-
- private:
-  std::unordered_map<uint64_t, LogEntryList*> heads_;
-
-  LogEntryList head_;
-  LogEntryList* tail_;
-
-  SchedulerPool<StaticConfig>* pool_;
-
-  void deallocate_list(LogEntryList* list);
-};
-
-template <class StaticConfig>
 class SchedulerThread {
  public:
   SchedulerThread(std::shared_ptr<MmappedLogFile<StaticConfig>> log,
                   SchedulerPool<StaticConfig>* pool,
-                  tbb::concurrent_queue<LogEntryList*>* scheduler_queue,
+                  tbb::concurrent_queue<LogEntryList<StaticConfig>*>* scheduler_queue,
                   std::vector<tbb::concurrent_queue<uint64_t>*> done_queues,
                   pthread_barrier_t* start_barrier, uint16_t id,
                   uint16_t nschedulers, SchedulerLock* my_lock);
@@ -329,13 +315,13 @@ class SchedulerThread {
   void stop();
 
  private:
-  static std::unordered_map<uint64_t, LogEntryList*> waiting_queues_;
+  static std::unordered_map<uint64_t, LogEntryList<StaticConfig>*> waiting_queues_;
 
   std::shared_ptr<MmappedLogFile<StaticConfig>> log_;
   SchedulerPool<StaticConfig>* pool_;
   LogEntryNode* allocated_nodes_;
-  LogEntryList* allocated_lists_;
-  tbb::concurrent_queue<LogEntryList*>* scheduler_queue_;
+  LogEntryList<StaticConfig>* allocated_lists_;
+  tbb::concurrent_queue<LogEntryList<StaticConfig>*>* scheduler_queue_;
   std::vector<tbb::concurrent_queue<uint64_t>*> done_queues_;
   pthread_barrier_t* start_barrier_;
   uint16_t id_;
@@ -352,12 +338,12 @@ class SchedulerThread {
   void ack_executed_rows();
 
   uint64_t build_local_lists(
-      std::size_t segment, std::unordered_map<uint64_t, LogEntryList*>& lists);
+      std::size_t segment, std::unordered_map<uint64_t, LogEntryList<StaticConfig>*>& lists);
 
-  void free_nodes_and_list(LogEntryList* list);
+  void free_nodes_and_list(LogEntryList<StaticConfig>* list);
 
-  LogEntryList* allocate_list();
-  void free_list(LogEntryList* list);
+  LogEntryList<StaticConfig>* allocate_list();
+  void free_list(LogEntryList<StaticConfig>* list);
 
   LogEntryNode* allocate_node();
   void free_node(LogEntryNode* node);
@@ -367,7 +353,7 @@ template <class StaticConfig>
 class WorkerThread {
  public:
   WorkerThread(DB<StaticConfig>* db,
-               tbb::concurrent_queue<LogEntryList*>* scheduler_queue,
+               tbb::concurrent_queue<LogEntryList<StaticConfig>*>* scheduler_queue,
                tbb::concurrent_queue<uint64_t>* done_queue,
                pthread_barrier_t* start_barrier, uint16_t id,
                uint16_t nschedulers);
@@ -379,7 +365,7 @@ class WorkerThread {
 
  private:
   DB<StaticConfig>* db_;
-  tbb::concurrent_queue<LogEntryList*>* scheduler_queue_;
+  tbb::concurrent_queue<LogEntryList<StaticConfig>*>* scheduler_queue_;
   tbb::concurrent_queue<uint64_t>* done_queue_;
   pthread_barrier_t* start_barrier_;
   uint16_t id_;
@@ -454,7 +440,7 @@ class CopyCat : public CCCInterface<StaticConfig> {
   void stop_workers();
 
  private:
-  tbb::concurrent_queue<LogEntryList*> scheduler_queue_;
+  tbb::concurrent_queue<LogEntryList<StaticConfig>*> scheduler_queue_;
   DB<StaticConfig>* db_;
   SchedulerPool<StaticConfig>* pool_;
 
@@ -491,7 +477,6 @@ class CopyCat : public CCCInterface<StaticConfig> {
 #include "replication_impl/copycat.h"
 #include "replication_impl/scheduler_pool.h"
 #include "replication_impl/scheduler_thread.h"
-#include "replication_impl/scheduler_queue.h"
 #include "replication_impl/worker_thread.h"
 
 #endif

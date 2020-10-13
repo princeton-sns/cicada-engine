@@ -473,6 +473,8 @@ void Table<StaticConfig>::print_table_status() const {
           chain_length++;
         }
 
+        // printf("row id: %lu, row wts: %lu\n", i, rv->wts.t2);
+
         rv = rv->older_rv;
       }
       if (StaticConfig::kInlinedRowVersion && cf.inlining &&
@@ -500,6 +502,7 @@ void Table<StaticConfig>::print_table_status() const {
         100. * static_cast<double>(total) / static_cast<double>(net_row_count) -
             100.);
 
+    printf("  chain len: %.2lf\n", static_cast<double>(chain_length));
     printf("  avg chain len: %.2lf\n", static_cast<double>(chain_length) /
                                            static_cast<double>(net_row_count));
     printf("  memory use:    %10.3lf MB\n",

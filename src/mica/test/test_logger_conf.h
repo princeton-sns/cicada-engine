@@ -32,7 +32,8 @@
 
 #define MICA_COLUMN_COUNT 1
 
-#define INDEX_STRUCT IDX_MICA
+// #define INDEX_STRUCT IDX_MICA
+#define INDEX_STRUCT 0
 #define MICA_FULLINDEX false
 
 #define MICA_USE_SCAN false
@@ -61,7 +62,7 @@
 #define MICA_RELAY_WARMUP_DIR "/mnt/huge/cicada/relay/warmup"
 #define MICA_RELAY_WORKLOAD_DIR "/mnt/huge/cicada/relay/workload"
 
-#define MICA_REPL_USE_UPSERT true
+#define MICA_REPL_USE_UPSERT false
 #define MICA_REPL_UPSERT_ASSUME_NEW false
 
 struct DBConfig : public ::mica::transaction::BasicDBConfig {

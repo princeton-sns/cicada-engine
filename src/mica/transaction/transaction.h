@@ -105,6 +105,12 @@ class Transaction {
   template <class WriteFunc = NoopWriteFunc>
   bool commit_replica(Result* detail = nullptr,
                       const WriteFunc& write_func = WriteFunc());
+  template <class WriteFunc = NoopWriteFunc>
+  bool commit1_replica(Result* detail = nullptr,
+                       const WriteFunc& write_func = WriteFunc());
+  template <class WriteFunc = NoopWriteFunc>
+  bool commit2_replica(Result* detail = nullptr,
+                       const WriteFunc& write_func = WriteFunc());
   bool abort(bool skip_backoff = false);
 
   bool has_began() const { return began_; }

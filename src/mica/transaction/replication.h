@@ -5,6 +5,7 @@
 #include <pthread.h>
 #include <stdio.h>
 
+#include <chrono>
 #include <memory>
 #include <sstream>
 #include <string>
@@ -16,6 +17,9 @@
 
 namespace mica {
 namespace transaction {
+
+using std::chrono::high_resolution_clock;
+using std::chrono::nanoseconds;
 
 using mica::util::PosixIO;
 
@@ -325,7 +329,7 @@ class SchedulerThread {
   void stop();
 
  private:
-  static std::unordered_map<uint64_t,LogEntryList*> waiting_queues_;
+  static std::unordered_map<uint64_t, LogEntryList*> waiting_queues_;
 
   std::shared_ptr<MmappedLogFile<StaticConfig>> log_;
   SchedulerPool<StaticConfig>* pool_;
@@ -348,8 +352,7 @@ class SchedulerThread {
   void ack_executed_rows();
 
   uint64_t build_local_lists(
-      std::size_t segment,
-      std::unordered_map<uint64_t, LogEntryList*>& lists);
+      std::size_t segment, std::unordered_map<uint64_t, LogEntryList*>& lists);
 
   void free_nodes_and_list(LogEntryList* list);
 
@@ -366,7 +369,8 @@ class WorkerThread {
   WorkerThread(DB<StaticConfig>* db,
                tbb::concurrent_queue<LogEntryList*>* scheduler_queue,
                tbb::concurrent_queue<uint64_t>* done_queue,
-               pthread_barrier_t* start_barrier, uint16_t id, uint16_t nschedulers);
+               pthread_barrier_t* start_barrier, uint16_t id,
+               uint16_t nschedulers);
 
   ~WorkerThread();
 
@@ -383,6 +387,10 @@ class WorkerThread {
   volatile bool stop_;
   std::thread thread_;
 
+  nanoseconds time_working_;
+  high_resolution_clock::time_point working_start_;
+  high_resolution_clock::time_point working_end_;
+
   void run();
 
   void insert_row(Context<StaticConfig>* ctx, Transaction<StaticConfig>* tx,
@@ -397,13 +405,13 @@ class WorkerThread {
                            RowAccessHandle<StaticConfig>* rah,
                            InsertRowLogEntry<StaticConfig>* le);
 
-  void write_row(Context<StaticConfig>* ctx, Transaction<StaticConfig>* tx,
+  void write_row(Table<StaticConfig>* tbl, Transaction<StaticConfig>* tx,
                  RowAccessHandle<StaticConfig>* rah,
                  WriteRowLogEntry<StaticConfig>* le);
-  void write_data_row(Context<StaticConfig>* ctx, Transaction<StaticConfig>* tx,
+  void write_data_row(Table<StaticConfig>* tbl, Transaction<StaticConfig>* tx,
                       RowAccessHandle<StaticConfig>* rah,
                       WriteRowLogEntry<StaticConfig>* le);
-  void write_hash_idx_row(Context<StaticConfig>* ctx,
+  void write_hash_idx_row(Table<StaticConfig>* tbl,
                           Transaction<StaticConfig>* tx,
                           RowAccessHandle<StaticConfig>* rah,
                           WriteRowLogEntry<StaticConfig>* le);

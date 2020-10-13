@@ -8,6 +8,10 @@
 namespace mica {
 namespace transaction {
 
+using std::chrono::duration_cast;
+using std::chrono::high_resolution_clock;
+using std::chrono::nanoseconds;
+
 template <class StaticConfig>
 WorkerThread<StaticConfig>::WorkerThread(
     DB<StaticConfig>* db, tbb::concurrent_queue<LogEntryList*>* scheduler_queue,
@@ -20,7 +24,10 @@ WorkerThread<StaticConfig>::WorkerThread(
       id_{id},
       nschedulers_{nschedulers},
       stop_{false},
-      thread_{} {};
+      thread_{},
+      time_working_{0},
+      working_start_{},
+      working_end_{} {};
 
 template <class StaticConfig>
 WorkerThread<StaticConfig>::~WorkerThread() {
@@ -53,15 +60,26 @@ void WorkerThread<StaticConfig>::run() {
   Transaction<StaticConfig> tx{ctx};
   RowAccessHandle<StaticConfig> rah{&tx};
   uint64_t row_id = static_cast<uint64_t>(-1);
+  Table<StaticConfig>* tbl = nullptr;
+
+  nanoseconds time_total{0};
+  time_working_ = nanoseconds{0};
+
+  high_resolution_clock::time_point total_start;
+  high_resolution_clock::time_point total_end;
 
   pthread_barrier_wait(start_barrier_);
 
+  total_start = high_resolution_clock::now();
   while (true) {
     LogEntryList* queue = nullptr;
     if (scheduler_queue_->try_pop(queue)) {
-      printf("popped queue at %lu\n",
-             duration_cast<microseconds>(high_resolution_clock::now().time_since_epoch()).count());
+      // printf("popped queue at %lu\n",
+      //        duration_cast<nanoseconds>(
+      //            high_resolution_clock::now().time_since_epoch())
+      //            .count());
       row_id = static_cast<uint64_t>(-1);
+      tbl = nullptr;
       LogEntryNode* node = queue->list;
       while (node != nullptr) {
         LogEntry<StaticConfig>* le =
@@ -82,8 +100,18 @@ void WorkerThread<StaticConfig>::run() {
           case LogEntryType::WRITE_ROW:
             wrle = static_cast<WriteRowLogEntry<StaticConfig>*>(le);
             row_id = wrle->row_id;
+            if (tbl == nullptr) {
+              tbl = db_->get_table(std::string{wrle->tbl_name});
+              if (tbl == nullptr) {
+                throw std::runtime_error("run: Failed to find table " +
+                                         std::string{wrle->tbl_name});
+              }
+            }
             // wrle->print();
-            write_row(ctx, &tx, &rah, wrle);
+            // working_start_ = high_resolution_clock::now();
+            write_row(tbl, &tx, &rah, wrle);
+            // working_end_ = high_resolution_clock::now();
+            // time_working_ += duration_cast<nanoseconds>(working_end_ - working_start_);
             break;
 
           default:
@@ -95,8 +123,10 @@ void WorkerThread<StaticConfig>::run() {
       }
 
       if (row_id != static_cast<uint64_t>(-1)) {
-        printf("done processing row id %lu at %lu\n", row_id,
-               duration_cast<microseconds>(high_resolution_clock::now().time_since_epoch()).count());
+        // printf("done processing row id %lu at %lu\n", row_id,
+        //        duration_cast<nanoseconds>(
+        //            high_resolution_clock::now().time_since_epoch())
+        //            .count());
         done_queue_->push(row_id);
       }
     } else if (scheduler_queue_->unsafe_size() == 0 && stop_) {
@@ -112,10 +142,14 @@ void WorkerThread<StaticConfig>::run() {
     }
   }
 
+  total_end = high_resolution_clock::now();
+  time_total += duration_cast<nanoseconds>(total_end - total_start);
+
   db_->deactivate(id_);
 
-  printf("Done queue size: %lu\n", done_queue_->unsafe_size());
   printf("Exiting replica worker: %u\n", id_);
+  printf("Time total: %ld nanoseconds\n", time_total.count());
+  printf("Time working: %ld nanoseconds\n", time_working_.count());
 };
 
 template <class StaticConfig>
@@ -250,7 +284,7 @@ void WorkerThread<StaticConfig>::insert_hash_idx_row(
 }
 
 template <class StaticConfig>
-void WorkerThread<StaticConfig>::write_row(Context<StaticConfig>* ctx,
+void WorkerThread<StaticConfig>::write_row(Table<StaticConfig>* tbl,
                                            Transaction<StaticConfig>* tx,
                                            RowAccessHandle<StaticConfig>* rah,
                                            WriteRowLogEntry<StaticConfig>* le) {
@@ -258,10 +292,10 @@ void WorkerThread<StaticConfig>::write_row(Context<StaticConfig>* ctx,
 
   switch (tbl_type) {
     case TableType::DATA:
-      write_data_row(ctx, tx, rah, le);
+      write_data_row(tbl, tx, rah, le);
       break;
     case TableType::HASH_IDX:
-      write_hash_idx_row(ctx, tx, rah, le);
+      write_hash_idx_row(tbl, tx, rah, le);
       break;
     default:
       throw std::runtime_error("Insert: Unsupported table type.");
@@ -270,31 +304,29 @@ void WorkerThread<StaticConfig>::write_row(Context<StaticConfig>* ctx,
 
 template <class StaticConfig>
 void WorkerThread<StaticConfig>::write_data_row(
-    Context<StaticConfig>* ctx, Transaction<StaticConfig>* tx,
+    Table<StaticConfig>* tbl, Transaction<StaticConfig>* tx,
     RowAccessHandle<StaticConfig>* rah, WriteRowLogEntry<StaticConfig>* le) {
-  auto db = ctx->db();
-
-  Table<StaticConfig>* tbl = db->get_table(std::string{le->tbl_name});
-  if (tbl == nullptr) {
-    throw std::runtime_error("write_data_row: Failed to find table " +
-                             std::string{le->tbl_name});
-  }
 
   typename StaticConfig::Timestamp txn_ts;
   txn_ts.t2 = le->txn_ts;
 
   if (!tx->has_began()) {
     if (!tx->begin(false, &txn_ts)) {
+    // if (!tx->begin(false)) {
       throw std::runtime_error("write_data_row: Failed to begin transaction.");
     }
   } else if (tx->ts() != txn_ts) {
+  // } else {
     Result result;
     tx->commit_replica(&result);
+    // tx->commit1_replica(&result);
+    // tx->commit2_replica(&result);
     if (result != Result::kCommitted) {
       throw std::runtime_error("write_data_row: Failed to commit transaction.");
     }
 
     if (!tx->begin(false, &txn_ts)) {
+    // if (!tx->begin(false)) {
       throw std::runtime_error("write_data_row: Failed to begin transaction.");
     }
   }
@@ -315,14 +347,13 @@ void WorkerThread<StaticConfig>::write_data_row(
 
 template <class StaticConfig>
 void WorkerThread<StaticConfig>::write_hash_idx_row(
-    Context<StaticConfig>* ctx, Transaction<StaticConfig>* tx,
+    Table<StaticConfig>* tbl, Transaction<StaticConfig>* tx,
     RowAccessHandle<StaticConfig>* rah, WriteRowLogEntry<StaticConfig>* le) {
-  auto db = ctx->db();
   auto unique_hash_idx =
-      db->get_hash_index_unique_u64(std::string{le->tbl_name});
+      db_->get_hash_index_unique_u64(std::string{le->tbl_name});
   auto nonunique_hash_idx =
-      db->get_hash_index_nonunique_u64(std::string{le->tbl_name});
-  Table<StaticConfig>* tbl = nullptr;
+      db_->get_hash_index_nonunique_u64(std::string{le->tbl_name});
+  tbl = nullptr;
   if (unique_hash_idx != nullptr) {
     tbl = unique_hash_idx->index_table();
   } else if (nonunique_hash_idx != nullptr) {

@@ -830,6 +830,16 @@ int main(int argc, const char* argv[]) {
       double total_time = diff * static_cast<double>(num_threads);
       replica.print_stats(diff, total_time);
 
+      for (const auto& item : replica.get_all_tables()) {
+        item.second->print_table_status();
+      }
+
+      for (const auto& item : replica.get_all_hash_index_unique_u64()) {
+        item.second->index_table()->print_table_status();
+      }
+
+      if (DBConfig::kShowPoolStats) replica.print_pool_status();
+
       i++;
     }
   }

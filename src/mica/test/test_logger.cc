@@ -812,6 +812,7 @@ int main(int argc, const char* argv[]) {
 
       struct timeval tv_start;
       struct timeval tv_end;
+      ccc.start_snapshot_manager();
       ccc.start_workers();
       ccc.start_schedulers();
       gettimeofday(&tv_start, nullptr);
@@ -819,6 +820,8 @@ int main(int argc, const char* argv[]) {
       ccc.stop_schedulers();
       ccc.stop_workers();
       gettimeofday(&tv_end, nullptr);
+      // Don't count snapshot manager time in throughput measurements
+      ccc.stop_snapshot_manager();
       // int64_t endtime = get_server_clock();
 
       // ccc.print_scheduler_queue();

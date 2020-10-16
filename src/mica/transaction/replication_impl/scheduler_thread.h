@@ -22,6 +22,7 @@ SchedulerThread<StaticConfig>::SchedulerThread(
     std::shared_ptr<MmappedLogFile<StaticConfig>> log,
     SchedulerPool<StaticConfig>* pool,
     tbb::concurrent_queue<LogEntryList<StaticConfig>*>* scheduler_queue,
+    tbb::concurrent_queue<std::pair<uint64_t, uint64_t>>* op_count_queue,
     std::vector<tbb::concurrent_queue<uint64_t>*> done_queues,
     pthread_barrier_t* start_barrier, uint16_t id, uint16_t nschedulers,
     SchedulerLock* my_lock)
@@ -30,6 +31,7 @@ SchedulerThread<StaticConfig>::SchedulerThread(
       allocated_nodes_{nullptr},
       allocated_lists_{nullptr},
       scheduler_queue_{scheduler_queue},
+      op_count_queue_{op_count_queue},
       done_queues_{done_queues},
       start_barrier_{start_barrier},
       id_{id},
@@ -98,6 +100,7 @@ void SchedulerThread<StaticConfig>::run() {
   std::size_t nsegments = log_->get_nsegments();
 
   std::unordered_map<uint64_t, LogEntryList<StaticConfig>*> local_lists{};
+  std::vector<std::pair<uint64_t, uint64_t>> op_counts{};
 
   high_resolution_clock::time_point run_start;
   high_resolution_clock::time_point run_end;
@@ -113,12 +116,11 @@ void SchedulerThread<StaticConfig>::run() {
 
   for (std::size_t cur_segment = id_; cur_segment < nsegments;
        cur_segment += nschedulers_) {
-
     // printf("starting segment %lu at %lu\n", cur_segment,
     //        duration_cast<nanoseconds>(high_resolution_clock::now().time_since_epoch()).count());
 
     start = high_resolution_clock::now();
-    nentries += build_local_lists(cur_segment, local_lists);
+    nentries += build_local_lists(cur_segment, local_lists, op_counts);
     end = high_resolution_clock::now();
     diff = duration_cast<nanoseconds>(end - start);
     time_noncritical += diff;
@@ -132,6 +134,11 @@ void SchedulerThread<StaticConfig>::run() {
     start = high_resolution_clock::now();
     // Ack executed rows
     ack_executed_rows();
+
+    // Notify snapshot manager of transaction op counts
+    for (const auto& o : op_counts) {
+      op_count_queue_->push(o);
+    }
 
     // Enqueue new queues
     for (const auto& item : local_lists) {
@@ -172,6 +179,7 @@ void SchedulerThread<StaticConfig>::run() {
 
     start = high_resolution_clock::now();
     local_lists.clear();
+    op_counts.clear();
     end = high_resolution_clock::now();
     diff = duration_cast<nanoseconds>(end - start);
     time_noncritical += diff;
@@ -269,7 +277,8 @@ LogEntryList<StaticConfig>* SchedulerThread<StaticConfig>::allocate_list() {
   }
 
   LogEntryList<StaticConfig>* list = allocated_lists_;
-  allocated_lists_ = reinterpret_cast<LogEntryList<StaticConfig>*>(allocated_lists_->next);
+  allocated_lists_ =
+      reinterpret_cast<LogEntryList<StaticConfig>*>(allocated_lists_->next);
 
   list->next = nullptr;
   list->tail = list;
@@ -282,7 +291,8 @@ LogEntryList<StaticConfig>* SchedulerThread<StaticConfig>::allocate_list() {
 }
 
 template <class StaticConfig>
-void SchedulerThread<StaticConfig>::free_nodes_and_list(LogEntryList<StaticConfig>* list) {
+void SchedulerThread<StaticConfig>::free_nodes_and_list(
+    LogEntryList<StaticConfig>* list) {
   // LogEntryNode* next = list->list;
   // while (next != nullptr) {
   //   LogEntryNode* temp = next->next;
@@ -295,7 +305,8 @@ void SchedulerThread<StaticConfig>::free_nodes_and_list(LogEntryList<StaticConfi
 }
 
 template <class StaticConfig>
-void SchedulerThread<StaticConfig>::free_list(LogEntryList<StaticConfig>* list) {
+void SchedulerThread<StaticConfig>::free_list(
+    LogEntryList<StaticConfig>* list) {
   list->next = allocated_lists_;
   allocated_lists_ = list;
 }
@@ -324,7 +335,8 @@ void SchedulerThread<StaticConfig>::free_node(LogEntryNode* node) {
 template <class StaticConfig>
 uint64_t SchedulerThread<StaticConfig>::build_local_lists(
     std::size_t segment,
-    std::unordered_map<uint64_t, LogEntryList<StaticConfig>*>& lists) {
+    std::unordered_map<uint64_t, LogEntryList<StaticConfig>*>& lists,
+    std::vector<std::pair<uint64_t, uint64_t>>& op_counts) {
   LogFile<StaticConfig>* lf = log_->get_lf(segment);
   // lf->print();
 
@@ -333,6 +345,9 @@ uint64_t SchedulerThread<StaticConfig>::build_local_lists(
   InsertRowLogEntry<StaticConfig>* irle = nullptr;
   WriteRowLogEntry<StaticConfig>* wrle = nullptr;
 
+  uint64_t last_txn_ts = 0;
+  uint64_t txn_ts = 0;
+  uint64_t op_count = 0;
   for (uint64_t i = 0; i < lf->nentries; i++) {
     LogEntry<StaticConfig>* le = reinterpret_cast<LogEntry<StaticConfig>*>(ptr);
     LogEntryType type = le->type;
@@ -344,12 +359,14 @@ uint64_t SchedulerThread<StaticConfig>::build_local_lists(
       case LogEntryType::INSERT_ROW:
         irle = static_cast<InsertRowLogEntry<StaticConfig>*>(le);
         row_id = irle->row_id;
+        txn_ts = irle->txn_ts;
         // irle->print();
         break;
 
       case LogEntryType::WRITE_ROW:
         wrle = static_cast<WriteRowLogEntry<StaticConfig>*>(le);
         row_id = wrle->row_id;
+        txn_ts = wrle->txn_ts;
         // wrle->print();
         break;
 
@@ -358,9 +375,16 @@ uint64_t SchedulerThread<StaticConfig>::build_local_lists(
             "build_local_lists: Unexpected log entry type.");
     }
 
-    // LogEntryNode* node = allocate_node();
-    // std::memset(node, 0, sizeof *node);
-    // node->ptr = ptr;
+    if (txn_ts != last_txn_ts) {
+      if (last_txn_ts != 0) {
+        // printf("op_counts.emplace_back(%lu, %lu)\n", txn_ts, op_count);
+        op_counts.emplace_back(txn_ts, op_count);
+      }
+
+      op_count = 0;
+      last_txn_ts = txn_ts;
+    }
+    op_count += 1;
 
     // row_id = 0;
     LogEntryList<StaticConfig>* list = nullptr;
@@ -383,6 +407,11 @@ uint64_t SchedulerThread<StaticConfig>::build_local_lists(
     }
 
     ptr += size;
+  }
+
+  if (txn_ts != 0) {
+    // printf("op_counts.emplace_back(%lu, %lu)\n", txn_ts, op_count);
+    op_counts.emplace_back(txn_ts, op_count);
   }
 
   return lf->nentries;

@@ -9,6 +9,8 @@
 #include <memory>
 #include <sstream>
 #include <string>
+#include <utility>
+#include <vector>
 
 #include "mica/transaction/db.h"
 #include "mica/transaction/logging.h"
@@ -191,13 +193,14 @@ class LogEntryNode {
 template <class StaticConfig>
 class LogEntryList {
  public:
-  static const std::size_t kBufSize = 4064; // Total bytes: 4064 + 8 + 8 + 8 + 8 = 4096
+  static const std::size_t kBufSize =
+      4064;  // Total bytes: 4064 + 8 + 8 + 8 + 8 = 4096
 
   LogEntryList<StaticConfig>* next;
   LogEntryList<StaticConfig>* tail;
   uint64_t nentries;
   char* cur;
-  char buf[kBufSize]; // TODO: make this a constant parameter
+  char buf[kBufSize];  // TODO: make this a constant parameter
 
   void append(LogEntryList<StaticConfig>* list) {
     tail->next = list;
@@ -306,12 +309,14 @@ struct SchedulerLock {
 template <class StaticConfig>
 class SchedulerThread {
  public:
-  SchedulerThread(std::shared_ptr<MmappedLogFile<StaticConfig>> log,
-                  SchedulerPool<StaticConfig>* pool,
-                  tbb::concurrent_queue<LogEntryList<StaticConfig>*>* scheduler_queue,
-                  std::vector<tbb::concurrent_queue<uint64_t>*> done_queues,
-                  pthread_barrier_t* start_barrier, uint16_t id,
-                  uint16_t nschedulers, SchedulerLock* my_lock);
+  SchedulerThread(
+      std::shared_ptr<MmappedLogFile<StaticConfig>> log,
+      SchedulerPool<StaticConfig>* pool,
+      tbb::concurrent_queue<LogEntryList<StaticConfig>*>* scheduler_queue,
+      tbb::concurrent_queue<std::pair<uint64_t, uint64_t>>* op_count_queue,
+      std::vector<tbb::concurrent_queue<uint64_t>*> done_queues,
+      pthread_barrier_t* start_barrier, uint16_t id, uint16_t nschedulers,
+      SchedulerLock* my_lock);
 
   ~SchedulerThread();
 
@@ -319,13 +324,15 @@ class SchedulerThread {
   void stop();
 
  private:
-  static std::unordered_map<uint64_t, LogEntryList<StaticConfig>*> waiting_queues_;
+  static std::unordered_map<uint64_t, LogEntryList<StaticConfig>*>
+      waiting_queues_;
 
   std::shared_ptr<MmappedLogFile<StaticConfig>> log_;
   SchedulerPool<StaticConfig>* pool_;
   LogEntryNode* allocated_nodes_;
   LogEntryList<StaticConfig>* allocated_lists_;
   tbb::concurrent_queue<LogEntryList<StaticConfig>*>* scheduler_queue_;
+  tbb::concurrent_queue<std::pair<uint64_t, uint64_t>>* op_count_queue_;
   std::vector<tbb::concurrent_queue<uint64_t>*> done_queues_;
   pthread_barrier_t* start_barrier_;
   uint16_t id_;
@@ -342,7 +349,9 @@ class SchedulerThread {
   void ack_executed_rows();
 
   uint64_t build_local_lists(
-      std::size_t segment, std::unordered_map<uint64_t, LogEntryList<StaticConfig>*>& lists);
+      std::size_t segment,
+      std::unordered_map<uint64_t, LogEntryList<StaticConfig>*>& lists,
+      std::vector<std::pair<uint64_t, uint64_t>>& op_counts);
 
   void free_nodes_and_list(LogEntryList<StaticConfig>* list);
 
@@ -354,13 +363,34 @@ class SchedulerThread {
 };
 
 template <class StaticConfig>
+class SnapshotThread {
+ public:
+  SnapshotThread(
+      pthread_barrier_t* start_barrier,
+      tbb::concurrent_queue<std::pair<uint64_t, uint64_t>>* op_count_queue);
+
+  ~SnapshotThread();
+
+  void start();
+  void stop();
+
+ private:
+  tbb::concurrent_queue<std::pair<uint64_t, uint64_t>>* op_count_queue_;
+  volatile bool stop_;
+  std::thread thread_;
+  pthread_barrier_t* start_barrier_;
+
+  void run();
+};
+
+template <class StaticConfig>
 class WorkerThread {
  public:
-  WorkerThread(DB<StaticConfig>* db,
-               tbb::concurrent_queue<LogEntryList<StaticConfig>*>* scheduler_queue,
-               tbb::concurrent_queue<uint64_t>* done_queue,
-               pthread_barrier_t* start_barrier, uint16_t id,
-               uint16_t nschedulers);
+  WorkerThread(
+      DB<StaticConfig>* db,
+      tbb::concurrent_queue<LogEntryList<StaticConfig>*>* scheduler_queue,
+      tbb::concurrent_queue<uint64_t>* done_queue,
+      pthread_barrier_t* start_barrier, uint16_t id, uint16_t nschedulers);
 
   ~WorkerThread();
 
@@ -418,6 +448,9 @@ class CCCInterface {
   void start_schedulers();
   void stop_schedulers();
 
+  void start_snapshot_manager();
+  void stop_snapshot_manager();
+
   void start_workers();
   void stop_workers();
 };
@@ -440,11 +473,15 @@ class CopyCat : public CCCInterface<StaticConfig> {
   void start_schedulers();
   void stop_schedulers();
 
+  void start_snapshot_manager();
+  void stop_snapshot_manager();
+
   void start_workers();
   void stop_workers();
 
  private:
   tbb::concurrent_queue<LogEntryList<StaticConfig>*> scheduler_queue_;
+  tbb::concurrent_queue<std::pair<uint64_t, uint64_t>> op_count_queue_;
   DB<StaticConfig>* db_;
   SchedulerPool<StaticConfig>* pool_;
 
@@ -465,6 +502,9 @@ class CopyCat : public CCCInterface<StaticConfig> {
   std::vector<WorkerThread<StaticConfig>*> workers_;
   std::vector<tbb::concurrent_queue<uint64_t>*> done_queues_;
 
+  pthread_barrier_t snapshot_barrier_;
+  SnapshotThread<StaticConfig>* snapshot_manager_;
+
   uint16_t nsegments(std::size_t len) {
     return static_cast<uint16_t>(len / StaticConfig::kPageSize);
   }
@@ -481,6 +521,7 @@ class CopyCat : public CCCInterface<StaticConfig> {
 #include "replication_impl/copycat.h"
 #include "replication_impl/scheduler_pool.h"
 #include "replication_impl/scheduler_thread.h"
+#include "replication_impl/snapshot_thread.h"
 #include "replication_impl/worker_thread.h"
 
 #endif

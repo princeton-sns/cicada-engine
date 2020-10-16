@@ -21,6 +21,7 @@ CopyCat<StaticConfig>::CopyCat(DB<StaticConfig>* db,
                                uint16_t nloggers, uint16_t nschedulers,
                                uint16_t nworkers, std::string logdir)
     : scheduler_queue_{},
+      op_count_queue_{},
       db_{db},
       pool_{pool},
       len_{StaticConfig::kPageSize},
@@ -32,7 +33,8 @@ CopyCat<StaticConfig>::CopyCat(DB<StaticConfig>* db,
       scheduler_locks_{},
       schedulers_{},
       workers_{},
-      done_queues_{} {
+      done_queues_{},
+      snapshot_manager_{nullptr} {
   int ret =
       pthread_barrier_init(&scheduler_barrier_, nullptr, nschedulers_ + 1);
   if (ret != 0) {
@@ -42,6 +44,11 @@ CopyCat<StaticConfig>::CopyCat(DB<StaticConfig>* db,
   ret = pthread_barrier_init(&worker_barrier_, nullptr, nworkers_ + 1);
   if (ret != 0) {
     throw std::runtime_error("Failed to init worker barrier: " + ret);
+  }
+
+  ret = pthread_barrier_init(&snapshot_barrier_, nullptr, 2);
+  if (ret != 0) {
+    throw std::runtime_error("Failed to init snapshot barrier: " + ret);
   }
 
   for (uint16_t wid = 0; wid < nworkers_; wid++) {
@@ -59,6 +66,11 @@ CopyCat<StaticConfig>::~CopyCat() {
   ret = pthread_barrier_destroy(&worker_barrier_);
   if (ret != 0) {
     std::cerr << "Failed to destroy worker barrier: " + ret;
+  }
+
+  ret = pthread_barrier_destroy(&snapshot_barrier_);
+  if (ret != 0) {
+    std::cerr << "Failed to destroy snapshot barrier: " + ret;
   }
 
   for (auto done_queue : done_queues_) {
@@ -127,6 +139,7 @@ void CopyCat<StaticConfig>::start_schedulers() {
     auto s = new SchedulerThread<StaticConfig>{log_,
                                                pool_,
                                                &scheduler_queue_,
+                                               &op_count_queue_,
                                                done_queues_,
                                                &scheduler_barrier_,
                                                sid,
@@ -150,6 +163,25 @@ void CopyCat<StaticConfig>::stop_schedulers() {
 
   scheduler_locks_.clear();
   schedulers_.clear();
+}
+
+template <class StaticConfig>
+void CopyCat<StaticConfig>::start_snapshot_manager() {
+  snapshot_manager_ =
+      new SnapshotThread<StaticConfig>{&snapshot_barrier_, &op_count_queue_};
+
+  snapshot_manager_->start();
+
+  pthread_barrier_wait(&snapshot_barrier_);
+}
+
+template <class StaticConfig>
+void CopyCat<StaticConfig>::stop_snapshot_manager() {
+  snapshot_manager_->stop();
+
+  delete snapshot_manager_;
+
+  snapshot_manager_ = nullptr;
 }
 
 template <class StaticConfig>

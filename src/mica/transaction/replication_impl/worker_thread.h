@@ -46,6 +46,7 @@ void WorkerThread<StaticConfig>::start() {
 template <class StaticConfig>
 void WorkerThread<StaticConfig>::stop() {
   stop_ = true;
+  thread_.join();
 };
 
 template <class StaticConfig>

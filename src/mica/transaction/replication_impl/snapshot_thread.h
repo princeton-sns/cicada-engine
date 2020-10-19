@@ -11,7 +11,8 @@ SnapshotThread<StaticConfig>::SnapshotThread(
     pthread_barrier_t* start_barrier,
     tbb::concurrent_queue<std::pair<uint64_t, uint64_t>>* op_count_queue,
     std::vector<tbb::concurrent_queue<uint64_t>*> op_done_queues)
-    : counts_{},
+    : counts_index_{},
+      counts_{},
       op_count_queue_{op_count_queue},
       op_done_queues_{op_done_queues},
       stop_{false},
@@ -44,53 +45,69 @@ void SnapshotThread<StaticConfig>::run() {
   std::pair<uint64_t, uint64_t> op_count{};
   uint64_t txn_ts;
   uint64_t count;
+  uint64_t min_wts = 0;
 
   pthread_barrier_wait(start_barrier_);
 
   while (true) {
     while (op_count_queue_->try_pop(op_count)) {
-      printf("popped op count: %lu %lu\n", op_count.first, op_count.second);
+      // printf("popped op count: %lu %lu\n", op_count.first, op_count.second);
 
-      auto search = counts_.find(op_count.first);
-      if (search == counts_.end()) {  // Not found
-        search = temp_counts.find(op_count.first);
+      auto search = counts_index_.find(op_count.first);
+      if (search == counts_index_.end()) {  // Not found
         count = op_count.second;
-        if (search != temp_counts.end()) { // Found
-          count -= search->second;
-          temp_counts.erase(search);
+
+        auto search2 = temp_counts.find(op_count.first);
+        if (search2 != temp_counts.end()) { // Found
+          count -= search2->second;
+          temp_counts.erase(search2);
         }
 
-        printf("inserting op count: %lu %lu\n", op_count.first, count);
-        counts_[op_count.first] = count;
+        if (count != 0) {
+          // printf("inserting op count: %lu %lu\n", op_count.first, count);
+          counts_.push_back(op_count);
+          counts_index_[op_count.first] = std::prev(counts_.end());
+        } else {
+          // printf("skipping inserting op count: %lu %lu\n", op_count.first, count);
+          // TODO: update min write TS
+        }
       }
     }
 
     for (auto op_done_queue : op_done_queues_) {
       while (op_done_queue->try_pop(txn_ts)) {
         // printf("popped done op txn ts: %lu\n", txn_ts);
-        auto search = counts_.find(txn_ts);
-        if (search == counts_.end()) {  // Not found
-          search = temp_counts.find(txn_ts);
-          if (search == temp_counts.end()) { // Not found
+        auto search = counts_index_.find(txn_ts);
+        if (search == counts_index_.end()) {  // Not found
+          auto search2 = temp_counts.find(txn_ts);
+          if (search2 == temp_counts.end()) { // Not found
             temp_counts[txn_ts] = 1;
           } else {
-            temp_counts[txn_ts] = search->second + 1;
+            temp_counts[txn_ts] = search2->second + 1;
           }
         } else {  // Found
           // printf("found txn ts: %lu\n", txn_ts);
-          count = search->second - 1;
-          printf("decremented txn ts: %lu %lu\n", txn_ts, count);
-          if (count == 0) {
-            counts_.erase(search);
-            // TODO: update min write TS
-          } else {
-            counts_[txn_ts] = count;
+          op_count = *(search->second);
+          count = op_count.second - 1;
+          // printf("decremented txn ts: %lu %lu\n", txn_ts, count);
+          search->second->second = count;
+
+          for (auto it = counts_.begin(); it != counts_.end();) {
+            if (it->second != 0) {
+              break;
+            }
+
+            // printf("updating min_wts from %lu to %lu\n", min_wts, it->first);
+            min_wts = it->first;
+
+            counts_index_.erase(it->first);
+            it = counts_.erase(it);
           }
         }
       }
     }
 
-    if (stop_ && op_count_queue_->unsafe_size() == 0) {
+    if (stop_) { // && op_count_queue_->unsafe_size() == 0) {
       break;
     }
   }

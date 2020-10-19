@@ -80,8 +80,9 @@ void WorkerThread<StaticConfig>::run() {
     LogEntryList<StaticConfig>* queue = nullptr;
     if (scheduler_queue_->try_pop(queue)) {
       // printf("popped queue with %lu entries\n", queue->nentries);
-      // printf("popped queue at %lu\n",
-      //        scheduler_queue_->unsafe_size());
+      // if (scheduler_queue_->unsafe_size() <= 5) {
+      //   printf("popped queue at %lu\n", scheduler_queue_->unsafe_size());
+      // }
       working_start_ = high_resolution_clock::now();
       txn_ts = static_cast<uint64_t>(-1);
       row_id = static_cast<uint64_t>(-1);
@@ -130,7 +131,8 @@ void WorkerThread<StaticConfig>::run() {
         ptr += le->size;
       }
       working_end_ = high_resolution_clock::now();
-      time_working_ += duration_cast<nanoseconds>(working_end_ - working_start_);
+      time_working_ +=
+          duration_cast<nanoseconds>(working_end_ - working_start_);
 
       if (row_id != static_cast<uint64_t>(-1)) {
         // printf("done processing row id %lu at %lu\n", row_id,

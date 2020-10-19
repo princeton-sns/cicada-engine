@@ -138,6 +138,7 @@ void SchedulerThread<StaticConfig>::run() {
     // Notify snapshot manager of transaction op counts
     for (const auto& o : op_counts) {
       op_count_queue_->push(o);
+      // printf("pushed op count: %lu %lu\n", o.first, o.second);
     }
 
     // Enqueue new queues
@@ -377,8 +378,8 @@ uint64_t SchedulerThread<StaticConfig>::build_local_lists(
 
     if (txn_ts != last_txn_ts) {
       if (last_txn_ts != 0) {
-        // printf("op_counts.emplace_back(%lu, %lu)\n", txn_ts, op_count);
-        op_counts.emplace_back(txn_ts, op_count);
+        // printf("op_counts.emplace_back(%lu, %lu)\n", last_txn_ts, op_count);
+        op_counts.emplace_back(last_txn_ts, op_count);
       }
 
       op_count = 0;

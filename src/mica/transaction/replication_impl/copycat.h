@@ -34,6 +34,7 @@ CopyCat<StaticConfig>::CopyCat(DB<StaticConfig>* db,
       schedulers_{},
       workers_{},
       done_queues_{},
+      op_done_queues_{},
       snapshot_manager_{nullptr} {
   int ret =
       pthread_barrier_init(&scheduler_barrier_, nullptr, nschedulers_ + 1);
@@ -53,6 +54,7 @@ CopyCat<StaticConfig>::CopyCat(DB<StaticConfig>* db,
 
   for (uint16_t wid = 0; wid < nworkers_; wid++) {
     done_queues_.push_back(new tbb::concurrent_queue<uint64_t>{});
+    op_done_queues_.push_back(new tbb::concurrent_queue<uint64_t>{});
   }
 }
 
@@ -76,16 +78,24 @@ CopyCat<StaticConfig>::~CopyCat() {
   for (auto done_queue : done_queues_) {
     delete done_queue;
   }
-
   done_queues_.clear();
+
+  for (auto op_done_queue : op_done_queues_) {
+    delete op_done_queue;
+  }
+  op_done_queues_.clear();
 }
 
 template <class StaticConfig>
 void CopyCat<StaticConfig>::start_workers() {
   for (uint16_t wid = 0; wid < nworkers_; wid++) {
-    auto w = new WorkerThread<StaticConfig>{
-        db_, &scheduler_queue_, done_queues_[wid], &worker_barrier_,
-        wid, nschedulers_};
+    auto w = new WorkerThread<StaticConfig>{db_,
+                                            &scheduler_queue_,
+                                            done_queues_[wid],
+                                            op_done_queues_[wid],
+                                            &worker_barrier_,
+                                            wid,
+                                            nschedulers_};
 
     w->start();
 
@@ -167,8 +177,8 @@ void CopyCat<StaticConfig>::stop_schedulers() {
 
 template <class StaticConfig>
 void CopyCat<StaticConfig>::start_snapshot_manager() {
-  snapshot_manager_ =
-      new SnapshotThread<StaticConfig>{&snapshot_barrier_, &op_count_queue_};
+  snapshot_manager_ = new SnapshotThread<StaticConfig>{
+      &snapshot_barrier_, &op_count_queue_, op_done_queues_};
 
   snapshot_manager_->start();
 
@@ -180,6 +190,10 @@ void CopyCat<StaticConfig>::stop_snapshot_manager() {
   snapshot_manager_->stop();
 
   delete snapshot_manager_;
+
+  for (auto queue : op_done_queues_) {
+    queue->clear();
+  }
 
   snapshot_manager_ = nullptr;
 }

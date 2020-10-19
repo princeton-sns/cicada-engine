@@ -9,6 +9,7 @@
 #include <memory>
 #include <sstream>
 #include <string>
+#include <unordered_map>
 #include <utility>
 #include <vector>
 
@@ -367,7 +368,8 @@ class SnapshotThread {
  public:
   SnapshotThread(
       pthread_barrier_t* start_barrier,
-      tbb::concurrent_queue<std::pair<uint64_t, uint64_t>>* op_count_queue);
+      tbb::concurrent_queue<std::pair<uint64_t, uint64_t>>* op_count_queue,
+      std::vector<tbb::concurrent_queue<uint64_t>*> op_done_queues);
 
   ~SnapshotThread();
 
@@ -375,7 +377,9 @@ class SnapshotThread {
   void stop();
 
  private:
+  std::unordered_map<uint64_t, uint64_t> counts_;
   tbb::concurrent_queue<std::pair<uint64_t, uint64_t>>* op_count_queue_;
+  std::vector<tbb::concurrent_queue<uint64_t>*> op_done_queues_;
   volatile bool stop_;
   std::thread thread_;
   pthread_barrier_t* start_barrier_;
@@ -390,6 +394,7 @@ class WorkerThread {
       DB<StaticConfig>* db,
       tbb::concurrent_queue<LogEntryList<StaticConfig>*>* scheduler_queue,
       tbb::concurrent_queue<uint64_t>* done_queue,
+      tbb::concurrent_queue<uint64_t>* op_done_queue,
       pthread_barrier_t* start_barrier, uint16_t id, uint16_t nschedulers);
 
   ~WorkerThread();
@@ -401,6 +406,7 @@ class WorkerThread {
   DB<StaticConfig>* db_;
   tbb::concurrent_queue<LogEntryList<StaticConfig>*>* scheduler_queue_;
   tbb::concurrent_queue<uint64_t>* done_queue_;
+  tbb::concurrent_queue<uint64_t>* op_done_queue_;
   pthread_barrier_t* start_barrier_;
   uint16_t id_;
   uint16_t nschedulers_;
@@ -501,6 +507,7 @@ class CopyCat : public CCCInterface<StaticConfig> {
   pthread_barrier_t worker_barrier_;
   std::vector<WorkerThread<StaticConfig>*> workers_;
   std::vector<tbb::concurrent_queue<uint64_t>*> done_queues_;
+  std::vector<tbb::concurrent_queue<uint64_t>*> op_done_queues_;
 
   pthread_barrier_t snapshot_barrier_;
   SnapshotThread<StaticConfig>* snapshot_manager_;

@@ -17,10 +17,12 @@ WorkerThread<StaticConfig>::WorkerThread(
     DB<StaticConfig>* db,
     tbb::concurrent_queue<LogEntryList<StaticConfig>*>* scheduler_queue,
     tbb::concurrent_queue<uint64_t>* done_queue,
+    tbb::concurrent_queue<uint64_t>* op_done_queue,
     pthread_barrier_t* start_barrier, uint16_t id, uint16_t nschedulers)
     : db_{db},
       scheduler_queue_{scheduler_queue},
       done_queue_{done_queue},
+      op_done_queue_{op_done_queue},
       start_barrier_{start_barrier},
       id_{id},
       nschedulers_{nschedulers},
@@ -61,6 +63,7 @@ void WorkerThread<StaticConfig>::run() {
   Context<StaticConfig>* ctx = db_->context(id_);
   Transaction<StaticConfig> tx{ctx};
   RowAccessHandle<StaticConfig> rah{&tx};
+  uint64_t txn_ts = static_cast<uint64_t>(-1);
   uint64_t row_id = static_cast<uint64_t>(-1);
   Table<StaticConfig>* tbl = nullptr;
 
@@ -80,6 +83,7 @@ void WorkerThread<StaticConfig>::run() {
       // printf("popped queue at %lu\n",
       //        scheduler_queue_->unsafe_size());
       working_start_ = high_resolution_clock::now();
+      txn_ts = static_cast<uint64_t>(-1);
       row_id = static_cast<uint64_t>(-1);
       tbl = nullptr;
       uint64_t nentries = queue->nentries;
@@ -95,13 +99,16 @@ void WorkerThread<StaticConfig>::run() {
         switch (le->type) {
           case LogEntryType::INSERT_ROW:
             irle = static_cast<InsertRowLogEntry<StaticConfig>*>(le);
+            txn_ts = irle->txn_ts;
             row_id = irle->row_id;
             // irle->print();
             insert_row(ctx, &tx, &rah, irle);
+            op_done_queue_->push(txn_ts);
             break;
 
           case LogEntryType::WRITE_ROW:
             wrle = static_cast<WriteRowLogEntry<StaticConfig>*>(le);
+            txn_ts = wrle->txn_ts;
             row_id = wrle->row_id;
             if (tbl == nullptr) {
               tbl = db_->get_table(std::string{wrle->tbl_name});
@@ -112,6 +119,7 @@ void WorkerThread<StaticConfig>::run() {
             }
             // wrle->print();
             write_row(tbl, &tx, &rah, wrle);
+            op_done_queue_->push(txn_ts);
             break;
 
           default:

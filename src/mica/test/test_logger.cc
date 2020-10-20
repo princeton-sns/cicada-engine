@@ -683,6 +683,7 @@ int main(int argc, const char* argv[]) {
     if (phase == 0) {
       printf("warming up\n");
       logger.change_logdir(std::string{MICA_LOG_WARMUP_DIR});
+      db.reset_stats();
     } else {
       printf("executing workload\n");
       logger.change_logdir(std::string{MICA_LOG_WORKLOAD_DIR});

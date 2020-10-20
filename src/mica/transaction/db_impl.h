@@ -210,7 +210,7 @@ void DB<StaticConfig>::deactivate(uint16_t thread_id) {
 
   // Wait until ref_clock becomes no smaller than this thread's clock.
   // This allows this thread to resume with ref_clock later.
-  while (static_cast<int64_t>(ctxs_[thread_id]->clock() - ref_clock_) > 0) {
+  while (!is_replica_ && static_cast<int64_t>(ctxs_[thread_id]->clock() - ref_clock_) > 0) {
     ::mica::util::pause();
 
     quiescence(thread_id);
@@ -244,7 +244,7 @@ void DB<StaticConfig>::quiescence(uint16_t thread_id) {
 
   thread_states_[thread_id].quiescence = true;
 
-  if (leader_thread_id_ == static_cast<uint16_t>(-1)) {
+  if (!is_replica_ && leader_thread_id_ == static_cast<uint16_t>(-1)) {
     if (__sync_bool_compare_and_swap(&leader_thread_id_,
                                      static_cast<uint16_t>(-1), thread_id)) {
       last_non_quiescence_thread_id_ = 0;

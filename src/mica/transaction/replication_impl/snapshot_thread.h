@@ -39,13 +39,15 @@ template <class StaticConfig>
 void SnapshotThread<StaticConfig>::run() {
   printf("Starting snapshot manager\n");
 
-  // printf("pinning to thread %lu\n", id_);
-  // mica::util::lcore.pin_thread(id_);
+  // TODO: fix thread pinning
+  printf("pinning to thread %lu\n", 4);
+  mica::util::lcore.pin_thread(4);
 
   std::unordered_map<uint64_t, uint64_t> temp_counts{};
   std::pair<uint64_t, uint64_t> op_count{};
   uint64_t txn_ts;
   uint64_t count;
+  uint64_t rts_updates = 0;
 
   pthread_barrier_wait(start_barrier_);
 
@@ -97,8 +99,15 @@ void SnapshotThread<StaticConfig>::run() {
               break;
             }
 
-            // printf("updating min_wts from %lu to %lu\n", db_->min_wts().t2, it->first);
-            db_->set_min_wts(it->first);
+            uint64_t ts = it->first;
+            db_->set_min_wts(ts);
+            // TODO: account for executing read-only threads when setting min_rts
+            db_->set_min_rts(ts);
+
+            if (rts_updates <= 5) {
+              printf("updated min_rts to %lu\n", ts);
+            }
+            rts_updates++;
 
             counts_index_.erase(it->first);
             it = counts_.erase(it);

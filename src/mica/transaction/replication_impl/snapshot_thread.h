@@ -39,6 +39,8 @@ template <class StaticConfig>
 void SnapshotThread<StaticConfig>::run() {
   printf("Starting snapshot manager\n");
 
+  printf("db min_rts: %lu\n", db_->min_rts().t2);
+
   // TODO: fix thread pinning
   printf("pinning to thread %lu\n", 4);
   mica::util::lcore.pin_thread(4);
@@ -48,11 +50,14 @@ void SnapshotThread<StaticConfig>::run() {
   uint64_t txn_ts;
   uint64_t count;
   uint64_t rts_updates = 0;
+  uint64_t batch_count = 0;
+  const uint64_t batch_size = 128;
 
   pthread_barrier_wait(start_barrier_);
 
   while (true) {
-    while (op_count_queue_->try_pop(op_count)) {
+    batch_count = 0;
+    while (batch_count < batch_size && op_count_queue_->try_pop(op_count)) {
       // printf("popped op count: %lu %lu\n", op_count.first, op_count.second);
 
       auto search = counts_index_.find(op_count.first);
@@ -74,10 +79,12 @@ void SnapshotThread<StaticConfig>::run() {
           // TODO: update min write TS
         }
       }
+      batch_count++;
     }
 
     for (auto op_done_queue : op_done_queues_) {
-      while (op_done_queue->try_pop(txn_ts)) {
+      batch_count = 0;
+      while (batch_count < batch_size && op_done_queue->try_pop(txn_ts)) {
         // printf("popped done op txn ts: %lu\n", txn_ts);
         auto search = counts_index_.find(txn_ts);
         if (search == counts_index_.end()) {  // Not found
@@ -114,6 +121,7 @@ void SnapshotThread<StaticConfig>::run() {
           }
         }
       }
+      batch_count++;
     }
 
     if (stop_) {  // && op_count_queue_->unsafe_size() == 0) {
@@ -122,6 +130,7 @@ void SnapshotThread<StaticConfig>::run() {
   }
 
   printf("Exiting snapshot manager\n");
+  printf("db min_rts: %lu\n", db_->min_rts().t2);
 };
 };  // namespace transaction
 };  // namespace mica

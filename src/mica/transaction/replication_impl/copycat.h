@@ -191,6 +191,8 @@ void CopyCat<StaticConfig>::stop_snapshot_manager() {
 
   delete snapshot_manager_;
 
+  op_count_queue_.clear();
+
   for (auto queue : op_done_queues_) {
     queue->clear();
   }

@@ -178,7 +178,7 @@ void CopyCat<StaticConfig>::stop_schedulers() {
 template <class StaticConfig>
 void CopyCat<StaticConfig>::start_snapshot_manager() {
   snapshot_manager_ = new SnapshotThread<StaticConfig>{
-      &snapshot_barrier_, &op_count_queue_, op_done_queues_};
+      db_, &snapshot_barrier_, &op_count_queue_, op_done_queues_};
 
   snapshot_manager_->start();
 

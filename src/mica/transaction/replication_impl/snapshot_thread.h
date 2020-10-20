@@ -8,10 +8,11 @@ namespace transaction {
 
 template <class StaticConfig>
 SnapshotThread<StaticConfig>::SnapshotThread(
-    pthread_barrier_t* start_barrier,
+    DB<StaticConfig>* db, pthread_barrier_t* start_barrier,
     tbb::concurrent_queue<std::pair<uint64_t, uint64_t>>* op_count_queue,
     std::vector<tbb::concurrent_queue<uint64_t>*> op_done_queues)
-    : counts_index_{},
+    : db_{db},
+      counts_index_{},
       counts_{},
       op_count_queue_{op_count_queue},
       op_done_queues_{op_done_queues},
@@ -45,7 +46,6 @@ void SnapshotThread<StaticConfig>::run() {
   std::pair<uint64_t, uint64_t> op_count{};
   uint64_t txn_ts;
   uint64_t count;
-  uint64_t min_wts = 0;
 
   pthread_barrier_wait(start_barrier_);
 
@@ -58,7 +58,7 @@ void SnapshotThread<StaticConfig>::run() {
         count = op_count.second;
 
         auto search2 = temp_counts.find(op_count.first);
-        if (search2 != temp_counts.end()) { // Found
+        if (search2 != temp_counts.end()) {  // Found
           count -= search2->second;
           temp_counts.erase(search2);
         }
@@ -80,7 +80,7 @@ void SnapshotThread<StaticConfig>::run() {
         auto search = counts_index_.find(txn_ts);
         if (search == counts_index_.end()) {  // Not found
           auto search2 = temp_counts.find(txn_ts);
-          if (search2 == temp_counts.end()) { // Not found
+          if (search2 == temp_counts.end()) {  // Not found
             temp_counts[txn_ts] = 1;
           } else {
             temp_counts[txn_ts] = search2->second + 1;
@@ -97,8 +97,8 @@ void SnapshotThread<StaticConfig>::run() {
               break;
             }
 
-            // printf("updating min_wts from %lu to %lu\n", min_wts, it->first);
-            min_wts = it->first;
+            // printf("updating min_wts from %lu to %lu\n", db_->min_wts().t2, it->first);
+            db_->set_min_wts(it->first);
 
             counts_index_.erase(it->first);
             it = counts_.erase(it);
@@ -107,7 +107,7 @@ void SnapshotThread<StaticConfig>::run() {
       }
     }
 
-    if (stop_) { // && op_count_queue_->unsafe_size() == 0) {
+    if (stop_) {  // && op_count_queue_->unsafe_size() == 0) {
       break;
     }
   }

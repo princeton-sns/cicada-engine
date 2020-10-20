@@ -368,7 +368,7 @@ template <class StaticConfig>
 class SnapshotThread {
  public:
   SnapshotThread(
-      pthread_barrier_t* start_barrier,
+      DB<StaticConfig>* db, pthread_barrier_t* start_barrier,
       tbb::concurrent_queue<std::pair<uint64_t, uint64_t>>* op_count_queue,
       std::vector<tbb::concurrent_queue<uint64_t>*> op_done_queues);
 
@@ -378,7 +378,10 @@ class SnapshotThread {
   void stop();
 
  private:
-  std::unordered_map<uint64_t, std::list<std::pair<uint64_t, uint64_t>>::iterator> counts_index_;
+  DB<StaticConfig>* db_;
+  std::unordered_map<uint64_t,
+                     std::list<std::pair<uint64_t, uint64_t>>::iterator>
+      counts_index_;
   std::list<std::pair<uint64_t, uint64_t>> counts_;
   tbb::concurrent_queue<std::pair<uint64_t, uint64_t>>* op_count_queue_;
   std::vector<tbb::concurrent_queue<uint64_t>*> op_done_queues_;

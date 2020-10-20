@@ -307,6 +307,10 @@ class DB {
   Timestamp min_wts() const { return min_wts_.get(); }
   Timestamp min_rts() const { return min_rts_.get(); }
 
+  void set_min_wts(uint64_t wts) {
+    min_wts_.t2 = wts;
+  }
+
   // uint64_t gc_epoch() const { return gc_epoch_; }
 
   // db_print_stats.h

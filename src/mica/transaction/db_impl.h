@@ -8,11 +8,12 @@ namespace mica {
 namespace transaction {
 template <class StaticConfig>
 DB<StaticConfig>::DB(PagePool<StaticConfig>** page_pools, Logger* logger,
-                     Stopwatch* sw, uint16_t num_threads)
+                     Stopwatch* sw, uint16_t num_threads, bool is_replica)
     : page_pools_(page_pools),
       logger_(logger),
       sw_(sw),
-      num_threads_(num_threads) {
+      num_threads_(num_threads),
+      is_replica_{is_replica} {
   assert(num_threads_ <=
          static_cast<uint16_t>(::mica::util::lcore.lcore_count()));
   assert(num_threads_ <= StaticConfig::kMaxLCoreCount);
@@ -53,7 +54,11 @@ DB<StaticConfig>::DB(PagePool<StaticConfig>** page_pools, Logger* logger,
   active_thread_count_ = 0;
   leader_thread_id_ = static_cast<uint16_t>(-1);
 
-  min_wts_.init(ctxs_[0]->generate_timestamp());
+  if (!is_replica_) {
+    min_wts_.init(ctxs_[0]->generate_timestamp());
+  } else {
+    min_wts_.init(Timestamp::make(0, 0, 0));
+  }
   min_rts_.init(min_wts_.get());
   ref_clock_ = 0;
   // gc_epoch_ = 0;
@@ -164,7 +169,10 @@ void DB<StaticConfig>::activate(uint16_t thread_id) {
     ctxs_[thread_id]->set_clock(ref_clock_ + 1);
     clock_init_[thread_id] = true;
   }
-  ctxs_[thread_id]->generate_timestamp();
+
+  if (!is_replica_) {
+    ctxs_[thread_id]->generate_timestamp();
+  }
 
   // Ensure that no bogus clock/rts is accessed by other threads.
   ::mica::util::memory_barrier();
@@ -178,9 +186,8 @@ void DB<StaticConfig>::activate(uint16_t thread_id) {
   ::mica::util::memory_barrier();
 
   // Keep updating timestamp until it is reflected to min_wts and min_rts.
-  while (/*gc_epoch_ - init_gc_epoch < 2 ||*/ min_wts() >
-             ctxs_[thread_id]->wts() ||
-         min_rts() > ctxs_[thread_id]->rts()) {
+  while (!is_replica_ && (min_wts() > ctxs_[thread_id]->wts() ||
+                         min_rts() > ctxs_[thread_id]->rts())) {
     ::mica::util::pause();
 
     quiescence(thread_id);

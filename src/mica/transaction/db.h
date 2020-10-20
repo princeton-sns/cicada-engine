@@ -183,7 +183,7 @@ class DB {
       BTreeIndexNonuniqueU64;
 
   DB(PagePool<StaticConfig>** page_pools, Logger* logger, Stopwatch* sw,
-     uint16_t num_threads);
+     uint16_t num_threads, bool is_replica = false);
   ~DB();
 
   PagePool<StaticConfig>* page_pool(uint8_t numa_id) {
@@ -346,6 +346,7 @@ class DB {
   volatile uint16_t active_thread_count_;
   volatile bool thread_active_[StaticConfig::kMaxLCoreCount];
   bool clock_init_[StaticConfig::kMaxLCoreCount];
+  bool is_replica_;
 
   // Modified by the leader thread.
   ConcurrentTimestamp min_wts_ __attribute__((aligned(64)));

@@ -765,7 +765,7 @@ int main(int argc, const char* argv[]) {
                       std::string{MICA_RELAY_WORKLOAD_DIR});
   }
 
-  DB replica{page_pools, &logger, &sw, static_cast<uint16_t>(num_workers)};
+  DB replica{page_pools, &logger, &sw, static_cast<uint16_t>(num_workers), true};
 
   {
     auto sched_pool_size = 1 * uint64_t(1073741824);

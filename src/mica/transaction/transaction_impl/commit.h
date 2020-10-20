@@ -37,10 +37,10 @@ bool Transaction<StaticConfig>::begin(bool peek_only,
   }
 
   while (true) {
-    ts_ = ctx_->generate_timestamp(peek_only);
     if (with_ts != nullptr) {
       ts_.t2 = with_ts->t2;
-      ctx_->wts_.write(ts_);
+    } else {
+      ts_ = ctx_->generate_timestamp(peek_only);
     }
 
     // // TODO: We should bump the clock instead of waiting for a high timestamp.

@@ -61,6 +61,9 @@ class Context {
     last_tsc_ = ::mica::util::rdtsc();
     last_quiescence_ = db_->sw()->now();
     last_clock_sync_ = db_->sw()->now();
+
+    wts_.init(Timestamp::make(0, 0, 0));
+    rts_.init(Timestamp::make(0, 0, 0));
   }
 
   ~Context() {}

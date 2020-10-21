@@ -786,7 +786,7 @@ int main(int argc, const char* argv[]) {
 
     for (std::string dir : relaydirs) {
       ccc.set_logdir(dir);
-      printf("Preprocessing logs\n");
+      printf("Preprocessing logs in %s\n", dir.c_str());
       ccc.preprocess_logs();
     }
 

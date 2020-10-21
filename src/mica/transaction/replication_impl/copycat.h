@@ -126,6 +126,10 @@ void CopyCat<StaticConfig>::stop_workers() {
 template <class StaticConfig>
 void CopyCat<StaticConfig>::start_schedulers() {
   const std::string fname = logdir_ + "/out.log";
+  if (!PosixIO::Exists(fname.c_str())) {
+    return;
+  }
+
   std::size_t len = PosixIO::Size(fname.c_str());
 
   log_ = MmappedLogFile<StaticConfig>::open_existing(
@@ -259,6 +263,9 @@ void CopyCat<StaticConfig>::preprocess_logs() {
 
   // Round up to next multiple of len_
   out_size = len_ * ((out_size + (len_ - 1)) / len_);
+  if (out_size == 0) {
+    return;
+  }
 
   // Allocate out file
   std::shared_ptr<MmappedLogFile<StaticConfig>> out_mlf =

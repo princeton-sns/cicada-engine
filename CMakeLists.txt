@@ -1,10 +1,6 @@
-CMAKE_MINIMUM_REQUIRED(VERSION 2.8)
+CMAKE_MINIMUM_REQUIRED(VERSION 3.9)
 
-PROJECT(MICA)
-
-
-SET(CMAKE_CXX_COMPILER g++)
-SET(CMAKE_C_LINK_EXECUTABLE g++)
+PROJECT(MICA VERSION 1.0.0)
 
 
 OPTION(DEBUG "Enable debugging" OFF)
@@ -98,9 +94,10 @@ SET(SOURCES ${SOURCES} src/mica/util/lcore.cc)
 SET(SOURCES ${SOURCES} src/mica/util/stopwatch.cc)
 SET(SOURCES ${SOURCES} src/mica/util/zipf.cc)
 
-SET(LIBRARIES ${LIBRARIES} rt numa pthread)
+SET(LIBRARIES ${LIBRARIES} rt numa pthread ${TBB_IMPORTED_TARGETS} readerwriterqueue)
 
 
+ADD_SUBDIRECTORY(${CMAKE_SOURCE_DIR}/third_party/readerwriterqueue)
 
 IF(LTO)
 
@@ -118,7 +115,6 @@ IF(LTO)
 
   ADD_EXECUTABLE(test_logger src/mica/test/test_logger.cc ${SOURCES})
   TARGET_LINK_LIBRARIES(test_logger ${LIBRARIES})
-  TARGET_LINK_LIBRARIES(test_logger ${TBB_IMPORTED_TARGETS})
 
 ELSE(LTO)
 

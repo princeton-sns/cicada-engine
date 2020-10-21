@@ -823,6 +823,7 @@ int main(int argc, const char* argv[]) {
       gettimeofday(&tv_end, nullptr);
       // Don't count snapshot manager time in throughput measurements
       ccc.stop_snapshot_manager();
+      ccc.reset();
       // int64_t endtime = get_server_clock();
 
       // ccc.print_scheduler_queue();

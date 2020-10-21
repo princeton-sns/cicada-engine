@@ -17,7 +17,7 @@ WorkerThread<StaticConfig>::WorkerThread(
     DB<StaticConfig>* db,
     tbb::concurrent_queue<LogEntryList<StaticConfig>*>* scheduler_queue,
     tbb::concurrent_queue<uint64_t>* done_queue,
-    tbb::concurrent_queue<uint64_t>* op_done_queue,
+    moodycamel::ReaderWriterQueue<uint64_t>* op_done_queue,
     pthread_barrier_t* start_barrier, uint16_t id, uint16_t nschedulers)
     : db_{db},
       scheduler_queue_{scheduler_queue},
@@ -104,7 +104,7 @@ void WorkerThread<StaticConfig>::run() {
             row_id = irle->row_id;
             // irle->print();
             insert_row(ctx, &tx, &rah, irle);
-            op_done_queue_->push(txn_ts);
+            op_done_queue_->enqueue(txn_ts);
             break;
 
           case LogEntryType::WRITE_ROW:
@@ -120,7 +120,9 @@ void WorkerThread<StaticConfig>::run() {
             }
             // wrle->print();
             write_row(tbl, &tx, &rah, wrle);
-            op_done_queue_->push(txn_ts);
+            op_done_queue_->enqueue(txn_ts);
+            db_->set_min_wts(txn_ts);
+            db_->set_min_rts(txn_ts);
             break;
 
           default:

@@ -54,7 +54,8 @@ CopyCat<StaticConfig>::CopyCat(DB<StaticConfig>* db,
 
   for (uint16_t wid = 0; wid < nworkers_; wid++) {
     done_queues_.push_back(new tbb::concurrent_queue<uint64_t>{});
-    op_done_queues_.push_back(new tbb::concurrent_queue<uint64_t>{});
+    op_done_queues_.push_back(
+        new moodycamel::ReaderWriterQueue<uint64_t>{4096});
   }
 }
 
@@ -110,6 +111,16 @@ void CopyCat<StaticConfig>::stop_workers() {
   for (auto w : workers_) {
     w->stop();
   }
+}
+
+template <class StaticConfig>
+void CopyCat<StaticConfig>::reset() {
+  for (auto s : schedulers_) {
+    delete s;
+  }
+
+  scheduler_locks_.clear();
+  schedulers_.clear();
 
   for (auto w : workers_) {
     delete w;
@@ -121,6 +132,18 @@ void CopyCat<StaticConfig>::stop_workers() {
 
   log_.reset();
   workers_.clear();
+
+  delete snapshot_manager_;
+
+  op_count_queue_.clear();
+
+  uint64_t txn_ts;
+  for (auto queue : op_done_queues_) {
+    while (queue->try_dequeue(txn_ts)) {
+    }
+  }
+
+  snapshot_manager_ = nullptr;
 }
 
 template <class StaticConfig>
@@ -172,11 +195,7 @@ template <class StaticConfig>
 void CopyCat<StaticConfig>::stop_schedulers() {
   for (auto s : schedulers_) {
     s->stop();
-    delete s;
   }
-
-  scheduler_locks_.clear();
-  schedulers_.clear();
 }
 
 template <class StaticConfig>
@@ -192,16 +211,6 @@ void CopyCat<StaticConfig>::start_snapshot_manager() {
 template <class StaticConfig>
 void CopyCat<StaticConfig>::stop_snapshot_manager() {
   snapshot_manager_->stop();
-
-  delete snapshot_manager_;
-
-  op_count_queue_.clear();
-
-  for (auto queue : op_done_queues_) {
-    queue->clear();
-  }
-
-  snapshot_manager_ = nullptr;
 }
 
 template <class StaticConfig>

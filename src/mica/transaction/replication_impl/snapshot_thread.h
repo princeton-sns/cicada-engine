@@ -10,7 +10,7 @@ template <class StaticConfig>
 SnapshotThread<StaticConfig>::SnapshotThread(
     DB<StaticConfig>* db, pthread_barrier_t* start_barrier,
     tbb::concurrent_queue<std::pair<uint64_t, uint64_t>>* op_count_queue,
-    std::vector<tbb::concurrent_queue<uint64_t>*> op_done_queues)
+    std::vector<moodycamel::ReaderWriterQueue<uint64_t>*> op_done_queues)
     : db_{db},
       counts_index_{},
       counts_{},
@@ -39,7 +39,7 @@ template <class StaticConfig>
 void SnapshotThread<StaticConfig>::run() {
   printf("Starting snapshot manager\n");
 
-  printf("db min_rts: %lu\n", db_->min_rts().t2);
+  // printf("db min_rts: %lu\n", db_->min_rts().t2);
 
   // TODO: fix thread pinning
   printf("pinning to thread %lu\n", 4);
@@ -84,7 +84,7 @@ void SnapshotThread<StaticConfig>::run() {
 
     for (auto op_done_queue : op_done_queues_) {
       batch_count = 0;
-      while (batch_count < batch_size && op_done_queue->try_pop(txn_ts)) {
+      while (batch_count < batch_size && op_done_queue->try_dequeue(txn_ts)) {
         // printf("popped done op txn ts: %lu\n", txn_ts);
         auto search = counts_index_.find(txn_ts);
         if (search == counts_index_.end()) {  // Not found
@@ -107,14 +107,14 @@ void SnapshotThread<StaticConfig>::run() {
             }
 
             uint64_t ts = it->first;
-            db_->set_min_wts(ts);
+            // db_->set_min_wts(ts);
             // TODO: account for executing read-only threads when setting min_rts
-            db_->set_min_rts(ts);
+            // db_->set_min_rts(ts);
 
-            if (rts_updates <= 5) {
-              printf("updated min_rts to %lu\n", ts);
-            }
-            rts_updates++;
+            // if (rts_updates <= 5) {
+            //   printf("updated min_rts to %lu\n", ts);
+            // }
+            // rts_updates++;
 
             counts_index_.erase(it->first);
             it = counts_.erase(it);
@@ -130,7 +130,7 @@ void SnapshotThread<StaticConfig>::run() {
   }
 
   printf("Exiting snapshot manager\n");
-  printf("db min_rts: %lu\n", db_->min_rts().t2);
+  // printf("db min_rts: %lu\n", db_->min_rts().t2);
 };
 };  // namespace transaction
 };  // namespace mica

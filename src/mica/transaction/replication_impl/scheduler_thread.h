@@ -145,23 +145,18 @@ void SchedulerThread<StaticConfig>::run() {
     for (const auto& item : local_lists) {
       auto row_id = item.first;
       auto queue = item.second;
-      auto next = queue->next;
-      auto tail = queue->tail;
 
       auto search = waiting_queues_.find(row_id);
       if (search == waiting_queues_.end()) {  // Not found
         // printf("pushing queue at %p with %lu entries\n", queue, queue->nentries);
         scheduler_queue_->push(queue);
         // printf("setting waiting queue at %p\n", next);
-        waiting_queues_[row_id] = next;
-        if (next != nullptr) {
-          next->tail = tail;
-        }
+        waiting_queues_[row_id] = nullptr;
         // printf("pushed row id %lu at %lu, %lu\n", row_id,
         //        duration_cast<nanoseconds>(high_resolution_clock::now().time_since_epoch()).count(),
         //        scheduler_queue_->unsafe_size());
       } else {  // Found
-        auto queue2 = waiting_queues_[row_id];
+        auto queue2 = search->second;
         if (queue2 == nullptr) {
           waiting_queues_[row_id] = queue;
           // printf("setting waiting queue at %p\n", queue);
@@ -243,17 +238,12 @@ void SchedulerThread<StaticConfig>::ack_executed_rows() {
       if (search != waiting_queues_.end()) {  // Found
         auto queue = search->second;
         if (queue != nullptr) {
-          auto next = queue->next;
-          auto tail = queue->tail;
 
           // printf("pushing queue at %p with %lu entries\n", queue, queue->nentries);
           scheduler_queue_->push(queue);
 
-          waiting_queues_[row_id] = next;
+          waiting_queues_[row_id] = nullptr;
           // printf("setting waiting queue at %p\n", next);
-          if (next != nullptr) {
-            next->tail = tail;
-          }
           // printf("pushed row id %lu at %lu, %lu\n", row_id,
           //        duration_cast<nanoseconds>(high_resolution_clock::now().time_since_epoch()).count(),
           //        scheduler_queue_->unsafe_size());

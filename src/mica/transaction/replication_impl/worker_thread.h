@@ -79,25 +79,28 @@ void WorkerThread<StaticConfig>::run() {
   while (true) {
     LogEntryList<StaticConfig>* queue = nullptr;
     if (scheduler_queue_->try_pop(queue)) {
-      // printf("popped queue with %lu entries\n", queue->nentries);
+      // printf("popped queue %p\n", queue);
       // if (scheduler_queue_->unsafe_size() <= 5) {
       //   printf("popped queue at %lu\n", scheduler_queue_->unsafe_size());
       // }
       working_start_ = high_resolution_clock::now();
-      txn_ts = static_cast<uint64_t>(-1);
-      row_id = static_cast<uint64_t>(-1);
-      tbl = nullptr;
-      uint64_t nentries = queue->nentries;
-      char* ptr = queue->buf;
-      for (uint64_t i = 0; i < nentries; i++) {
-        LogEntry<StaticConfig>* le =
+      while (queue != nullptr) {
+        auto next = queue->next;
+        // printf("executing queue with %lu entries\n", queue->nentries);
+        txn_ts = static_cast<uint64_t>(-1);
+        row_id = static_cast<uint64_t>(-1);
+        tbl = nullptr;
+        uint64_t nentries = queue->nentries;
+        char* ptr = queue->buf;
+        for (uint64_t i = 0; i < nentries; i++) {
+          LogEntry<StaticConfig>* le =
             reinterpret_cast<LogEntry<StaticConfig>*>(ptr);
 
-        // le->print();
+          // le->print();
 
-        InsertRowLogEntry<StaticConfig>* irle = nullptr;
-        WriteRowLogEntry<StaticConfig>* wrle = nullptr;
-        switch (le->type) {
+          InsertRowLogEntry<StaticConfig>* irle = nullptr;
+          WriteRowLogEntry<StaticConfig>* wrle = nullptr;
+          switch (le->type) {
           case LogEntryType::INSERT_ROW:
             irle = static_cast<InsertRowLogEntry<StaticConfig>*>(le);
             txn_ts = irle->txn_ts;
@@ -127,10 +130,13 @@ void WorkerThread<StaticConfig>::run() {
 
           default:
             throw std::runtime_error(
-                "WorkerThread::run: Unexpected log entry type.");
+                                     "WorkerThread::run: Unexpected log entry type.");
+          }
+
+          ptr += le->size;
         }
 
-        ptr += le->size;
+        queue = queue->next;
       }
       working_end_ = high_resolution_clock::now();
       time_working_ +=

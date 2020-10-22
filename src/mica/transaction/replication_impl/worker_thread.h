@@ -124,8 +124,6 @@ void WorkerThread<StaticConfig>::run() {
             // wrle->print();
             write_row(tbl, &tx, &rah, wrle);
             op_done_queue_->enqueue(txn_ts);
-            db_->set_min_wts(txn_ts);
-            db_->set_min_rts(txn_ts);
             break;
 
           default:

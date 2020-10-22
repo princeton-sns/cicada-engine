@@ -84,11 +84,11 @@ void WorkerThread<StaticConfig>::run() {
       //   printf("popped queue at %lu\n", scheduler_queue_->unsafe_size());
       // }
       working_start_ = high_resolution_clock::now();
+      tbl = db_->get_table(std::string(queue->tbl_name));
       while (queue != nullptr) {
         // printf("executing queue with %lu entries\n", queue->nentries);
         txn_ts = static_cast<uint64_t>(-1);
         row_id = static_cast<uint64_t>(-1);
-        tbl = nullptr;
         uint64_t nentries = queue->nentries;
         char* ptr = queue->buf;
         for (uint64_t i = 0; i < nentries; i++) {
@@ -105,7 +105,7 @@ void WorkerThread<StaticConfig>::run() {
             txn_ts = irle->txn_ts;
             row_id = irle->row_id;
             // irle->print();
-            insert_row(ctx, &tx, &rah, irle);
+            insert_row(tbl, &tx, &rah, irle);
             op_done_queue_->enqueue(txn_ts);
             break;
 
@@ -113,13 +113,6 @@ void WorkerThread<StaticConfig>::run() {
             wrle = static_cast<WriteRowLogEntry<StaticConfig>*>(le);
             txn_ts = wrle->txn_ts;
             row_id = wrle->row_id;
-            if (tbl == nullptr) {
-              tbl = db_->get_table(std::string{wrle->tbl_name});
-              if (tbl == nullptr) {
-                throw std::runtime_error("run: Failed to find table " +
-                                         std::string{wrle->tbl_name});
-              }
-            }
             // wrle->print();
             write_row(tbl, &tx, &rah, wrle);
             op_done_queue_->enqueue(txn_ts);
@@ -167,16 +160,16 @@ void WorkerThread<StaticConfig>::run() {
 
 template <class StaticConfig>
 void WorkerThread<StaticConfig>::insert_row(
-    Context<StaticConfig>* ctx, Transaction<StaticConfig>* tx,
+    Table<StaticConfig>* tbl, Transaction<StaticConfig>* tx,
     RowAccessHandle<StaticConfig>* rah, InsertRowLogEntry<StaticConfig>* le) {
   TableType tbl_type = static_cast<TableType>(le->tbl_type);
 
   switch (tbl_type) {
     case TableType::DATA:
-      insert_data_row(ctx, tx, rah, le);
+      insert_data_row(tbl, tx, rah, le);
       break;
     case TableType::HASH_IDX:
-      insert_hash_idx_row(ctx, tx, rah, le);
+      insert_hash_idx_row(tbl, tx, rah, le);
       break;
     default:
       throw std::runtime_error("Insert: Unsupported table type.");
@@ -185,14 +178,8 @@ void WorkerThread<StaticConfig>::insert_row(
 
 template <class StaticConfig>
 void WorkerThread<StaticConfig>::insert_data_row(
-    Context<StaticConfig>* ctx, Transaction<StaticConfig>* tx,
+    Table<StaticConfig>* tbl, Transaction<StaticConfig>* tx,
     RowAccessHandle<StaticConfig>* rah, InsertRowLogEntry<StaticConfig>* le) {
-  auto db = ctx->db();
-  Table<StaticConfig>* tbl = db->get_table(std::string{le->tbl_name});
-  if (tbl == nullptr) {
-    throw std::runtime_error("insert_data_row: Failed to find table " +
-                             std::string{le->tbl_name});
-  }
 
   typename StaticConfig::Timestamp txn_ts;
   txn_ts.t2 = le->txn_ts;
@@ -235,15 +222,12 @@ void WorkerThread<StaticConfig>::insert_data_row(
 
 template <class StaticConfig>
 void WorkerThread<StaticConfig>::insert_hash_idx_row(
-    Context<StaticConfig>* ctx, Transaction<StaticConfig>* tx,
+    Table<StaticConfig>* tbl, Transaction<StaticConfig>* tx,
     RowAccessHandle<StaticConfig>* rah, InsertRowLogEntry<StaticConfig>* le) {
-  auto db = ctx->db();
-
   auto unique_hash_idx =
-      db->get_hash_index_unique_u64(std::string{le->tbl_name});
+      db_->get_hash_index_unique_u64(std::string{le->tbl_name});
   auto nonunique_hash_idx =
-      db->get_hash_index_nonunique_u64(std::string{le->tbl_name});
-  Table<StaticConfig>* tbl = nullptr;
+      db_->get_hash_index_nonunique_u64(std::string{le->tbl_name});
   if (unique_hash_idx != nullptr) {
     tbl = unique_hash_idx->index_table();
   } else if (nonunique_hash_idx != nullptr) {

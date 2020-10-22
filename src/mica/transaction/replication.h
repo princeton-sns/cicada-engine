@@ -196,12 +196,14 @@ class LogEntryNode {
 template <class StaticConfig>
 class LogEntryList {
  public:
-  static const std::size_t kBufSize =
-      4064;  // Total bytes: 4064 + 8 + 8 + 8 + 8 = 4096
+  // Total bytes: (4056 - tbl_name.size) + 8 + 8 + 8 + 8 + 8 = 4096
+  static const std::size_t kBufSize = 4056 - StaticConfig::kMaxTableNameSize;
 
   LogEntryList<StaticConfig>* next;
   LogEntryList<StaticConfig>* tail;
   uint64_t nentries;
+  uint64_t row_id;
+  char tbl_name[StaticConfig::kMaxTableNameSize];
   char* cur;
   char buf[kBufSize];  // TODO: make this a constant parameter
 
@@ -425,14 +427,14 @@ class WorkerThread {
 
   void run();
 
-  void insert_row(Context<StaticConfig>* ctx, Transaction<StaticConfig>* tx,
+  void insert_row(Table<StaticConfig>* tbl, Transaction<StaticConfig>* tx,
                   RowAccessHandle<StaticConfig>* rah,
                   InsertRowLogEntry<StaticConfig>* le);
-  void insert_data_row(Context<StaticConfig>* ctx,
+  void insert_data_row(Table<StaticConfig>* tbl,
                        Transaction<StaticConfig>* tx,
                        RowAccessHandle<StaticConfig>* rah,
                        InsertRowLogEntry<StaticConfig>* le);
-  void insert_hash_idx_row(Context<StaticConfig>* ctx,
+  void insert_hash_idx_row(Table<StaticConfig>* tbl,
                            Transaction<StaticConfig>* tx,
                            RowAccessHandle<StaticConfig>* rah,
                            InsertRowLogEntry<StaticConfig>* le);

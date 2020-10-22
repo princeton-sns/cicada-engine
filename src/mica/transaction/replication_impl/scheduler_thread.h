@@ -348,10 +348,12 @@ uint64_t SchedulerThread<StaticConfig>::build_local_lists(
     // le->print();
 
     uint64_t row_id = 0;
+    char* tbl_name = nullptr;
     switch (type) {
       case LogEntryType::INSERT_ROW:
         irle = static_cast<InsertRowLogEntry<StaticConfig>*>(le);
         row_id = irle->row_id;
+        tbl_name = irle->tbl_name;
         txn_ts = irle->txn_ts;
         // irle->print();
         break;
@@ -359,6 +361,7 @@ uint64_t SchedulerThread<StaticConfig>::build_local_lists(
       case LogEntryType::WRITE_ROW:
         wrle = static_cast<WriteRowLogEntry<StaticConfig>*>(le);
         row_id = wrle->row_id;
+        tbl_name = wrle->tbl_name;
         txn_ts = wrle->txn_ts;
         // wrle->print();
         break;
@@ -379,15 +382,12 @@ uint64_t SchedulerThread<StaticConfig>::build_local_lists(
     }
     op_count += 1;
 
-    // row_id = 0;
     LogEntryList<StaticConfig>* list = nullptr;
     auto search = lists.find(row_id);
     if (search == lists.end()) {  // Not found
       list = allocate_list();
-      // list->tail = nullptr;
-      // while (__sync_lock_test_and_set(&list->lock, 1) == 1) {
-      //   ::mica::util::pause();
-      // }
+      list->row_id = row_id;
+      std::memcpy(list->tbl_name, tbl_name, StaticConfig::kMaxTableNameSize);
       lists[row_id] = list;
     } else {
       list = search->second;

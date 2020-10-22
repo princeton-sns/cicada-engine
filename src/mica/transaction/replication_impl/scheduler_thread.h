@@ -22,8 +22,8 @@ SchedulerThread<StaticConfig>::SchedulerThread(
     std::shared_ptr<MmappedLogFile<StaticConfig>> log,
     SchedulerPool<StaticConfig>* pool,
     tbb::concurrent_queue<LogEntryList<StaticConfig>*>* scheduler_queue,
-    tbb::concurrent_queue<std::pair<uint64_t, uint64_t>>* op_count_queue,
-    std::vector<tbb::concurrent_queue<uint64_t>*> done_queues,
+    moodycamel::ReaderWriterQueue<std::pair<uint64_t, uint64_t>>* op_count_queue,
+    std::vector<moodycamel::ReaderWriterQueue<uint64_t>*> done_queues,
     pthread_barrier_t* start_barrier, uint16_t id, uint16_t nschedulers,
     SchedulerLock* my_lock)
     : log_{log},
@@ -88,7 +88,7 @@ template <class StaticConfig>
 void SchedulerThread<StaticConfig>::run() {
   printf("Starting replica scheduler: %u\n", id_);
 
-  printf("pinning to thread %lu\n", (id_ + 1) + nschedulers_);
+  printf("pinning to thread %d\n", (id_ + 1) + nschedulers_);
   mica::util::lcore.pin_thread((id_ + 1) + nschedulers_);
 
   nanoseconds time_noncritical{0};
@@ -127,6 +127,9 @@ void SchedulerThread<StaticConfig>::run() {
 
     start = high_resolution_clock::now();
     acquire_scheduler_lock();
+    // Memory barrier here so next scheduler thread sees all updates
+    // to all SPSC queues' internal variables
+    ::mica::util::memory_barrier();
     end = high_resolution_clock::now();
     diff = duration_cast<nanoseconds>(end - start);
     time_waiting += diff;
@@ -137,8 +140,7 @@ void SchedulerThread<StaticConfig>::run() {
 
     // Notify snapshot manager of transaction op counts
     for (const auto& o : op_counts) {
-      op_count_queue_->push(o);
-      // printf("pushed op count: %lu %lu\n", o.first, o.second);
+      op_count_queue_->enqueue(o);
     }
 
     // Enqueue new queues
@@ -231,7 +233,7 @@ template <class StaticConfig>
 void SchedulerThread<StaticConfig>::ack_executed_rows() {
   for (auto done_queue : done_queues_) {
     uint64_t row_id;
-    while (done_queue->try_pop(row_id)) {
+    while (done_queue->try_dequeue(row_id)) {
       // printf("acking row id %lu at %lu\n", row_id,
       //        duration_cast<nanoseconds>(high_resolution_clock::now().time_since_epoch()).count());
       auto search = waiting_queues_.find(row_id);

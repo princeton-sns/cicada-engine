@@ -16,7 +16,7 @@ template <class StaticConfig>
 WorkerThread<StaticConfig>::WorkerThread(
     DB<StaticConfig>* db,
     tbb::concurrent_queue<LogEntryList<StaticConfig>*>* scheduler_queue,
-    tbb::concurrent_queue<uint64_t>* done_queue,
+    moodycamel::ReaderWriterQueue<uint64_t>* done_queue,
     moodycamel::ReaderWriterQueue<uint64_t>* op_done_queue,
     pthread_barrier_t* start_barrier, uint16_t id, uint16_t nschedulers)
     : db_{db},
@@ -55,7 +55,7 @@ template <class StaticConfig>
 void WorkerThread<StaticConfig>::run() {
   printf("Starting replica worker: %u\n", id_);
 
-  printf("pinning to thread %lu\n", id_);
+  printf("pinning to thread %d\n", id_);
   mica::util::lcore.pin_thread(id_);
 
   db_->activate(id_);
@@ -85,7 +85,6 @@ void WorkerThread<StaticConfig>::run() {
       // }
       working_start_ = high_resolution_clock::now();
       while (queue != nullptr) {
-        auto next = queue->next;
         // printf("executing queue with %lu entries\n", queue->nentries);
         txn_ts = static_cast<uint64_t>(-1);
         row_id = static_cast<uint64_t>(-1);
@@ -141,11 +140,7 @@ void WorkerThread<StaticConfig>::run() {
           duration_cast<nanoseconds>(working_end_ - working_start_);
 
       if (row_id != static_cast<uint64_t>(-1)) {
-        // printf("done processing row id %lu at %lu\n", row_id,
-        //        duration_cast<nanoseconds>(
-        //            high_resolution_clock::now().time_since_epoch())
-        //            .count());
-        done_queue_->push(row_id);
+        done_queue_->enqueue(row_id);
       }
     } else if (scheduler_queue_->unsafe_size() == 0 && stop_) {
       break;

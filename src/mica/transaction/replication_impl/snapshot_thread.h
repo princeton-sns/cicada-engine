@@ -9,7 +9,7 @@ namespace transaction {
 template <class StaticConfig>
 SnapshotThread<StaticConfig>::SnapshotThread(
     DB<StaticConfig>* db, pthread_barrier_t* start_barrier,
-    tbb::concurrent_queue<std::pair<uint64_t, uint64_t>>* op_count_queue,
+    moodycamel::ReaderWriterQueue<std::pair<uint64_t, uint64_t>>* op_count_queue,
     std::vector<moodycamel::ReaderWriterQueue<uint64_t>*> op_done_queues)
     : db_{db},
       counts_index_{},
@@ -40,19 +40,18 @@ void SnapshotThread<StaticConfig>::run() {
   printf("Starting snapshot manager\n");
 
   // TODO: fix thread pinning
-  printf("pinning to thread %lu\n", 4);
+  printf("pinning to thread %d\n", 4);
   mica::util::lcore.pin_thread(4);
 
   std::unordered_map<uint64_t, uint64_t> temp_counts{};
   std::pair<uint64_t, uint64_t> op_count{};
   uint64_t txn_ts;
   uint64_t count;
-  uint64_t rts_updates = 0;
 
   pthread_barrier_wait(start_barrier_);
 
   while (true) {
-    if (op_count_queue_->try_pop(op_count)) {
+    if (op_count_queue_->try_dequeue(op_count)) {
       txn_ts = op_count.first;
       count = op_count.second;
 

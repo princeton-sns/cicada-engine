@@ -4,7 +4,6 @@
 
 #include <chrono>
 #include <thread>
-/* #include <unordered_map> */
 
 #include "mica/transaction/logging.h"
 #include "mica/transaction/replication.h"
@@ -21,7 +20,7 @@ CopyCat<StaticConfig>::CopyCat(DB<StaticConfig>* db,
                                uint16_t nloggers, uint16_t nschedulers,
                                uint16_t nworkers, std::string logdir)
     : scheduler_queue_{},
-      op_count_queue_{},
+      op_count_queue_{4096},
       db_{db},
       pool_{pool},
       len_{StaticConfig::kPageSize},
@@ -53,9 +52,8 @@ CopyCat<StaticConfig>::CopyCat(DB<StaticConfig>* db,
   }
 
   for (uint16_t wid = 0; wid < nworkers_; wid++) {
-    done_queues_.push_back(new tbb::concurrent_queue<uint64_t>{});
-    op_done_queues_.push_back(
-        new moodycamel::ReaderWriterQueue<uint64_t>{4096});
+    done_queues_.push_back(new moodycamel::ReaderWriterQueue<uint64_t>{4096});
+    op_done_queues_.push_back(new moodycamel::ReaderWriterQueue<uint64_t>{4096});
   }
 }
 
@@ -126,8 +124,9 @@ void CopyCat<StaticConfig>::reset() {
     delete w;
   }
 
+  uint64_t row_id;
   for (auto queue : done_queues_) {
-    queue->clear();
+    while (queue->try_dequeue(row_id)) {} // Empty queue
   }
 
   log_.reset();
@@ -135,12 +134,13 @@ void CopyCat<StaticConfig>::reset() {
 
   delete snapshot_manager_;
 
-  op_count_queue_.clear();
+  std::pair<uint64_t,uint64_t> op_count{};
+  while (op_count_queue_.try_dequeue(op_count)) {} // Empty queue
+  // op_count_queue_.clear();
 
   uint64_t txn_ts;
   for (auto queue : op_done_queues_) {
-    while (queue->try_dequeue(txn_ts)) {
-    }
+    while (queue->try_dequeue(txn_ts)) {} // Empty queue
   }
 
   snapshot_manager_ = nullptr;

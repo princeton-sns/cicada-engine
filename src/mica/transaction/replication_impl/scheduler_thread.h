@@ -14,7 +14,7 @@ using std::chrono::high_resolution_clock;
 using std::chrono::nanoseconds;
 
 template <class StaticConfig>
-std::unordered_map<uint64_t, LogEntryList<StaticConfig>*>
+robin_hood::unordered_map<uint64_t, LogEntryList<StaticConfig>*>
     SchedulerThread<StaticConfig>::waiting_queues_{};
 
 template <class StaticConfig>
@@ -101,7 +101,7 @@ void SchedulerThread<StaticConfig>::run() {
 
   std::size_t nsegments = log_->get_nsegments();
 
-  std::unordered_map<uint64_t, LogEntryList<StaticConfig>*> local_lists{};
+  robin_hood::unordered_map<uint64_t, LogEntryList<StaticConfig>*> local_lists{};
   std::vector<std::pair<uint64_t, uint64_t>> op_counts{};
 
   high_resolution_clock::time_point run_start;
@@ -114,6 +114,8 @@ void SchedulerThread<StaticConfig>::run() {
   std::size_t waiting_size = 0;
 
   pthread_barrier_wait(start_barrier_);
+  // uint64_t now = duration_cast<nanoseconds>(high_resolution_clock::now().time_since_epoch()).count();
+  // printf("scheduler thread starting at %lu\n", now);
   run_start = high_resolution_clock::now();
 
   for (std::size_t cur_segment = id_; cur_segment < nsegments;
@@ -191,6 +193,7 @@ void SchedulerThread<StaticConfig>::run() {
   while (waiting_size != 0) {
     start = high_resolution_clock::now();
     acquire_scheduler_lock();
+    ::mica::util::memory_barrier();
     end = high_resolution_clock::now();
     diff = duration_cast<nanoseconds>(end - start);
     time_waiting += diff;
@@ -337,7 +340,7 @@ void SchedulerThread<StaticConfig>::free_node(LogEntryNode* node) {
 template <class StaticConfig>
 uint64_t SchedulerThread<StaticConfig>::build_local_lists(
     std::size_t segment,
-    std::unordered_map<uint64_t, LogEntryList<StaticConfig>*>& lists,
+    robin_hood::unordered_map<uint64_t, LogEntryList<StaticConfig>*>& lists,
     std::vector<std::pair<uint64_t, uint64_t>>& op_counts) {
   LogFile<StaticConfig>* lf = log_->get_lf(segment);
   // lf->print();

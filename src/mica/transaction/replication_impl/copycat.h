@@ -52,8 +52,10 @@ CopyCat<StaticConfig>::CopyCat(DB<StaticConfig>* db,
   }
 
   for (uint16_t wid = 0; wid < nworkers_; wid++) {
-    ack_queues_.push_back(new moodycamel::ReaderWriterQueue<LogEntryList<StaticConfig>*>{4096});
-    op_done_queues_.push_back(new moodycamel::ReaderWriterQueue<uint64_t>{4096});
+    ack_queues_.push_back(
+        new moodycamel::ReaderWriterQueue<LogEntryList<StaticConfig>*>{4096});
+    op_done_queues_.push_back(
+        new moodycamel::ReaderWriterQueue<uint64_t>{4096});
   }
 }
 
@@ -148,13 +150,15 @@ void CopyCat<StaticConfig>::reset() {
 
   delete snapshot_manager_;
 
-  std::pair<uint64_t,uint64_t> op_count{};
-  while (op_count_queue_.try_dequeue(op_count)) {} // Empty queue
+  std::pair<uint64_t, uint64_t> op_count{};
+  while (op_count_queue_.try_dequeue(op_count)) {
+  }  // Empty queue
   // op_count_queue_.clear();
 
   uint64_t txn_ts;
   for (auto queue : op_done_queues_) {
-    while (queue->try_dequeue(txn_ts)) {} // Empty queue
+    while (queue->try_dequeue(txn_ts)) {
+    }  // Empty queue
   }
 
   snapshot_manager_ = nullptr;

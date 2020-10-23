@@ -17,8 +17,9 @@
 #include "mica/transaction/db.h"
 #include "mica/transaction/logging.h"
 #include "mica/util/posix_io.h"
-#include "tbb/concurrent_queue.h"
+#include "mica/util/robin_hood.h"
 #include "readerwriterqueue.h"
+#include "tbb/concurrent_queue.h"
 
 namespace mica {
 namespace transaction {
@@ -318,8 +319,10 @@ class SchedulerThread {
       std::shared_ptr<MmappedLogFile<StaticConfig>> log,
       SchedulerPool<StaticConfig>* pool,
       tbb::concurrent_queue<LogEntryList<StaticConfig>*>* scheduler_queue,
-      moodycamel::ReaderWriterQueue<std::pair<uint64_t, uint64_t>>* op_count_queue,
-      std::vector<moodycamel::ReaderWriterQueue<LogEntryList<StaticConfig>*>*> ack_queues,
+      moodycamel::ReaderWriterQueue<std::pair<uint64_t, uint64_t>>*
+          op_count_queue,
+      std::vector<moodycamel::ReaderWriterQueue<LogEntryList<StaticConfig>*>*>
+          ack_queues,
       pthread_barrier_t* start_barrier, uint16_t id, uint16_t nschedulers,
       SchedulerLock* my_lock);
 
@@ -329,7 +332,7 @@ class SchedulerThread {
   void stop();
 
  private:
-  static std::unordered_map<uint64_t, LogEntryList<StaticConfig>*>
+  static robin_hood::unordered_map<uint64_t, LogEntryList<StaticConfig>*>
       waiting_queues_;
 
   std::shared_ptr<MmappedLogFile<StaticConfig>> log_;
@@ -338,7 +341,8 @@ class SchedulerThread {
   LogEntryList<StaticConfig>* allocated_lists_;
   tbb::concurrent_queue<LogEntryList<StaticConfig>*>* scheduler_queue_;
   moodycamel::ReaderWriterQueue<std::pair<uint64_t, uint64_t>>* op_count_queue_;
-  std::vector<moodycamel::ReaderWriterQueue<LogEntryList<StaticConfig>*>*> ack_queues_;
+  std::vector<moodycamel::ReaderWriterQueue<LogEntryList<StaticConfig>*>*>
+      ack_queues_;
   pthread_barrier_t* start_barrier_;
   uint16_t id_;
   uint16_t nschedulers_;
@@ -355,7 +359,7 @@ class SchedulerThread {
 
   uint64_t build_local_lists(
       std::size_t segment,
-      std::unordered_map<uint64_t, LogEntryList<StaticConfig>*>& lists,
+      robin_hood::unordered_map<uint64_t, LogEntryList<StaticConfig>*>& lists,
       std::vector<std::pair<uint64_t, uint64_t>>& op_counts);
 
   void free_nodes_and_list(LogEntryList<StaticConfig>* list);
@@ -372,7 +376,8 @@ class SnapshotThread {
  public:
   SnapshotThread(
       DB<StaticConfig>* db, pthread_barrier_t* start_barrier,
-      moodycamel::ReaderWriterQueue<std::pair<uint64_t, uint64_t>>* op_count_queue,
+      moodycamel::ReaderWriterQueue<std::pair<uint64_t, uint64_t>>*
+          op_count_queue,
       std::vector<moodycamel::ReaderWriterQueue<uint64_t>*> op_done_queues);
 
   ~SnapshotThread();
@@ -430,8 +435,7 @@ class WorkerThread {
   void insert_row(Table<StaticConfig>* tbl, Transaction<StaticConfig>* tx,
                   RowAccessHandle<StaticConfig>* rah,
                   InsertRowLogEntry<StaticConfig>* le);
-  void insert_data_row(Table<StaticConfig>* tbl,
-                       Transaction<StaticConfig>* tx,
+  void insert_data_row(Table<StaticConfig>* tbl, Transaction<StaticConfig>* tx,
                        RowAccessHandle<StaticConfig>* rah,
                        InsertRowLogEntry<StaticConfig>* le);
   void insert_hash_idx_row(Table<StaticConfig>* tbl,
@@ -518,7 +522,8 @@ class CopyCat : public CCCInterface<StaticConfig> {
 
   pthread_barrier_t worker_barrier_;
   std::vector<WorkerThread<StaticConfig>*> workers_;
-  std::vector<moodycamel::ReaderWriterQueue<LogEntryList<StaticConfig>*>*> ack_queues_;
+  std::vector<moodycamel::ReaderWriterQueue<LogEntryList<StaticConfig>*>*>
+      ack_queues_;
   std::vector<moodycamel::ReaderWriterQueue<uint64_t>*> op_done_queues_;
 
   pthread_barrier_t snapshot_barrier_;

@@ -52,7 +52,7 @@ CopyCat<StaticConfig>::CopyCat(DB<StaticConfig>* db,
   }
 
   for (uint16_t wid = 0; wid < nworkers_; wid++) {
-    done_queues_.push_back(new moodycamel::ReaderWriterQueue<uint64_t>{4096});
+    done_queues_.push_back(new moodycamel::ReaderWriterQueue<LogEntryList<StaticConfig>*>{4096});
     op_done_queues_.push_back(new moodycamel::ReaderWriterQueue<uint64_t>{4096});
   }
 }
@@ -75,6 +75,14 @@ CopyCat<StaticConfig>::~CopyCat() {
   }
 
   for (auto done_queue : done_queues_) {
+    LogEntryList<StaticConfig>* list;
+    while (done_queue->try_dequeue(list)) {
+      while (list != nullptr) {
+        auto next = list->next;
+        pool_->free_list(list);
+        list = next;
+      }
+    }
     delete done_queue;
   }
   done_queues_.clear();
@@ -124,9 +132,15 @@ void CopyCat<StaticConfig>::reset() {
     delete w;
   }
 
-  uint64_t row_id;
+  LogEntryList<StaticConfig>* list;
   for (auto queue : done_queues_) {
-    while (queue->try_dequeue(row_id)) {} // Empty queue
+    while (queue->try_dequeue(list)) {
+      while (list != nullptr) {
+        auto next = list->next;
+        pool_->free_list(list);
+        list = next;
+      }
+    }
   }
 
   log_.reset();

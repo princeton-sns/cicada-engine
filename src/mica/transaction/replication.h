@@ -319,7 +319,7 @@ class SchedulerThread {
       SchedulerPool<StaticConfig>* pool,
       tbb::concurrent_queue<LogEntryList<StaticConfig>*>* scheduler_queue,
       moodycamel::ReaderWriterQueue<std::pair<uint64_t, uint64_t>>* op_count_queue,
-      std::vector<moodycamel::ReaderWriterQueue<uint64_t>*> done_queues,
+      std::vector<moodycamel::ReaderWriterQueue<LogEntryList<StaticConfig>*>*> done_queues,
       pthread_barrier_t* start_barrier, uint16_t id, uint16_t nschedulers,
       SchedulerLock* my_lock);
 
@@ -338,7 +338,7 @@ class SchedulerThread {
   LogEntryList<StaticConfig>* allocated_lists_;
   tbb::concurrent_queue<LogEntryList<StaticConfig>*>* scheduler_queue_;
   moodycamel::ReaderWriterQueue<std::pair<uint64_t, uint64_t>>* op_count_queue_;
-  std::vector<moodycamel::ReaderWriterQueue<uint64_t>*> done_queues_;
+  std::vector<moodycamel::ReaderWriterQueue<LogEntryList<StaticConfig>*>*> done_queues_;
   pthread_barrier_t* start_barrier_;
   uint16_t id_;
   uint16_t nschedulers_;
@@ -401,7 +401,7 @@ class WorkerThread {
   WorkerThread(
       DB<StaticConfig>* db,
       tbb::concurrent_queue<LogEntryList<StaticConfig>*>* scheduler_queue,
-      moodycamel::ReaderWriterQueue<uint64_t>* done_queue,
+      moodycamel::ReaderWriterQueue<LogEntryList<StaticConfig>*>* done_queue,
       moodycamel::ReaderWriterQueue<uint64_t>* op_done_queue,
       pthread_barrier_t* start_barrier, uint16_t id, uint16_t nschedulers);
 
@@ -413,7 +413,7 @@ class WorkerThread {
  private:
   DB<StaticConfig>* db_;
   tbb::concurrent_queue<LogEntryList<StaticConfig>*>* scheduler_queue_;
-  moodycamel::ReaderWriterQueue<uint64_t>* done_queue_;
+  moodycamel::ReaderWriterQueue<LogEntryList<StaticConfig>*>* done_queue_;
   moodycamel::ReaderWriterQueue<uint64_t>* op_done_queue_;
   pthread_barrier_t* start_barrier_;
   uint16_t id_;
@@ -518,7 +518,7 @@ class CopyCat : public CCCInterface<StaticConfig> {
 
   pthread_barrier_t worker_barrier_;
   std::vector<WorkerThread<StaticConfig>*> workers_;
-  std::vector<moodycamel::ReaderWriterQueue<uint64_t>*> done_queues_;
+  std::vector<moodycamel::ReaderWriterQueue<LogEntryList<StaticConfig>*>*> done_queues_;
   std::vector<moodycamel::ReaderWriterQueue<uint64_t>*> op_done_queues_;
 
   pthread_barrier_t snapshot_barrier_;

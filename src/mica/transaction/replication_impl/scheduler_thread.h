@@ -23,7 +23,7 @@ SchedulerThread<StaticConfig>::SchedulerThread(
     SchedulerPool<StaticConfig>* pool,
     tbb::concurrent_queue<LogEntryList<StaticConfig>*>* scheduler_queue,
     moodycamel::ReaderWriterQueue<std::pair<uint64_t, uint64_t>>* op_count_queue,
-    std::vector<moodycamel::ReaderWriterQueue<uint64_t>*> done_queues,
+    std::vector<moodycamel::ReaderWriterQueue<LogEntryList<StaticConfig>*>*> done_queues,
     pthread_barrier_t* start_barrier, uint16_t id, uint16_t nschedulers,
     SchedulerLock* my_lock)
     : log_{log},
@@ -43,8 +43,10 @@ SchedulerThread<StaticConfig>::SchedulerThread(
 template <class StaticConfig>
 SchedulerThread<StaticConfig>::~SchedulerThread() {
   for (const auto& item : waiting_queues_) {
-    if (item.second != nullptr) {
+    auto queue = item.second;
+    while (queue != nullptr) {
       free_nodes_and_list(item.second);
+      queue = queue->next;
     }
   }
 
@@ -232,17 +234,18 @@ void SchedulerThread<StaticConfig>::run() {
 template <class StaticConfig>
 void SchedulerThread<StaticConfig>::ack_executed_rows() {
   for (auto done_queue : done_queues_) {
-    uint64_t row_id;
-    while (done_queue->try_dequeue(row_id)) {
+    LogEntryList<StaticConfig>* queue;
+    while (done_queue->try_dequeue(queue)) {
+      uint64_t row_id = queue->row_id;
       // printf("acking row id %lu at %lu\n", row_id,
       //        duration_cast<nanoseconds>(high_resolution_clock::now().time_since_epoch()).count());
       auto search = waiting_queues_.find(row_id);
       if (search != waiting_queues_.end()) {  // Found
-        auto queue = search->second;
-        if (queue != nullptr) {
+        auto queue_next = search->second;
+        if (queue_next != nullptr) {
 
           // printf("pushing queue at %p with %lu entries\n", queue, queue->nentries);
-          scheduler_queue_->push(queue);
+          scheduler_queue_->push(queue_next);
 
           waiting_queues_[row_id] = nullptr;
           // printf("setting waiting queue at %p\n", next);
@@ -255,6 +258,12 @@ void SchedulerThread<StaticConfig>::ack_executed_rows() {
         }
       } else {
         throw std::runtime_error("unexpected row id: " + row_id);
+      }
+
+      while (queue != nullptr) {
+        auto next = queue->next;
+        free_list(queue);
+        queue = next;
       }
     }
   }

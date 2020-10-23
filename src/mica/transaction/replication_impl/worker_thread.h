@@ -16,12 +16,12 @@ template <class StaticConfig>
 WorkerThread<StaticConfig>::WorkerThread(
     DB<StaticConfig>* db,
     tbb::concurrent_queue<LogEntryList<StaticConfig>*>* scheduler_queue,
-    moodycamel::ReaderWriterQueue<LogEntryList<StaticConfig>*>* done_queue,
+    moodycamel::ReaderWriterQueue<LogEntryList<StaticConfig>*>* ack_queue,
     moodycamel::ReaderWriterQueue<uint64_t>* op_done_queue,
     pthread_barrier_t* start_barrier, uint16_t id, uint16_t nschedulers)
     : db_{db},
       scheduler_queue_{scheduler_queue},
-      done_queue_{done_queue},
+      ack_queue_{ack_queue},
       op_done_queue_{op_done_queue},
       start_barrier_{start_barrier},
       id_{id},
@@ -135,7 +135,7 @@ void WorkerThread<StaticConfig>::run() {
           duration_cast<nanoseconds>(working_end_ - working_start_);
 
       if (first != nullptr) {
-        done_queue_->enqueue(first);
+        ack_queue_->enqueue(first);
       }
     } else if (scheduler_queue_->unsafe_size() == 0 && stop_) {
       break;

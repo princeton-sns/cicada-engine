@@ -32,7 +32,7 @@ CopyCat<StaticConfig>::CopyCat(DB<StaticConfig>* db,
       scheduler_locks_{},
       schedulers_{},
       workers_{},
-      done_queues_{},
+      ack_queues_{},
       op_done_queues_{},
       snapshot_manager_{nullptr} {
   int ret =
@@ -52,7 +52,7 @@ CopyCat<StaticConfig>::CopyCat(DB<StaticConfig>* db,
   }
 
   for (uint16_t wid = 0; wid < nworkers_; wid++) {
-    done_queues_.push_back(new moodycamel::ReaderWriterQueue<LogEntryList<StaticConfig>*>{4096});
+    ack_queues_.push_back(new moodycamel::ReaderWriterQueue<LogEntryList<StaticConfig>*>{4096});
     op_done_queues_.push_back(new moodycamel::ReaderWriterQueue<uint64_t>{4096});
   }
 }
@@ -74,18 +74,18 @@ CopyCat<StaticConfig>::~CopyCat() {
     std::cerr << "Failed to destroy snapshot barrier: " + ret;
   }
 
-  for (auto done_queue : done_queues_) {
+  for (auto ack_queue : ack_queues_) {
     LogEntryList<StaticConfig>* list;
-    while (done_queue->try_dequeue(list)) {
+    while (ack_queue->try_dequeue(list)) {
       while (list != nullptr) {
         auto next = list->next;
         pool_->free_list(list);
         list = next;
       }
     }
-    delete done_queue;
+    delete ack_queue;
   }
-  done_queues_.clear();
+  ack_queues_.clear();
 
   for (auto op_done_queue : op_done_queues_) {
     delete op_done_queue;
@@ -98,7 +98,7 @@ void CopyCat<StaticConfig>::start_workers() {
   for (uint16_t wid = 0; wid < nworkers_; wid++) {
     auto w = new WorkerThread<StaticConfig>{db_,
                                             &scheduler_queue_,
-                                            done_queues_[wid],
+                                            ack_queues_[wid],
                                             op_done_queues_[wid],
                                             &worker_barrier_,
                                             wid,
@@ -133,7 +133,7 @@ void CopyCat<StaticConfig>::reset() {
   }
 
   LogEntryList<StaticConfig>* list;
-  for (auto queue : done_queues_) {
+  for (auto queue : ack_queues_) {
     while (queue->try_dequeue(list)) {
       while (list != nullptr) {
         auto next = list->next;
@@ -191,7 +191,7 @@ void CopyCat<StaticConfig>::start_schedulers() {
                                                pool_,
                                                &scheduler_queue_,
                                                &op_count_queue_,
-                                               done_queues_,
+                                               ack_queues_,
                                                &scheduler_barrier_,
                                                sid,
                                                nschedulers_,

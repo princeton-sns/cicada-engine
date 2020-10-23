@@ -23,7 +23,7 @@ SchedulerThread<StaticConfig>::SchedulerThread(
     SchedulerPool<StaticConfig>* pool,
     tbb::concurrent_queue<LogEntryList<StaticConfig>*>* scheduler_queue,
     moodycamel::ReaderWriterQueue<std::pair<uint64_t, uint64_t>>* op_count_queue,
-    std::vector<moodycamel::ReaderWriterQueue<LogEntryList<StaticConfig>*>*> done_queues,
+    std::vector<moodycamel::ReaderWriterQueue<LogEntryList<StaticConfig>*>*> ack_queues,
     pthread_barrier_t* start_barrier, uint16_t id, uint16_t nschedulers,
     SchedulerLock* my_lock)
     : log_{log},
@@ -32,7 +32,7 @@ SchedulerThread<StaticConfig>::SchedulerThread(
       allocated_lists_{nullptr},
       scheduler_queue_{scheduler_queue},
       op_count_queue_{op_count_queue},
-      done_queues_{done_queues},
+      ack_queues_{ack_queues},
       start_barrier_{start_barrier},
       id_{id},
       nschedulers_{nschedulers},
@@ -233,9 +233,9 @@ void SchedulerThread<StaticConfig>::run() {
 
 template <class StaticConfig>
 void SchedulerThread<StaticConfig>::ack_executed_rows() {
-  for (auto done_queue : done_queues_) {
+  for (auto ack_queue : ack_queues_) {
     LogEntryList<StaticConfig>* queue;
-    while (done_queue->try_dequeue(queue)) {
+    while (ack_queue->try_dequeue(queue)) {
       uint64_t row_id = queue->row_id;
       // printf("acking row id %lu at %lu\n", row_id,
       //        duration_cast<nanoseconds>(high_resolution_clock::now().time_since_epoch()).count());

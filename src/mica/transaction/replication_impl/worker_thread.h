@@ -3,8 +3,6 @@
 
 #include "mica/transaction/replication.h"
 
-#include <thread>
-
 namespace mica {
 namespace transaction {
 
@@ -55,8 +53,8 @@ template <class StaticConfig>
 void WorkerThread<StaticConfig>::run() {
   printf("Starting replica worker: %u\n", id_);
 
-  printf("pinning to thread %d\n", id_);
-  mica::util::lcore.pin_thread(id_);
+  printf("pinning to thread %d\n", id_ + 4);
+  mica::util::lcore.pin_thread(id_ + 4);
 
   db_->activate(id_);
 

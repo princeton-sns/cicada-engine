@@ -17,26 +17,34 @@ using mica::util::PosixIO;
 template <class StaticConfig>
 CopyCat<StaticConfig>::CopyCat(DB<StaticConfig>* db,
                                SchedulerPool<StaticConfig>* pool,
-                               uint16_t nloggers, uint16_t nschedulers,
-                               uint16_t nworkers, std::string logdir)
-    : scheduler_queue_{},
+                               uint16_t nloggers, uint16_t nios,
+                               uint16_t nschedulers, uint16_t nworkers,
+                               std::string logdir)
+    : io_queue_{4096},
+      scheduler_queue_{},
       op_count_queue_{4096},
       db_{db},
       pool_{pool},
       len_{StaticConfig::kPageSize},
       nloggers_{nloggers},
+      nios_{nios},
       nschedulers_{nschedulers},
       nworkers_{nworkers},
       logdir_{logdir},
       log_{nullptr},
-      scheduler_locks_{},
+      ios_{},
+      io_locks_{},
       schedulers_{},
       workers_{},
       ack_queues_{},
       op_done_queues_{},
       snapshot_manager_{nullptr} {
-  int ret =
-      pthread_barrier_init(&scheduler_barrier_, nullptr, nschedulers_ + 1);
+  int ret = pthread_barrier_init(&io_barrier_, nullptr, nios_ + 1);
+  if (ret != 0) {
+    throw std::runtime_error("Failed to init IO barrier: " + ret);
+  }
+
+  ret = pthread_barrier_init(&scheduler_barrier_, nullptr, nschedulers_ + 1);
   if (ret != 0) {
     throw std::runtime_error("Failed to init scheduler barrier: " + ret);
   }
@@ -61,7 +69,12 @@ CopyCat<StaticConfig>::CopyCat(DB<StaticConfig>* db,
 
 template <class StaticConfig>
 CopyCat<StaticConfig>::~CopyCat() {
-  int ret = pthread_barrier_destroy(&scheduler_barrier_);
+  int ret = pthread_barrier_destroy(&io_barrier_);
+  if (ret != 0) {
+    std::cerr << "Failed to destroy IO barrier: " + ret;
+  }
+
+  ret = pthread_barrier_destroy(&scheduler_barrier_);
   if (ret != 0) {
     std::cerr << "Failed to destroy scheduler barrier: " + ret;
   }
@@ -96,76 +109,7 @@ CopyCat<StaticConfig>::~CopyCat() {
 }
 
 template <class StaticConfig>
-void CopyCat<StaticConfig>::start_workers() {
-  for (uint16_t wid = 0; wid < nworkers_; wid++) {
-    auto w = new WorkerThread<StaticConfig>{db_,
-                                            &scheduler_queue_,
-                                            ack_queues_[wid],
-                                            op_done_queues_[wid],
-                                            &worker_barrier_,
-                                            wid,
-                                            nschedulers_};
-
-    w->start();
-
-    workers_.push_back(w);
-  }
-
-  pthread_barrier_wait(&worker_barrier_);
-}
-
-template <class StaticConfig>
-void CopyCat<StaticConfig>::stop_workers() {
-  for (auto w : workers_) {
-    w->stop();
-  }
-}
-
-template <class StaticConfig>
-void CopyCat<StaticConfig>::reset() {
-  for (auto s : schedulers_) {
-    delete s;
-  }
-
-  scheduler_locks_.clear();
-  schedulers_.clear();
-
-  for (auto w : workers_) {
-    delete w;
-  }
-
-  LogEntryList<StaticConfig>* list;
-  for (auto queue : ack_queues_) {
-    while (queue->try_dequeue(list)) {
-      while (list != nullptr) {
-        auto next = list->next;
-        pool_->free_list(list);
-        list = next;
-      }
-    }
-  }
-
-  log_.reset();
-  workers_.clear();
-
-  delete snapshot_manager_;
-
-  std::pair<uint64_t, uint64_t> op_count{};
-  while (op_count_queue_.try_dequeue(op_count)) {
-  }  // Empty queue
-  // op_count_queue_.clear();
-
-  uint64_t txn_ts;
-  for (auto queue : op_done_queues_) {
-    while (queue->try_dequeue(txn_ts)) {
-    }  // Empty queue
-  }
-
-  snapshot_manager_ = nullptr;
-}
-
-template <class StaticConfig>
-void CopyCat<StaticConfig>::start_schedulers() {
+void CopyCat<StaticConfig>::start_ios() {
   const std::string fname = logdir_ + "/out.log";
   if (!PosixIO::Exists(fname.c_str())) {
     return;
@@ -176,30 +120,50 @@ void CopyCat<StaticConfig>::start_schedulers() {
   log_ = MmappedLogFile<StaticConfig>::open_existing(
       fname, PROT_READ, MAP_SHARED, nsegments(len));
 
-  for (uint16_t sid = 0; sid < nschedulers_; sid++) {
+  for (uint16_t iid = 0; iid < nios_; iid++) {
     bool locked = true;
-    if (sid == 0) {
+    if (iid == 0) {
       locked = false;
     }
 
-    scheduler_locks_.push_back({nullptr, locked, false});
+    io_locks_.push_back({nullptr, locked, false});
   }
 
-  for (uint16_t sid = 0; sid < nschedulers_; sid++) {
-    std::size_t next_sid = static_cast<std::size_t>((sid + 1) % nschedulers_);
-    scheduler_locks_[sid].next = &scheduler_locks_[next_sid];
+  for (uint16_t iid = 0; iid < nios_; iid++) {
+    std::size_t next_iid = static_cast<std::size_t>((iid + 1) % nios_);
+    io_locks_[iid].next = &io_locks_[next_iid];
   }
 
+  for (uint16_t iid = 0; iid < nios_; iid++) {
+    auto i = new IOThread<StaticConfig>{
+        log_, pool_, &io_barrier_, &io_queue_, &io_locks_[iid], iid, nios_};
+
+    i->start();
+
+    ios_.push_back(i);
+  }
+
+  pthread_barrier_wait(&io_barrier_);
+}
+
+template <class StaticConfig>
+void CopyCat<StaticConfig>::stop_ios() {
+  for (auto i : ios_) {
+    i->stop();
+  }
+}
+
+template <class StaticConfig>
+void CopyCat<StaticConfig>::start_schedulers() {
   for (uint16_t sid = 0; sid < nschedulers_; sid++) {
-    auto s = new SchedulerThread<StaticConfig>{log_,
-                                               pool_,
+    auto s = new SchedulerThread<StaticConfig>{pool_,
+                                               &io_queue_,
                                                &scheduler_queue_,
                                                &op_count_queue_,
                                                ack_queues_,
                                                &scheduler_barrier_,
                                                sid,
-                                               nschedulers_,
-                                               &scheduler_locks_[sid]};
+                                               nschedulers_};
 
     s->start();
 
@@ -229,6 +193,84 @@ void CopyCat<StaticConfig>::start_snapshot_manager() {
 template <class StaticConfig>
 void CopyCat<StaticConfig>::stop_snapshot_manager() {
   snapshot_manager_->stop();
+}
+
+template <class StaticConfig>
+void CopyCat<StaticConfig>::start_workers() {
+  for (uint16_t wid = 0; wid < nworkers_; wid++) {
+    auto w = new WorkerThread<StaticConfig>{db_,
+                                            &scheduler_queue_,
+                                            ack_queues_[wid],
+                                            op_done_queues_[wid],
+                                            &worker_barrier_,
+                                            wid,
+                                            nschedulers_};
+
+    w->start();
+
+    workers_.push_back(w);
+  }
+
+  pthread_barrier_wait(&worker_barrier_);
+}
+
+template <class StaticConfig>
+void CopyCat<StaticConfig>::stop_workers() {
+  for (auto w : workers_) {
+    w->stop();
+  }
+}
+
+template <class StaticConfig>
+void CopyCat<StaticConfig>::reset() {
+  for (auto i : ios_) {
+    delete i;
+  }
+
+  io_locks_.clear();
+  log_.reset();
+  ios_.clear();
+
+  LogEntryList<StaticConfig>* list;
+  while (io_queue_.try_dequeue(list)) {
+  }  // Empty queue
+
+  for (auto s : schedulers_) {
+    delete s;
+  }
+
+  schedulers_.clear();
+
+  for (auto w : workers_) {
+    delete w;
+  }
+
+  for (auto queue : ack_queues_) {
+    while (queue->try_dequeue(list)) {
+      while (list != nullptr) {
+        auto next = list->next;
+        pool_->free_list(list);
+        list = next;
+      }
+    }
+  }
+
+  workers_.clear();
+
+  delete snapshot_manager_;
+
+  std::pair<uint64_t, uint64_t> op_count{};
+  while (op_count_queue_.try_dequeue(op_count)) {
+  }  // Empty queue
+  // op_count_queue_.clear();
+
+  uint64_t txn_ts;
+  for (auto queue : op_done_queues_) {
+    while (queue->try_dequeue(txn_ts)) {
+    }  // Empty queue
+  }
+
+  snapshot_manager_ = nullptr;
 }
 
 template <class StaticConfig>

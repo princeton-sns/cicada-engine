@@ -40,8 +40,8 @@ void SnapshotThread<StaticConfig>::run() {
   printf("Starting snapshot manager\n");
 
   // TODO: fix thread pinning
-  printf("pinning to thread %d\n", 4);
-  mica::util::lcore.pin_thread(4);
+  printf("pinning to thread %d\n", 6);
+  mica::util::lcore.pin_thread(6);
 
   std::unordered_map<uint64_t, uint64_t> temp_counts{};
   std::pair<uint64_t, uint64_t> op_count{};

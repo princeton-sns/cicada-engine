@@ -330,10 +330,10 @@ void worker_proc(Task* task) {
 }
 
 int main(int argc, const char* argv[]) {
-  if (argc != 9) {
+  if (argc != 10) {
     printf(
         "%s NUM-ROWS REQS-PER-TX READ-RATIO ZIPF-THETA TX-COUNT "
-        "THREAD-COUNT SCHEDULER-COUNT WORKER-COUNT\n",
+        "THREAD-COUNT IO-COUNT SCHEDULER-COUNT WORKER-COUNT\n",
         argv[0]);
     return EXIT_FAILURE;
   }
@@ -346,8 +346,9 @@ int main(int argc, const char* argv[]) {
   double zipf_theta = atof(argv[4]);
   uint64_t tx_count = static_cast<uint64_t>(atol(argv[5]));
   uint64_t num_threads = static_cast<uint64_t>(atol(argv[6]));
-  uint64_t num_schedulers = static_cast<uint64_t>(atol(argv[7]));
-  uint64_t num_workers = static_cast<uint64_t>(atol(argv[8]));
+  uint64_t num_ios = static_cast<uint64_t>(atol(argv[7]));
+  uint64_t num_schedulers = static_cast<uint64_t>(atol(argv[8]));
+  uint64_t num_workers = static_cast<uint64_t>(atol(argv[9]));
 
   Alloc alloc(config.get("alloc"));
   auto page_pool_size = 1 * uint64_t(1073741824);
@@ -384,6 +385,7 @@ int main(int argc, const char* argv[]) {
   printf("zipf_theta = %lf\n", zipf_theta);
   printf("tx_count = %" PRIu64 "\n", tx_count);
   printf("num_threads = %" PRIu64 "\n", num_threads);
+  printf("num_ios = %" PRIu64 "\n", num_ios);
   printf("num_schedulers = %" PRIu64 "\n", num_schedulers);
   printf("num_workers = %" PRIu64 "\n", num_workers);
 #ifndef NDEBUG
@@ -392,8 +394,9 @@ int main(int argc, const char* argv[]) {
   printf("\n");
 
   printf("Removing old log files\n\n");
-  std::vector<std::string> dirs = {MICA_LOG_INIT_DIR, MICA_LOG_WARMUP_DIR, MICA_LOG_WORKLOAD_DIR,
-    MICA_RELAY_INIT_DIR, MICA_RELAY_WARMUP_DIR, MICA_RELAY_WORKLOAD_DIR};
+  std::vector<std::string> dirs = {
+      MICA_LOG_INIT_DIR,   MICA_LOG_WARMUP_DIR,   MICA_LOG_WORKLOAD_DIR,
+      MICA_RELAY_INIT_DIR, MICA_RELAY_WARMUP_DIR, MICA_RELAY_WORKLOAD_DIR};
   for (std::string dir : dirs) {
     std::string cmd = "rm -f " + dir + "/* ;";
     int r = std::system(cmd.c_str());
@@ -403,7 +406,8 @@ int main(int argc, const char* argv[]) {
     }
   }
 
-  Logger logger{static_cast<uint16_t>(num_threads), std::string{MICA_LOG_INIT_DIR}};
+  Logger logger{static_cast<uint16_t>(num_threads),
+                std::string{MICA_LOG_INIT_DIR}};
   // Logger logger{};
 
   DB db(page_pools, &logger, &sw, static_cast<uint16_t>(num_threads));
@@ -759,30 +763,37 @@ int main(int argc, const char* argv[]) {
     logger.flush();
 
     logger.copy_logs(std::string{MICA_LOG_INIT_DIR},
-                      std::string{MICA_RELAY_INIT_DIR});
+                     std::string{MICA_RELAY_INIT_DIR});
     logger.copy_logs(std::string{MICA_LOG_WARMUP_DIR},
-                      std::string{MICA_RELAY_WARMUP_DIR});
+                     std::string{MICA_RELAY_WARMUP_DIR});
     logger.copy_logs(std::string{MICA_LOG_WORKLOAD_DIR},
-                      std::string{MICA_RELAY_WORKLOAD_DIR});
+                     std::string{MICA_RELAY_WORKLOAD_DIR});
   }
 
-  DB replica{page_pools, &logger, &sw, static_cast<uint16_t>(num_workers), true};
+  DB replica{page_pools, &logger, &sw, static_cast<uint16_t>(num_workers),
+             true};
 
   {
-    auto sched_pool_size = 1 * uint64_t(1073741824);
+    auto sched_pool_size = 4 * uint64_t(1073741824);
     std::size_t lcore = 0;
     printf("creating sched pool\n");
-    SchedulerPool* sched_pool = new SchedulerPool(&alloc, sched_pool_size, lcore);
+    SchedulerPool* sched_pool =
+        new SchedulerPool(&alloc, sched_pool_size, lcore);
     printf("created sched pool\n");
 
     // return 0;
 
-    CCC ccc{&replica, sched_pool, static_cast<uint16_t>(num_threads),
-      static_cast<uint16_t>(num_schedulers), static_cast<uint16_t>(num_workers),
-      std::string{MICA_RELAY_INIT_DIR}};
+    CCC ccc{&replica,
+            sched_pool,
+            static_cast<uint16_t>(num_threads),
+            static_cast<uint16_t>(num_ios),
+            static_cast<uint16_t>(num_schedulers),
+            static_cast<uint16_t>(num_workers),
+            std::string{MICA_RELAY_INIT_DIR}};
 
     std::vector<std::string> relaydirs = {std::string{MICA_RELAY_INIT_DIR},
-      std::string{MICA_RELAY_WARMUP_DIR}, std::string{MICA_RELAY_WORKLOAD_DIR}};
+                                          std::string{MICA_RELAY_WARMUP_DIR},
+                                          std::string{MICA_RELAY_WORKLOAD_DIR}};
 
     for (std::string dir : relaydirs) {
       ccc.set_logdir(dir);
@@ -793,17 +804,17 @@ int main(int argc, const char* argv[]) {
     int i = 0;
     for (std::string dir : relaydirs) {
       switch (i) {
-      case 0:
-        printf("Starting cloned concurrency control INIT\n");
-        break;
-      case 1:
-        printf("Starting cloned concurrency control WARMUP\n");
-        break;
-      case 2:
-        printf("Starting cloned concurrency control WORKLOAD\n");
-        break;
-      default:
-        throw std::runtime_error("Unexpected relay dir.");
+        case 0:
+          printf("Starting cloned concurrency control INIT\n");
+          break;
+        case 1:
+          printf("Starting cloned concurrency control WARMUP\n");
+          break;
+        case 2:
+          printf("Starting cloned concurrency control WORKLOAD\n");
+          break;
+        default:
+          throw std::runtime_error("Unexpected relay dir.");
       }
 
       ccc.set_logdir(dir);
@@ -816,8 +827,10 @@ int main(int argc, const char* argv[]) {
       ccc.start_snapshot_manager();
       ccc.start_workers();
       ccc.start_schedulers();
+      ccc.start_ios();
       gettimeofday(&tv_start, nullptr);
       // int64_t starttime = get_server_clock();
+      ccc.stop_ios();
       ccc.stop_schedulers();
       ccc.stop_workers();
       gettimeofday(&tv_end, nullptr);
@@ -828,8 +841,10 @@ int main(int argc, const char* argv[]) {
 
       // ccc.print_scheduler_queue();
 
-      double start = (double)tv_start.tv_sec * 1. + (double)tv_start.tv_usec * 0.000001;
-      double end = (double)tv_end.tv_sec * 1. + (double)tv_end.tv_usec * 0.000001;
+      double start =
+          (double)tv_start.tv_sec * 1. + (double)tv_start.tv_usec * 0.000001;
+      double end =
+          (double)tv_end.tv_sec * 1. + (double)tv_end.tv_usec * 0.000001;
 
       double diff = end - start;
       double total_time = diff * static_cast<double>(num_threads);

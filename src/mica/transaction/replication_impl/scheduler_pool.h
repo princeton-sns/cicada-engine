@@ -79,18 +79,26 @@ namespace mica {
     LogEntryList<StaticConfig>* SchedulerPool<StaticConfig>::allocate_list(uint64_t n) {
       while (__sync_lock_test_and_set(&lock_, 1) == 1) ::mica::util::pause();
 
+      if (n > free_lists_) {
+        printf("Cannot allocate %lu lists: %lu\n", n, free_lists_);
+        __sync_lock_release(&lock_);
+        return nullptr;
+      }
+
       LogEntryList<StaticConfig>* start = next_list_;
       LogEntryList<StaticConfig>* end = next_list_;
+      free_lists_--;
 
       for (uint64_t i = 1; i < n && end != nullptr; i++) {
-        end = reinterpret_cast<LogEntryList<StaticConfig>*>(end->next);
+        end = end->next;
         free_lists_--;
       }
 
-      if (end != nullptr) {
-        next_list_ = reinterpret_cast<LogEntryList<StaticConfig>*>(end->next);
+      if (end == nullptr) {
+        next_list_ = nullptr;
+      } else {
+        next_list_ = end->next;
         end->next = nullptr;
-        free_lists_--;
       }
 
       __sync_lock_release(&lock_);

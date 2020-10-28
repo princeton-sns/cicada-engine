@@ -10,6 +10,7 @@
 #include <memory>
 #include <sstream>
 #include <string>
+#include <thread>
 #include <unordered_map>
 #include <utility>
 #include <vector>
@@ -306,25 +307,60 @@ class SchedulerPool {
   volatile uint32_t lock_;
 } __attribute__((aligned(64)));
 
-struct SchedulerLock {
-  volatile SchedulerLock* next;
+struct IOLock {
+  volatile IOLock* next;
   volatile bool locked;
   volatile bool done;
 } __attribute__((__aligned__(64)));
 
 template <class StaticConfig>
+class IOThread {
+ public:
+  IOThread(std::shared_ptr<MmappedLogFile<StaticConfig>> log,
+           SchedulerPool<StaticConfig>* pool, pthread_barrier_t* start_barrier,
+           moodycamel::ReaderWriterQueue<LogEntryList<StaticConfig>*>* io_queue,
+           IOLock* my_lock, uint16_t id, uint16_t nios);
+  ~IOThread();
+
+  void start();
+  void stop();
+
+ private:
+  std::shared_ptr<MmappedLogFile<StaticConfig>> log_;
+  std::thread thread_;
+  pthread_barrier_t* start_barrier_;
+  SchedulerPool<StaticConfig>* pool_;
+  LogEntryList<StaticConfig>* allocated_lists_;
+  moodycamel::ReaderWriterQueue<LogEntryList<StaticConfig>*>* io_queue_;
+  IOLock* my_lock_;
+  uint16_t id_;
+  uint16_t nios_;
+  volatile bool stop_;
+
+  void run();
+
+  void acquire_io_lock();
+  void release_io_lock();
+
+  LogEntryList<StaticConfig>* allocate_list();
+
+  void build_local_lists(
+      std::size_t segment,
+      robin_hood::unordered_map<uint64_t, LogEntryList<StaticConfig>*>& lists);
+};
+
+template <class StaticConfig>
 class SchedulerThread {
  public:
   SchedulerThread(
-      std::shared_ptr<MmappedLogFile<StaticConfig>> log,
       SchedulerPool<StaticConfig>* pool,
+      moodycamel::ReaderWriterQueue<LogEntryList<StaticConfig>*>* io_queue,
       tbb::concurrent_queue<LogEntryList<StaticConfig>*>* scheduler_queue,
       moodycamel::ReaderWriterQueue<std::pair<uint64_t, uint64_t>>*
           op_count_queue,
       std::vector<moodycamel::ReaderWriterQueue<LogEntryList<StaticConfig>*>*>
           ack_queues,
-      pthread_barrier_t* start_barrier, uint16_t id, uint16_t nschedulers,
-      SchedulerLock* my_lock);
+      pthread_barrier_t* start_barrier, uint16_t id, uint16_t nschedulers);
 
   ~SchedulerThread();
 
@@ -335,10 +371,10 @@ class SchedulerThread {
   static robin_hood::unordered_map<uint64_t, LogEntryList<StaticConfig>*>
       waiting_queues_;
 
-  std::shared_ptr<MmappedLogFile<StaticConfig>> log_;
   SchedulerPool<StaticConfig>* pool_;
   LogEntryNode* allocated_nodes_;
   LogEntryList<StaticConfig>* allocated_lists_;
+  moodycamel::ReaderWriterQueue<LogEntryList<StaticConfig>*>* io_queue_;
   tbb::concurrent_queue<LogEntryList<StaticConfig>*>* scheduler_queue_;
   moodycamel::ReaderWriterQueue<std::pair<uint64_t, uint64_t>>* op_count_queue_;
   std::vector<moodycamel::ReaderWriterQueue<LogEntryList<StaticConfig>*>*>
@@ -346,29 +382,15 @@ class SchedulerThread {
   pthread_barrier_t* start_barrier_;
   uint16_t id_;
   uint16_t nschedulers_;
-  SchedulerLock* my_lock_;
   volatile bool stop_;
   std::thread thread_;
 
   void run();
 
-  void acquire_scheduler_lock();
-  void release_scheduler_lock(bool done = false);
-
   void ack_executed_rows();
-
-  uint64_t build_local_lists(
-      std::size_t segment,
-      robin_hood::unordered_map<uint64_t, LogEntryList<StaticConfig>*>& lists,
-      std::vector<std::pair<uint64_t, uint64_t>>& op_counts);
-
-  void free_nodes_and_list(LogEntryList<StaticConfig>* list);
 
   LogEntryList<StaticConfig>* allocate_list();
   void free_list(LogEntryList<StaticConfig>* list);
-
-  LogEntryNode* allocate_node();
-  void free_node(LogEntryNode* node);
 };
 
 template <class StaticConfig>
@@ -463,6 +485,9 @@ class CCCInterface {
   void set_logdir(std::string logdir);
   void preprocess_logs();
 
+  void start_ios();
+  void stop_ios();
+
   void start_schedulers();
   void stop_schedulers();
 
@@ -479,8 +504,8 @@ template <class StaticConfig>
 class CopyCat : public CCCInterface<StaticConfig> {
  public:
   CopyCat(DB<StaticConfig>* db, SchedulerPool<StaticConfig>* pool,
-          uint16_t nloggers, uint16_t nschedulers, uint16_t nworkers,
-          std::string logdir);
+          uint16_t nloggers, uint16_t nios, uint16_t nschedulers,
+          uint16_t nworkers, std::string logdir);
 
   ~CopyCat();
 
@@ -489,6 +514,9 @@ class CopyCat : public CCCInterface<StaticConfig> {
   void set_logdir(std::string logdir) { logdir_ = logdir; }
 
   void preprocess_logs();
+
+  void start_ios();
+  void stop_ios();
 
   void start_schedulers();
   void stop_schedulers();
@@ -502,6 +530,7 @@ class CopyCat : public CCCInterface<StaticConfig> {
   void reset();
 
  private:
+  moodycamel::ReaderWriterQueue<LogEntryList<StaticConfig>*> io_queue_;
   tbb::concurrent_queue<LogEntryList<StaticConfig>*> scheduler_queue_;
   moodycamel::ReaderWriterQueue<std::pair<uint64_t, uint64_t>> op_count_queue_;
   DB<StaticConfig>* db_;
@@ -510,13 +539,17 @@ class CopyCat : public CCCInterface<StaticConfig> {
   std::size_t len_;
 
   uint16_t nloggers_;
+  uint16_t nios_;
   uint16_t nschedulers_;
   uint16_t nworkers_;
 
   std::string logdir_;
   std::shared_ptr<MmappedLogFile<StaticConfig>> log_;
 
-  std::vector<SchedulerLock> scheduler_locks_;
+  pthread_barrier_t io_barrier_;
+  std::vector<IOThread<StaticConfig>*> ios_;
+
+  std::vector<IOLock> io_locks_;
   pthread_barrier_t scheduler_barrier_;
   std::vector<SchedulerThread<StaticConfig>*> schedulers_;
 
@@ -543,6 +576,7 @@ class CopyCat : public CCCInterface<StaticConfig> {
 };  // namespace mica
 
 #include "replication_impl/copycat.h"
+#include "replication_impl/io_thread.h"
 #include "replication_impl/scheduler_pool.h"
 #include "replication_impl/scheduler_thread.h"
 #include "replication_impl/snapshot_thread.h"

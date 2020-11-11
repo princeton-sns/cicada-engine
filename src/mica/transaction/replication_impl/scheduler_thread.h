@@ -98,37 +98,19 @@ void SchedulerThread<StaticConfig>::run() {
 
     LogEntryList<StaticConfig>* queue;
     if (io_queue_->try_dequeue(queue)) {
-      // printf("popped queue: %p\n", queue);
-      // start = high_resolution_clock::now();
-      // acquire_scheduler_lock();
-      // Memory barrier here so next scheduler thread sees all updates
-      // to all SPSC queues' internal variables
-      // ::mica::util::memory_barrier();
-      // end = high_resolution_clock::now();
-      // diff = duration_cast<nanoseconds>(end - start);
-      // time_waiting += diff;
-
 
       // Notify snapshot manager of transaction op counts
-      // for (const auto& o : op_counts) {
-      //   op_count_queue_->enqueue(o);
-      // }
+      for (const auto& o : op_counts) {
+        op_count_queue_->enqueue(o);
+      }
 
       auto row_id = queue->row_id;
-      // Enqueue new queues
-      // for (const auto& item : local_lists) {
-      // auto row_id = item.first;
-      // auto queue = item.second;
 
       auto search = waiting_queues_.find(row_id);
       if (search == waiting_queues_.end()) {  // Not found
-        // printf("pushing queue at %p with %lu entries\n", queue, queue->nentries);
         scheduler_queue_->enqueue(queue);
         // printf("setting waiting queue at %p\n", next);
         waiting_queues_[row_id] = nullptr;
-        // printf("pushed row id %lu at %lu, %lu\n", row_id,
-        //        duration_cast<nanoseconds>(high_resolution_clock::now().time_since_epoch()).count(),
-        //        scheduler_queue_->unsafe_size());
       } else {  // Found
         auto queue2 = search->second;
         if (queue2 == nullptr) {

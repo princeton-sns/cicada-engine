@@ -67,8 +67,6 @@ void WorkerThread<StaticConfig>::run() {
 
   nanoseconds time_total{0};
   time_working_ = nanoseconds{0};
-  // bool is_first = true;
-  // uint64_t now = 0;
 
   high_resolution_clock::time_point total_start;
   high_resolution_clock::time_point total_end;
@@ -80,15 +78,6 @@ void WorkerThread<StaticConfig>::run() {
     LogEntryList<StaticConfig>* first = nullptr;
     LogEntryList<StaticConfig>* queue = nullptr;
     if (scheduler_queue_->try_dequeue(first)) {
-      // if (is_first) {
-      //   now = duration_cast<nanoseconds>(high_resolution_clock::now().time_since_epoch()).count();
-      //   printf("first popped queue at %lu\n", now);
-      //   is_first = false;
-      // }
-      // if (scheduler_queue_->unsafe_size() <= 5) {
-      //   now = duration_cast<nanoseconds>(high_resolution_clock::now().time_since_epoch()).count();
-      //   printf("popped queue of size %lu at %lu\n", scheduler_queue_->unsafe_size(), now);
-      // }
       working_start_ = high_resolution_clock::now();
       queue = first;
       tbl = db_->get_table(std::string{queue->tbl_name});
@@ -142,15 +131,8 @@ void WorkerThread<StaticConfig>::run() {
       if (first != nullptr) {
         ack_queue_->enqueue(first);
       }
-    } else {
-      // if (!is_first) {
-      //   now = duration_cast<nanoseconds>(high_resolution_clock::now().time_since_epoch()).count();
-      //   printf("no queue available at %lu\n", now);
-      // }
-      // if (scheduler_queue_->unsafe_size() == 0 && stop_) {
-      if (stop_) {
+    } else if (stop_) {
         break;
-      }
     }
   }
 

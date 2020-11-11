@@ -99,6 +99,13 @@ class RowAccessHandle {
       const DataCopier& data_copier = DataCopier()) {
     return tx_->write_row(*this, data_size, data_copier);
   }
+  template <
+    class DataCopier = typename Transaction<StaticConfig>::TrivialDataCopier>
+  bool write_row_replica(
+                 uint64_t data_size = Transaction<StaticConfig>::kDefaultWriteDataSize,
+                 const DataCopier& data_copier = DataCopier()) {
+    return tx_->write_row_replica(*this, data_size, data_copier);
+  }
   bool delete_row() { return tx_->delete_row(*this); }
 
   RowAccessState state() const {

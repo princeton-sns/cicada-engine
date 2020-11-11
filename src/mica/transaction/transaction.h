@@ -93,6 +93,8 @@ class Transaction {
   bool read_row(RAH& rah, const DataCopier& data_copier);
   template <class DataCopier>
   bool write_row(RAH& rah, uint64_t data_size, const DataCopier& data_copier);
+  template <class DataCopier>
+  bool write_row_replica(RAH& rah, uint64_t data_size, const DataCopier& data_copier);
   bool delete_row(RAH& rah);
 
   // transaction_impl/commit.h
@@ -105,12 +107,6 @@ class Transaction {
   template <class WriteFunc = NoopWriteFunc>
   bool commit_replica(Result* detail = nullptr,
                       const WriteFunc& write_func = WriteFunc());
-  template <class WriteFunc = NoopWriteFunc>
-  bool commit1_replica(Result* detail = nullptr,
-                       const WriteFunc& write_func = WriteFunc());
-  template <class WriteFunc = NoopWriteFunc>
-  bool commit2_replica(Result* detail = nullptr,
-                       const WriteFunc& write_func = WriteFunc());
   bool abort(bool skip_backoff = false);
 
   bool has_began() const { return began_; }
@@ -141,7 +137,6 @@ class Transaction {
   void locate(RowCommon<StaticConfig>*& newer_rv,
               RowVersion<StaticConfig>*& rv);
   bool insert_version_deferred();
-  bool insert_version_deferred_replica();
   RowVersionStatus wait_for_pending(RowVersion<StaticConfig>* rv);
   void insert_row_deferred();
 
@@ -156,6 +151,7 @@ class Transaction {
   void write();
 
   void maintenance();
+  void maintenance_replica();
   void backoff();
 
  private:

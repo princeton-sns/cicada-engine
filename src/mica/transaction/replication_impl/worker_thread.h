@@ -124,13 +124,13 @@ void WorkerThread<StaticConfig>::run() {
 
         queue = queue->next;
       }
-      working_end_ = high_resolution_clock::now();
-      time_working_ +=
-          duration_cast<nanoseconds>(working_end_ - working_start_);
-
       if (first != nullptr) {
         ack_queue_->enqueue(first);
       }
+
+      working_end_ = high_resolution_clock::now();
+      time_working_ +=
+        duration_cast<nanoseconds>(working_end_ - working_start_);
     } else if (stop_) {
         break;
     }
@@ -311,8 +311,6 @@ void WorkerThread<StaticConfig>::write_data_row(
     // } else {
     Result result;
     tx->commit_replica(&result);
-    // tx->commit1_replica(&result);
-    // tx->commit2_replica(&result);
     if (result != Result::kCommitted) {
       throw std::runtime_error("write_data_row: Failed to commit transaction.");
     }
@@ -329,7 +327,7 @@ void WorkerThread<StaticConfig>::write_data_row(
     throw std::runtime_error("write_data_row: Failed to peek row.");
   }
 
-  if (!rah->write_row(le->data_size)) {
+  if (!rah->write_row_replica(le->data_size)) {
     throw std::runtime_error("write_data_row: Failed to write row.");
   }
 

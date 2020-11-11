@@ -416,42 +416,57 @@ bool Transaction<StaticConfig>::commit_replica(Result* detail,
     return false;
   }
 
-  //if (!peek_only_) {
+  // Insert writes
+  for (auto j = 0; j < wset_size_; j++) {
+    auto i = wset_idx_[j];
+    auto item = &accesses_[i];
+    assert(item->write_rv != nullptr);
 
-  if (StaticConfig::kVerbose) printf("try_to_commit: ts=%" PRIu64 "\n", ts_.t2);
+    auto older_rv = item->newer_rv->older_rv;
+    item->write_rv->older_rv = older_rv;
 
-  {
-    t.switch_to(&Stats::deferred_row_insert);
-    if (StaticConfig::kVerbose)
-      printf("deferred_version_insert: ts=%" PRIu64 "\n", ts_.t2);
-    if (!insert_version_deferred_replica()) {
-      if (StaticConfig::kCollectExtraCommitStats) {
-        abort_reason_target_count_ =
-            &ctx_->stats().aborted_by_deferred_row_version_insert_count;
-        abort_reason_target_time_ =
-            &ctx_->stats().aborted_by_deferred_row_version_insert_time;
-      }
-      abort();
-      if (detail != nullptr)
-        *detail = Result::kAbortedByDeferredRowVersionInsert;
-      return false;
+    item->newer_rv->older_rv = item->write_rv;
+
+    if (item->state == RowAccessState::kDelete ||
+        item->state == RowAccessState::kReadDelete)
+      item->write_rv->status = RowVersionStatus::kDeleted;
+    else
+      item->write_rv->status = RowVersionStatus::kCommitted;
+
+    item->inserted = 1;
+  }
+
+  // Call write func
+  if (!write_func()) return false;
+
+  // Insert new rows
+  for (auto j = 0; j < iset_size_; j++) {
+    auto i = iset_idx_[j];
+    auto item = &accesses_[i];
+
+    if (item->state == RowAccessState::kInvalid) continue;
+
+    assert(item->write_rv != nullptr);
+    item->head->older_rv = item->write_rv;
+    item->write_rv->status = RowVersionStatus::kCommitted;
+
+    item->inserted = 1;
+  }
+
+  ::mica::util::memory_barrier();
+
+  // auto gc_epoch = ctx_->db_->gc_epoch();
+  for (auto j = 0; j < wset_size_; j++) {
+    auto i = wset_idx_[j];
+    auto item = &accesses_[i];
+
+    if (item->write_rv->older_rv != nullptr) {
+      uint8_t deleted = item->state == RowAccessState::kDelete ||
+        item->state == RowAccessState::kReadDelete;
+      ctx_->schedule_gc(/*gc_epoch,*/ ts_, item->tbl, item->cf_id, deleted,
+                        item->row_id, item->head, item->write_rv);
     }
   }
-
-  {
-    t.switch_to(&Stats::write);
-    if (StaticConfig::kVerbose) printf("write: ts=%" PRIu64 "\n", ts_.t2);
-
-    if (!write_func()) return false;
-
-    // We must insert new rows before marking anything committed because earlier
-    // committed rows may have row IDs to new rows.
-    insert_row_deferred();
-
-    write();
-  }
-
-  // }    // if (peek_only_)
 
   began_ = false;
 
@@ -475,94 +490,9 @@ bool Transaction<StaticConfig>::commit_replica(Result* detail,
     last_commit_time_ = now;
   }
 
-  maintenance();
+  maintenance_replica();
 
   if (detail != nullptr) *detail = Result::kCommitted;
-  return true;
-}
-
-template <class StaticConfig>
-template <class WriteFunc>
-bool Transaction<StaticConfig>::commit1_replica(Result* detail,
-                                                const WriteFunc& write_func) {
-  Timing t(ctx_->timing_stack(), &Stats::main_validation);
-
-  if (!began_) {
-    if (detail != nullptr) *detail = Result::kInvalid;
-    return false;
-  }
-
-  //if (!peek_only_) {
-
-  if (StaticConfig::kVerbose) printf("try_to_commit: ts=%" PRIu64 "\n", ts_.t2);
-
-  {
-    t.switch_to(&Stats::deferred_row_insert);
-    if (StaticConfig::kVerbose)
-      printf("deferred_version_insert: ts=%" PRIu64 "\n", ts_.t2);
-    if (!insert_version_deferred_replica()) {
-      if (StaticConfig::kCollectExtraCommitStats) {
-        abort_reason_target_count_ =
-          &ctx_->stats().aborted_by_deferred_row_version_insert_count;
-        abort_reason_target_time_ =
-          &ctx_->stats().aborted_by_deferred_row_version_insert_time;
-      }
-      abort();
-      if (detail != nullptr)
-        *detail = Result::kAbortedByDeferredRowVersionInsert;
-      return false;
-    }
-  }
-
-  {
-    t.switch_to(&Stats::write);
-    if (StaticConfig::kVerbose) printf("write: ts=%" PRIu64 "\n", ts_.t2);
-
-    // if (!write_func()) return false;
-
-    // We must insert new rows before marking anything committed because earlier
-    // committed rows may have row IDs to new rows.
-    // insert_row_deferred();
-
-    write();
-  }
-
-  // }    // if (peek_only_)
-  began_ = false;
-
-  if (StaticConfig::kStragglerAvoidance) ctx_->clock_boost_ = 0;
-  if (StaticConfig::kReserveAfterAbort) to_reserve_.clear();
-  if (consecutive_commits_ < 100) consecutive_commits_++;
-
-  if (StaticConfig::kCollectCommitStats) {
-    auto now = ctx_->db_->sw()->now();
-    auto diff = now - begin_time_;
-    ctx_->stats().tx_count++;
-    ctx_->stats().tx_time += diff;
-    ctx_->stats().committed_count++;
-    ctx_->stats().committed_time += diff;
-    if (StaticConfig::kCollectExtraCommitStats)
-      ctx_->commit_latency_.update(diff / ctx_->db_->sw()->c_1_usec());
-
-    if (last_commit_time_ != 0)
-      ctx_->inter_commit_latency_.update((now - last_commit_time_) /
-                                         ctx_->db_->sw()->c_1_usec());
-    last_commit_time_ = now;
-  }
-
-  maintenance();
-
-  if (detail != nullptr) *detail = Result::kCommitted;
-  return true;
-}
-
-template <class StaticConfig>
-template <class WriteFunc>
-bool Transaction<StaticConfig>::commit2_replica(Result* detail,
-                                                const WriteFunc& write_func) {
-  Timing t(ctx_->timing_stack(), &Stats::main_validation);
-
-
   return true;
 }
 
@@ -724,6 +654,34 @@ void Transaction<StaticConfig>::maintenance() {
     ctx_->synchronize_clock();
   }
 }
+
+  template <class StaticConfig>
+  void Transaction<StaticConfig>::maintenance_replica() {
+    assert(!began_);
+
+    ctx_->db_->update_backoff(ctx_->thread_id_);
+
+    // uint64_t now = ctx_->db_->sw()->now();
+    uint64_t now = begin_time_;
+
+    if (static_cast<int64_t>(now - ctx_->last_quiescence_) >
+        StaticConfig::kMinQuiescenceInterval *
+        static_cast<int64_t>(ctx_->db_->sw()->c_1_usec())) {
+      ctx_->last_quiescence_ = now;
+
+      ctx_->quiescence();
+
+      // ctx_->gc(false);
+    }
+
+    if (static_cast<int64_t>(now - ctx_->last_clock_sync_) >
+        StaticConfig::kMinClockSyncInterval *
+        static_cast<int64_t>(ctx_->db_->sw()->c_1_usec())) {
+      ctx_->last_clock_sync_ = now;
+
+      ctx_->synchronize_clock();
+    }
+  }
 }
 }
 

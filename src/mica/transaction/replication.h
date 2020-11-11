@@ -318,6 +318,7 @@ class IOThread {
  public:
   IOThread(std::shared_ptr<MmappedLogFile<StaticConfig>> log,
            SchedulerPool<StaticConfig>* pool, pthread_barrier_t* start_barrier,
+           moodycamel::ReaderWriterQueue<std::pair<uint64_t, uint64_t>>* op_count_queue,
            moodycamel::ReaderWriterQueue<LogEntryList<StaticConfig>*>* io_queue,
            IOLock* my_lock, uint16_t id, uint16_t nios);
   ~IOThread();
@@ -331,6 +332,7 @@ class IOThread {
   pthread_barrier_t* start_barrier_;
   SchedulerPool<StaticConfig>* pool_;
   LogEntryList<StaticConfig>* allocated_lists_;
+  moodycamel::ReaderWriterQueue<std::pair<uint64_t, uint64_t>>* op_count_queue_;
   moodycamel::ReaderWriterQueue<LogEntryList<StaticConfig>*>* io_queue_;
   IOLock* my_lock_;
   uint16_t id_;
@@ -344,9 +346,10 @@ class IOThread {
 
   LogEntryList<StaticConfig>* allocate_list();
 
-  void build_local_lists(
+  uint64_t build_local_lists(
       std::size_t segment,
-      robin_hood::unordered_map<uint64_t, LogEntryList<StaticConfig>*>& lists);
+      robin_hood::unordered_map<uint64_t, LogEntryList<StaticConfig>*>& lists,
+      std::vector<std::pair<uint64_t, uint64_t>>& op_counts);
 };
 
 template <class StaticConfig>
@@ -356,8 +359,6 @@ class SchedulerThread {
       SchedulerPool<StaticConfig>* pool,
       moodycamel::ReaderWriterQueue<LogEntryList<StaticConfig>*>* io_queue,
       moodycamel::ReaderWriterQueue<LogEntryList<StaticConfig>*>* scheduler_queue,
-      moodycamel::ReaderWriterQueue<std::pair<uint64_t, uint64_t>>*
-          op_count_queue,
       std::vector<moodycamel::ReaderWriterQueue<LogEntryList<StaticConfig>*>*>
           ack_queues,
       pthread_barrier_t* start_barrier, uint16_t id, uint16_t nschedulers);
@@ -376,7 +377,6 @@ class SchedulerThread {
   LogEntryList<StaticConfig>* allocated_lists_;
   moodycamel::ReaderWriterQueue<LogEntryList<StaticConfig>*>* io_queue_;
   moodycamel::ReaderWriterQueue<LogEntryList<StaticConfig>*>* scheduler_queue_;
-  moodycamel::ReaderWriterQueue<std::pair<uint64_t, uint64_t>>* op_count_queue_;
   std::vector<moodycamel::ReaderWriterQueue<LogEntryList<StaticConfig>*>*>
       ack_queues_;
   pthread_barrier_t* start_barrier_;

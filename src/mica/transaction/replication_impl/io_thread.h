@@ -14,14 +14,15 @@ template <class StaticConfig>
 IOThread<StaticConfig>::IOThread(
     std::shared_ptr<MmappedLogFile<StaticConfig>> log,
     SchedulerPool<StaticConfig>* pool, pthread_barrier_t* start_barrier,
+    moodycamel::ReaderWriterQueue<std::pair<uint64_t, uint64_t>>* op_count_queue,
     moodycamel::ReaderWriterQueue<LogEntryList<StaticConfig>*>* io_queue,
-    IOLock* my_lock,
-    uint16_t id, uint16_t nios)
+    IOLock* my_lock, uint16_t id, uint16_t nios)
     : log_{log},
       thread_{},
       start_barrier_{start_barrier},
       pool_{pool},
       allocated_lists_{nullptr},
+      op_count_queue_{op_count_queue},
       io_queue_{io_queue},
       my_lock_{my_lock},
       id_{id},
@@ -29,7 +30,7 @@ IOThread<StaticConfig>::IOThread(
       stop_{false} {};
 
 template <class StaticConfig>
-IOThread<StaticConfig>::~IOThread(){
+IOThread<StaticConfig>::~IOThread() {
   LogEntryList<StaticConfig>* queue = allocated_lists_;
   while (queue != nullptr) {
     auto next = queue->next;
@@ -74,17 +75,23 @@ void IOThread<StaticConfig>::run() {
 
   robin_hood::unordered_map<uint64_t, LogEntryList<StaticConfig>*>
       local_lists{};
+  std::vector<std::pair<uint64_t, uint64_t>> op_counts{};
 
   pthread_barrier_wait(start_barrier_);
 
   for (std::size_t cur_segment = id_; cur_segment < nsegments;
        cur_segment += nios_) {
-    build_local_lists(cur_segment, local_lists);
+    build_local_lists(cur_segment, local_lists, op_counts);
 
     acquire_io_lock();
     // Memory barrier here so next IO thread sees all updates
     // to all SPSC queues' internal variables
-    // ::mica::util::memory_barrier();
+    ::mica::util::memory_barrier();
+
+    // Notify snapshot manager of transaction op counts
+    for (const auto& o : op_counts) {
+      op_count_queue_->enqueue(o);
+    }
 
     for (const auto& item : local_lists) {
       io_queue_->enqueue(item.second);
@@ -94,6 +101,7 @@ void IOThread<StaticConfig>::run() {
     release_io_lock();
 
     local_lists.clear();
+    op_counts.clear();
   }
 
   printf("Exiting replica IO thread: %u\n", id_);
@@ -123,9 +131,10 @@ LogEntryList<StaticConfig>* IOThread<StaticConfig>::allocate_list() {
 };
 
 template <class StaticConfig>
-void IOThread<StaticConfig>::build_local_lists(
+uint64_t IOThread<StaticConfig>::build_local_lists(
     std::size_t segment,
-    robin_hood::unordered_map<uint64_t, LogEntryList<StaticConfig>*>& lists) {
+    robin_hood::unordered_map<uint64_t, LogEntryList<StaticConfig>*>& lists,
+    std::vector<std::pair<uint64_t, uint64_t>>& op_counts) {
   LogFile<StaticConfig>* lf = log_->get_lf(segment);
   // lf->print();
 
@@ -167,6 +176,17 @@ void IOThread<StaticConfig>::build_local_lists(
             "build_local_lists: Unexpected log entry type.");
     }
 
+    if (txn_ts != last_txn_ts) {
+      if (last_txn_ts != 0) {
+        // printf("op_counts.emplace_back(%lu, %lu)\n", last_txn_ts, op_count);
+        op_counts.emplace_back(last_txn_ts, op_count);
+      }
+
+      op_count = 0;
+      last_txn_ts = txn_ts;
+    }
+    op_count += 1;
+
     LogEntryList<StaticConfig>* list = nullptr;
     auto search = lists.find(row_id);
     if (search == lists.end()) {  // Not found
@@ -186,7 +206,15 @@ void IOThread<StaticConfig>::build_local_lists(
 
     ptr += size;
   }
+
+  if (txn_ts != 0) {
+    // printf("op_counts.emplace_back(%lu, %lu)\n", txn_ts, op_count);
+    op_counts.emplace_back(txn_ts, op_count);
+  }
+
+  return lf->nentries;
 };
+
 };  // namespace transaction
 };  // namespace mica
 

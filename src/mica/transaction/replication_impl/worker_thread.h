@@ -78,7 +78,7 @@ void WorkerThread<StaticConfig>::run() {
     LogEntryList<StaticConfig>* first = nullptr;
     LogEntryList<StaticConfig>* queue = nullptr;
     if (scheduler_queue_->try_dequeue(first)) {
-      working_start_ = high_resolution_clock::now();
+      // working_start_ = high_resolution_clock::now();
       queue = first;
       tbl = db_->get_table(std::string{queue->tbl_name});
       while (queue != nullptr) {
@@ -128,9 +128,9 @@ void WorkerThread<StaticConfig>::run() {
         ack_queue_->enqueue(first);
       }
 
-      working_end_ = high_resolution_clock::now();
-      time_working_ +=
-        duration_cast<nanoseconds>(working_end_ - working_start_);
+      // working_end_ = high_resolution_clock::now();
+      // time_working_ +=
+      //   duration_cast<nanoseconds>(working_end_ - working_start_);
     } else if (stop_) {
         break;
     }

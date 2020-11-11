@@ -671,7 +671,7 @@ void Transaction<StaticConfig>::maintenance() {
 
       ctx_->quiescence();
 
-      // ctx_->gc(false);
+      ctx_->gc(false);
     }
 
     if (static_cast<int64_t>(now - ctx_->last_clock_sync_) >

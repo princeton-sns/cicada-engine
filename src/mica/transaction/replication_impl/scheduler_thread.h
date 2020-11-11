@@ -19,7 +19,6 @@ SchedulerThread<StaticConfig>::SchedulerThread(
     SchedulerPool<StaticConfig>* pool,
     moodycamel::ReaderWriterQueue<LogEntryList<StaticConfig>*>* io_queue,
     moodycamel::ReaderWriterQueue<LogEntryList<StaticConfig>*>* scheduler_queue,
-    moodycamel::ReaderWriterQueue<std::pair<uint64_t, uint64_t>>* op_count_queue,
     std::vector<moodycamel::ReaderWriterQueue<LogEntryList<StaticConfig>*>*> ack_queues,
     pthread_barrier_t* start_barrier, uint16_t id, uint16_t nschedulers)
     : pool_{pool},
@@ -27,7 +26,6 @@ SchedulerThread<StaticConfig>::SchedulerThread(
       allocated_lists_{nullptr},
       io_queue_{io_queue},
       scheduler_queue_{scheduler_queue},
-      op_count_queue_{op_count_queue},
       ack_queues_{ack_queues},
       start_barrier_{start_barrier},
       id_{id},
@@ -73,9 +71,6 @@ void SchedulerThread<StaticConfig>::run() {
   nanoseconds time_total{0};
   uint64_t nentries = 0;
 
-  robin_hood::unordered_map<uint64_t, LogEntryList<StaticConfig>*> local_lists{};
-  std::vector<std::pair<uint64_t, uint64_t>> op_counts{};
-
   high_resolution_clock::time_point run_start;
   high_resolution_clock::time_point run_end;
 
@@ -98,11 +93,6 @@ void SchedulerThread<StaticConfig>::run() {
 
     LogEntryList<StaticConfig>* queue;
     if (io_queue_->try_dequeue(queue)) {
-
-      // Notify snapshot manager of transaction op counts
-      for (const auto& o : op_counts) {
-        op_count_queue_->enqueue(o);
-      }
 
       auto row_id = queue->row_id;
 
@@ -127,13 +117,6 @@ void SchedulerThread<StaticConfig>::run() {
       end = high_resolution_clock::now();
       diff = duration_cast<nanoseconds>(end - start);
       time_critical += diff;
-
-      // start = high_resolution_clock::now();
-      // local_lists.clear();
-      // op_counts.clear();
-      // end = high_resolution_clock::now();
-      // diff = duration_cast<nanoseconds>(end - start);
-      // time_noncritical += diff;
 
       // printf("finished segment %lu at %lu\n", cur_segment,
       //        duration_cast<nanoseconds>(high_resolution_clock::now().time_since_epoch()).count());

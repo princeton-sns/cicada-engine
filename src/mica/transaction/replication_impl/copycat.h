@@ -136,7 +136,7 @@ void CopyCat<StaticConfig>::start_ios() {
 
   for (uint16_t iid = 0; iid < nios_; iid++) {
     auto i = new IOThread<StaticConfig>{
-        log_, pool_, &io_barrier_, &io_queue_, &io_locks_[iid], iid, nios_};
+      log_, pool_, &io_barrier_, &op_count_queue_, &io_queue_, &io_locks_[iid], iid, nios_};
 
     i->start();
 
@@ -159,7 +159,6 @@ void CopyCat<StaticConfig>::start_schedulers() {
     auto s = new SchedulerThread<StaticConfig>{pool_,
                                                &io_queue_,
                                                &scheduler_queue_,
-                                               &op_count_queue_,
                                                ack_queues_,
                                                &scheduler_barrier_,
                                                sid,

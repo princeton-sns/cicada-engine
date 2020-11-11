@@ -68,9 +68,9 @@ void SnapshotThread<StaticConfig>::run() {
           counts_.push_back(op_count);
           counts_index_[txn_ts] = std::prev(counts_.end());
         } else if (txn_ts < counts_.front().first) {
-          // db_->set_min_wts(txn_ts);
+          db_->set_min_wts(txn_ts);
           // TODO: account for executing read-only threads when setting min_rts
-          // db_->set_min_rts(txn_ts);
+          db_->set_min_rts(txn_ts);
         }
       }
     }

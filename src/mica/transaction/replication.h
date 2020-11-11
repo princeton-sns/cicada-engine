@@ -355,7 +355,7 @@ class SchedulerThread {
   SchedulerThread(
       SchedulerPool<StaticConfig>* pool,
       moodycamel::ReaderWriterQueue<LogEntryList<StaticConfig>*>* io_queue,
-      tbb::concurrent_queue<LogEntryList<StaticConfig>*>* scheduler_queue,
+      moodycamel::ReaderWriterQueue<LogEntryList<StaticConfig>*>* scheduler_queue,
       moodycamel::ReaderWriterQueue<std::pair<uint64_t, uint64_t>>*
           op_count_queue,
       std::vector<moodycamel::ReaderWriterQueue<LogEntryList<StaticConfig>*>*>
@@ -375,7 +375,7 @@ class SchedulerThread {
   LogEntryNode* allocated_nodes_;
   LogEntryList<StaticConfig>* allocated_lists_;
   moodycamel::ReaderWriterQueue<LogEntryList<StaticConfig>*>* io_queue_;
-  tbb::concurrent_queue<LogEntryList<StaticConfig>*>* scheduler_queue_;
+  moodycamel::ReaderWriterQueue<LogEntryList<StaticConfig>*>* scheduler_queue_;
   moodycamel::ReaderWriterQueue<std::pair<uint64_t, uint64_t>>* op_count_queue_;
   std::vector<moodycamel::ReaderWriterQueue<LogEntryList<StaticConfig>*>*>
       ack_queues_;
@@ -427,7 +427,7 @@ class WorkerThread {
  public:
   WorkerThread(
       DB<StaticConfig>* db,
-      tbb::concurrent_queue<LogEntryList<StaticConfig>*>* scheduler_queue,
+      moodycamel::ReaderWriterQueue<LogEntryList<StaticConfig>*>* scheduler_queue,
       moodycamel::ReaderWriterQueue<LogEntryList<StaticConfig>*>* ack_queue,
       moodycamel::ReaderWriterQueue<uint64_t>* op_done_queue,
       pthread_barrier_t* start_barrier, uint16_t id, uint16_t nschedulers);
@@ -439,7 +439,7 @@ class WorkerThread {
 
  private:
   DB<StaticConfig>* db_;
-  tbb::concurrent_queue<LogEntryList<StaticConfig>*>* scheduler_queue_;
+  moodycamel::ReaderWriterQueue<LogEntryList<StaticConfig>*>* scheduler_queue_;
   moodycamel::ReaderWriterQueue<LogEntryList<StaticConfig>*>* ack_queue_;
   moodycamel::ReaderWriterQueue<uint64_t>* op_done_queue_;
   pthread_barrier_t* start_barrier_;
@@ -531,7 +531,7 @@ class CopyCat : public CCCInterface<StaticConfig> {
 
  private:
   moodycamel::ReaderWriterQueue<LogEntryList<StaticConfig>*> io_queue_;
-  tbb::concurrent_queue<LogEntryList<StaticConfig>*> scheduler_queue_;
+  moodycamel::ReaderWriterQueue<LogEntryList<StaticConfig>*> scheduler_queue_;
   moodycamel::ReaderWriterQueue<std::pair<uint64_t, uint64_t>> op_count_queue_;
   DB<StaticConfig>* db_;
   SchedulerPool<StaticConfig>* pool_;

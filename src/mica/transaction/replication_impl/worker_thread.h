@@ -13,7 +13,7 @@ using std::chrono::nanoseconds;
 template <class StaticConfig>
 WorkerThread<StaticConfig>::WorkerThread(
     DB<StaticConfig>* db,
-    tbb::concurrent_queue<LogEntryList<StaticConfig>*>* scheduler_queue,
+    moodycamel::ReaderWriterQueue<LogEntryList<StaticConfig>*>* scheduler_queue,
     moodycamel::ReaderWriterQueue<LogEntryList<StaticConfig>*>* ack_queue,
     moodycamel::ReaderWriterQueue<uint64_t>* op_done_queue,
     pthread_barrier_t* start_barrier, uint16_t id, uint16_t nschedulers)
@@ -79,10 +79,10 @@ void WorkerThread<StaticConfig>::run() {
   while (true) {
     LogEntryList<StaticConfig>* first = nullptr;
     LogEntryList<StaticConfig>* queue = nullptr;
-    if (scheduler_queue_->try_pop(first)) {
+    if (scheduler_queue_->try_dequeue(first)) {
       // if (is_first) {
       //   now = duration_cast<nanoseconds>(high_resolution_clock::now().time_since_epoch()).count();
-      //   printf("fist popped queue at %lu\n", now);
+      //   printf("first popped queue at %lu\n", now);
       //   is_first = false;
       // }
       // if (scheduler_queue_->unsafe_size() <= 5) {
@@ -91,7 +91,7 @@ void WorkerThread<StaticConfig>::run() {
       // }
       working_start_ = high_resolution_clock::now();
       queue = first;
-      tbl = db_->get_table(std::string(queue->tbl_name));
+      tbl = db_->get_table(std::string{queue->tbl_name});
       while (queue != nullptr) {
         // printf("executing queue with %lu entries\n", queue->nentries);
         txn_ts = static_cast<uint64_t>(-1);
@@ -147,7 +147,8 @@ void WorkerThread<StaticConfig>::run() {
       //   now = duration_cast<nanoseconds>(high_resolution_clock::now().time_since_epoch()).count();
       //   printf("no queue available at %lu\n", now);
       // }
-      if (scheduler_queue_->unsafe_size() == 0 && stop_) {
+      // if (scheduler_queue_->unsafe_size() == 0 && stop_) {
+      if (stop_) {
         break;
       }
     }

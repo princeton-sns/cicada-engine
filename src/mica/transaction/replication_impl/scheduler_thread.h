@@ -18,7 +18,7 @@ template <class StaticConfig>
 SchedulerThread<StaticConfig>::SchedulerThread(
     SchedulerPool<StaticConfig>* pool,
     moodycamel::ReaderWriterQueue<LogEntryList<StaticConfig>*>* io_queue,
-    tbb::concurrent_queue<LogEntryList<StaticConfig>*>* scheduler_queue,
+    moodycamel::ReaderWriterQueue<LogEntryList<StaticConfig>*>* scheduler_queue,
     moodycamel::ReaderWriterQueue<std::pair<uint64_t, uint64_t>>* op_count_queue,
     std::vector<moodycamel::ReaderWriterQueue<LogEntryList<StaticConfig>*>*> ack_queues,
     pthread_barrier_t* start_barrier, uint16_t id, uint16_t nschedulers)
@@ -123,7 +123,7 @@ void SchedulerThread<StaticConfig>::run() {
       auto search = waiting_queues_.find(row_id);
       if (search == waiting_queues_.end()) {  // Not found
         // printf("pushing queue at %p with %lu entries\n", queue, queue->nentries);
-        scheduler_queue_->push(queue);
+        scheduler_queue_->enqueue(queue);
         // printf("setting waiting queue at %p\n", next);
         waiting_queues_[row_id] = nullptr;
         // printf("pushed row id %lu at %lu, %lu\n", row_id,
@@ -218,7 +218,7 @@ void SchedulerThread<StaticConfig>::ack_executed_rows() {
         if (queue_next != nullptr) {
 
           // printf("pushing queue at %p with %lu entries\n", queue, queue->nentries);
-          scheduler_queue_->push(queue_next);
+          scheduler_queue_->enqueue(queue_next);
 
           waiting_queues_[row_id] = nullptr;
           // printf("setting waiting queue at %p\n", next);

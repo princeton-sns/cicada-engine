@@ -21,7 +21,7 @@ CopyCat<StaticConfig>::CopyCat(DB<StaticConfig>* db,
                                uint16_t nschedulers, uint16_t nworkers,
                                std::string logdir)
     : io_queue_{4096},
-      scheduler_queue_{},
+      scheduler_queue_{4096},
       op_count_queue_{4096},
       db_{db},
       pool_{pool},

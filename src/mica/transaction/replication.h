@@ -348,7 +348,7 @@ class IOThread {
 
   uint64_t build_local_lists(
       std::size_t segment,
-      robin_hood::unordered_map<uint64_t, LogEntryList<StaticConfig>*>& lists,
+      std::vector<LogEntryList<StaticConfig>*>& lists,
       std::vector<std::pair<uint64_t, uint64_t>>& op_counts);
 };
 

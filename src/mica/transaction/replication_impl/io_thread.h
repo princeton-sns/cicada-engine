@@ -73,8 +73,7 @@ void IOThread<StaticConfig>::run() {
 
   std::size_t nsegments = log_->get_nsegments();
 
-  robin_hood::unordered_map<uint64_t, LogEntryList<StaticConfig>*>
-      local_lists{};
+  std::vector<LogEntryList<StaticConfig>*> local_lists{};
   std::vector<std::pair<uint64_t, uint64_t>> op_counts{};
 
   pthread_barrier_wait(start_barrier_);
@@ -94,8 +93,7 @@ void IOThread<StaticConfig>::run() {
     }
 
     for (const auto& item : local_lists) {
-      io_queue_->enqueue(item.second);
-      // printf("pushed queue: %p\n", item.second);
+      io_queue_->enqueue(item);
     }
 
     release_io_lock();
@@ -133,8 +131,10 @@ LogEntryList<StaticConfig>* IOThread<StaticConfig>::allocate_list() {
 template <class StaticConfig>
 uint64_t IOThread<StaticConfig>::build_local_lists(
     std::size_t segment,
-    robin_hood::unordered_map<uint64_t, LogEntryList<StaticConfig>*>& lists,
+    std::vector<LogEntryList<StaticConfig>*>& lists,
     std::vector<std::pair<uint64_t, uint64_t>>& op_counts) {
+
+  robin_hood::unordered_map<uint64_t, LogEntryList<StaticConfig>*> index{};
   LogFile<StaticConfig>* lf = log_->get_lf(segment);
   // lf->print();
 
@@ -188,12 +188,13 @@ uint64_t IOThread<StaticConfig>::build_local_lists(
     op_count += 1;
 
     LogEntryList<StaticConfig>* list = nullptr;
-    auto search = lists.find(row_id);
-    if (search == lists.end()) {  // Not found
+    auto search = index.find(row_id);
+    if (search == index.end()) {  // Not found
       list = allocate_list();
       list->row_id = row_id;
       std::memcpy(list->tbl_name, tbl_name, StaticConfig::kMaxTableNameSize);
-      lists[row_id] = list;
+      index[row_id] = list;
+      lists.push_back(list);
     } else {
       list = search->second;
     }

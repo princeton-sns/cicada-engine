@@ -22,7 +22,6 @@ CopyCat<StaticConfig>::CopyCat(DB<StaticConfig>* db,
                                std::string logdir)
     : io_queue_{4096},
       scheduler_queue_{4096},
-      op_count_queue_{4096},
       db_{db},
       pool_{pool},
       len_{StaticConfig::kPageSize},
@@ -35,9 +34,9 @@ CopyCat<StaticConfig>::CopyCat(DB<StaticConfig>* db,
       ios_{},
       io_locks_{},
       schedulers_{},
+      min_wtss_{},
       workers_{},
       ack_queues_{},
-      op_done_queues_{},
       snapshot_manager_{nullptr} {
   int ret = pthread_barrier_init(&io_barrier_, nullptr, nios_ + 1);
   if (ret != 0) {
@@ -62,8 +61,6 @@ CopyCat<StaticConfig>::CopyCat(DB<StaticConfig>* db,
   for (uint16_t wid = 0; wid < nworkers_; wid++) {
     ack_queues_.push_back(
         new moodycamel::ReaderWriterQueue<LogEntryList<StaticConfig>*>{4096});
-    op_done_queues_.push_back(
-        new moodycamel::ReaderWriterQueue<uint64_t>{4096});
   }
 }
 
@@ -101,11 +98,6 @@ CopyCat<StaticConfig>::~CopyCat() {
     delete ack_queue;
   }
   ack_queues_.clear();
-
-  for (auto op_done_queue : op_done_queues_) {
-    delete op_done_queue;
-  }
-  op_done_queues_.clear();
 }
 
 template <class StaticConfig>
@@ -136,7 +128,7 @@ void CopyCat<StaticConfig>::start_ios() {
 
   for (uint16_t iid = 0; iid < nios_; iid++) {
     auto i = new IOThread<StaticConfig>{
-      log_, pool_, &io_barrier_, &op_count_queue_, &io_queue_, &io_locks_[iid], iid, nios_};
+      log_, pool_, &io_barrier_, &io_queue_, &io_locks_[iid], iid, nios_};
 
     i->start();
 
@@ -181,8 +173,11 @@ void CopyCat<StaticConfig>::stop_schedulers() {
 
 template <class StaticConfig>
 void CopyCat<StaticConfig>::start_snapshot_manager() {
-  snapshot_manager_ = new SnapshotThread<StaticConfig>{
-      db_, &snapshot_barrier_, &op_count_queue_, op_done_queues_};
+  for (uint16_t wid = 0; wid < nworkers_; wid++) {
+    min_wtss_.push_back({0});
+  }
+
+  snapshot_manager_ = new SnapshotThread<StaticConfig>{db_, &snapshot_barrier_, min_wtss_};
 
   snapshot_manager_->start();
 
@@ -192,15 +187,26 @@ void CopyCat<StaticConfig>::start_snapshot_manager() {
 template <class StaticConfig>
 void CopyCat<StaticConfig>::stop_snapshot_manager() {
   snapshot_manager_->stop();
+
+  min_wtss_.clear();
 }
 
 template <class StaticConfig>
 void CopyCat<StaticConfig>::start_workers() {
+  for (uint16_t iid = 0; iid < nios_; iid++) {
+    bool locked = true;
+    if (iid == 0) {
+      locked = false;
+    }
+
+    io_locks_.push_back({nullptr, locked, false});
+  }
+
   for (uint16_t wid = 0; wid < nworkers_; wid++) {
     auto w = new WorkerThread<StaticConfig>{db_,
                                             &scheduler_queue_,
                                             ack_queues_[wid],
-                                            op_done_queues_[wid],
+                                            &min_wtss_[wid],
                                             &worker_barrier_,
                                             wid,
                                             nschedulers_};
@@ -257,17 +263,6 @@ void CopyCat<StaticConfig>::reset() {
   workers_.clear();
 
   delete snapshot_manager_;
-
-  std::pair<uint64_t, uint64_t> op_count{};
-  while (op_count_queue_.try_dequeue(op_count)) {
-  }  // Empty queue
-  // op_count_queue_.clear();
-
-  uint64_t txn_ts;
-  for (auto queue : op_done_queues_) {
-    while (queue->try_dequeue(txn_ts)) {
-    }  // Empty queue
-  }
 
   snapshot_manager_ = nullptr;
 }

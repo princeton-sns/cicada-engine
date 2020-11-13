@@ -14,7 +14,6 @@ template <class StaticConfig>
 IOThread<StaticConfig>::IOThread(
     std::shared_ptr<MmappedLogFile<StaticConfig>> log,
     SchedulerPool<StaticConfig>* pool, pthread_barrier_t* start_barrier,
-    moodycamel::ReaderWriterQueue<std::pair<uint64_t, uint64_t>>* op_count_queue,
     moodycamel::ReaderWriterQueue<LogEntryList<StaticConfig>*>* io_queue,
     IOLock* my_lock, uint16_t id, uint16_t nios)
     : log_{log},
@@ -22,7 +21,6 @@ IOThread<StaticConfig>::IOThread(
       start_barrier_{start_barrier},
       pool_{pool},
       allocated_lists_{nullptr},
-      op_count_queue_{op_count_queue},
       io_queue_{io_queue},
       my_lock_{my_lock},
       id_{id},
@@ -74,23 +72,17 @@ void IOThread<StaticConfig>::run() {
   std::size_t nsegments = log_->get_nsegments();
 
   std::vector<LogEntryList<StaticConfig>*> local_lists{};
-  std::vector<std::pair<uint64_t, uint64_t>> op_counts{};
 
   pthread_barrier_wait(start_barrier_);
 
   for (std::size_t cur_segment = id_; cur_segment < nsegments;
        cur_segment += nios_) {
-    build_local_lists(cur_segment, local_lists, op_counts);
+    build_local_lists(cur_segment, local_lists);
 
     acquire_io_lock();
     // Memory barrier here so next IO thread sees all updates
     // to all SPSC queues' internal variables
     ::mica::util::memory_barrier();
-
-    // Notify snapshot manager of transaction op counts
-    for (const auto& o : op_counts) {
-      op_count_queue_->enqueue(o);
-    }
 
     for (const auto& item : local_lists) {
       io_queue_->enqueue(item);
@@ -99,7 +91,6 @@ void IOThread<StaticConfig>::run() {
     release_io_lock();
 
     local_lists.clear();
-    op_counts.clear();
   }
 
   printf("Exiting replica IO thread: %u\n", id_);
@@ -130,9 +121,7 @@ LogEntryList<StaticConfig>* IOThread<StaticConfig>::allocate_list() {
 
 template <class StaticConfig>
 uint64_t IOThread<StaticConfig>::build_local_lists(
-    std::size_t segment,
-    std::vector<LogEntryList<StaticConfig>*>& lists,
-    std::vector<std::pair<uint64_t, uint64_t>>& op_counts) {
+    std::size_t segment, std::vector<LogEntryList<StaticConfig>*>& lists) {
 
   robin_hood::unordered_map<uint64_t, LogEntryList<StaticConfig>*> index{};
   LogFile<StaticConfig>* lf = log_->get_lf(segment);
@@ -143,9 +132,6 @@ uint64_t IOThread<StaticConfig>::build_local_lists(
   InsertRowLogEntry<StaticConfig>* irle = nullptr;
   WriteRowLogEntry<StaticConfig>* wrle = nullptr;
 
-  uint64_t last_txn_ts = 0;
-  uint64_t txn_ts = 0;
-  uint64_t op_count = 0;
   for (uint64_t i = 0; i < lf->nentries; i++) {
     LogEntry<StaticConfig>* le = reinterpret_cast<LogEntry<StaticConfig>*>(ptr);
     LogEntryType type = le->type;
@@ -159,7 +145,6 @@ uint64_t IOThread<StaticConfig>::build_local_lists(
         irle = static_cast<InsertRowLogEntry<StaticConfig>*>(le);
         row_id = irle->row_id;
         tbl_name = irle->tbl_name;
-        txn_ts = irle->txn_ts;
         // irle->print();
         break;
 
@@ -167,7 +152,6 @@ uint64_t IOThread<StaticConfig>::build_local_lists(
         wrle = static_cast<WriteRowLogEntry<StaticConfig>*>(le);
         row_id = wrle->row_id;
         tbl_name = wrle->tbl_name;
-        txn_ts = wrle->txn_ts;
         // wrle->print();
         break;
 
@@ -175,17 +159,6 @@ uint64_t IOThread<StaticConfig>::build_local_lists(
         throw std::runtime_error(
             "build_local_lists: Unexpected log entry type.");
     }
-
-    if (txn_ts != last_txn_ts) {
-      if (last_txn_ts != 0) {
-        // printf("op_counts.emplace_back(%lu, %lu)\n", last_txn_ts, op_count);
-        op_counts.emplace_back(last_txn_ts, op_count);
-      }
-
-      op_count = 0;
-      last_txn_ts = txn_ts;
-    }
-    op_count += 1;
 
     LogEntryList<StaticConfig>* list = nullptr;
     auto search = index.find(row_id);
@@ -206,11 +179,6 @@ uint64_t IOThread<StaticConfig>::build_local_lists(
     }
 
     ptr += size;
-  }
-
-  if (txn_ts != 0) {
-    // printf("op_counts.emplace_back(%lu, %lu)\n", txn_ts, op_count);
-    op_counts.emplace_back(txn_ts, op_count);
   }
 
   return lf->nentries;

@@ -15,12 +15,12 @@ WorkerThread<StaticConfig>::WorkerThread(
     DB<StaticConfig>* db,
     moodycamel::ReaderWriterQueue<LogEntryList<StaticConfig>*>* scheduler_queue,
     moodycamel::ReaderWriterQueue<LogEntryList<StaticConfig>*>* ack_queue,
-    moodycamel::ReaderWriterQueue<uint64_t>* op_done_queue,
-    pthread_barrier_t* start_barrier, uint16_t id, uint16_t nschedulers)
+    WorkerMinWTS* min_wts, pthread_barrier_t* start_barrier, uint16_t id,
+    uint16_t nschedulers)
     : db_{db},
       scheduler_queue_{scheduler_queue},
       ack_queue_{ack_queue},
-      op_done_queue_{op_done_queue},
+      min_wts_{min_wts},
       start_barrier_{start_barrier},
       id_{id},
       nschedulers_{nschedulers},
@@ -62,7 +62,6 @@ void WorkerThread<StaticConfig>::run() {
   Transaction<StaticConfig> tx{ctx};
   RowAccessHandle<StaticConfig> rah{&tx};
   uint64_t txn_ts = static_cast<uint64_t>(-1);
-  // uint64_t row_id = static_cast<uint64_t>(-1);
   Table<StaticConfig>* tbl = nullptr;
 
   nanoseconds time_total{0};
@@ -71,6 +70,10 @@ void WorkerThread<StaticConfig>::run() {
   high_resolution_clock::time_point total_start;
   high_resolution_clock::time_point total_end;
 
+  uint64_t nqueues = 0;
+  uint64_t queuelen = 0;
+  uint64_t npops = 0;
+
   pthread_barrier_wait(start_barrier_);
 
   total_start = high_resolution_clock::now();
@@ -78,45 +81,49 @@ void WorkerThread<StaticConfig>::run() {
     LogEntryList<StaticConfig>* first = nullptr;
     LogEntryList<StaticConfig>* queue = nullptr;
     if (scheduler_queue_->try_dequeue(first)) {
+      npops += 1;
       // working_start_ = high_resolution_clock::now();
       queue = first;
       tbl = db_->get_table(std::string{queue->tbl_name});
+      txn_ts = static_cast<uint64_t>(-1);
       while (queue != nullptr) {
+        nqueues += 1;
+        queuelen += queue->nentries;
         // printf("executing queue with %lu entries\n", queue->nentries);
-        txn_ts = static_cast<uint64_t>(-1);
         // row_id = static_cast<uint64_t>(-1);
         uint64_t nentries = queue->nentries;
         char* ptr = queue->buf;
         for (uint64_t i = 0; i < nentries; i++) {
           LogEntry<StaticConfig>* le =
-            reinterpret_cast<LogEntry<StaticConfig>*>(ptr);
+              reinterpret_cast<LogEntry<StaticConfig>*>(ptr);
 
           // le->print();
 
           InsertRowLogEntry<StaticConfig>* irle = nullptr;
           WriteRowLogEntry<StaticConfig>* wrle = nullptr;
           switch (le->type) {
-          case LogEntryType::INSERT_ROW:
-            irle = static_cast<InsertRowLogEntry<StaticConfig>*>(le);
-            txn_ts = irle->txn_ts;
-            // row_id = irle->row_id;
-            // irle->print();
-            insert_row(tbl, &tx, &rah, irle);
-            op_done_queue_->enqueue(txn_ts);
-            break;
+            case LogEntryType::INSERT_ROW:
+              irle = static_cast<InsertRowLogEntry<StaticConfig>*>(le);
+              if (txn_ts == static_cast<uint64_t>(-1)) {
+                txn_ts = irle->txn_ts;
+              }
+              // irle->print();
+              insert_row(tbl, &tx, &rah, irle);
+              break;
 
-          case LogEntryType::WRITE_ROW:
-            wrle = static_cast<WriteRowLogEntry<StaticConfig>*>(le);
-            txn_ts = wrle->txn_ts;
-            // row_id = wrle->row_id;
-            // wrle->print();
-            write_row(tbl, &tx, &rah, wrle);
-            op_done_queue_->enqueue(txn_ts);
-            break;
+            case LogEntryType::WRITE_ROW:
+              wrle = static_cast<WriteRowLogEntry<StaticConfig>*>(le);
+              if (txn_ts == static_cast<uint64_t>(-1)) {
+                txn_ts = wrle->txn_ts;
+              }
+              // wrle->print();
+              write_row(tbl, &tx, &rah, wrle);
 
-          default:
-            throw std::runtime_error(
-                                     "WorkerThread::run: Unexpected log entry type.");
+              break;
+
+            default:
+              throw std::runtime_error(
+                  "WorkerThread::run: Unexpected log entry type.");
           }
 
           ptr += le->size;
@@ -124,15 +131,18 @@ void WorkerThread<StaticConfig>::run() {
 
         queue = queue->next;
       }
-      if (first != nullptr) {
-        ack_queue_->enqueue(first);
+
+      if (txn_ts != static_cast<uint64_t>(-1)) {
+        min_wts_->min_wts = txn_ts;
       }
+
+      ack_queue_->enqueue(first);
 
       // working_end_ = high_resolution_clock::now();
       // time_working_ +=
       //   duration_cast<nanoseconds>(working_end_ - working_start_);
     } else if (stop_) {
-        break;
+      break;
     }
   }
 
@@ -152,6 +162,8 @@ void WorkerThread<StaticConfig>::run() {
   printf("Exiting replica worker: %u\n", id_);
   printf("Time total: %ld nanoseconds\n", time_total.count());
   printf("Time working: %ld nanoseconds\n", time_working_.count());
+  printf("Avg. queues per pop: %g queues\n", (double)nqueues / (double)npops);
+  printf("Avg. queue len: %g entries\n", (double)queuelen / (double)nqueues);
 };
 
 template <class StaticConfig>
@@ -176,7 +188,6 @@ template <class StaticConfig>
 void WorkerThread<StaticConfig>::insert_data_row(
     Table<StaticConfig>* tbl, Transaction<StaticConfig>* tx,
     RowAccessHandle<StaticConfig>* rah, InsertRowLogEntry<StaticConfig>* le) {
-
   typename StaticConfig::Timestamp txn_ts;
   txn_ts.t2 = le->txn_ts;
 
@@ -331,8 +342,8 @@ void WorkerThread<StaticConfig>::write_data_row(
     throw std::runtime_error("write_data_row: Failed to write row.");
   }
 
-  char* data = rah->data();
-  std::memcpy(data, le->data, le->data_size);
+  // char* data = rah->data();
+  // std::memcpy(data, le->data, le->data_size);
 }
 
 template <class StaticConfig>

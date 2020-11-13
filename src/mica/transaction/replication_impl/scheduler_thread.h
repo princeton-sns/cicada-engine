@@ -11,19 +11,18 @@ using std::chrono::high_resolution_clock;
 using std::chrono::nanoseconds;
 
 template <class StaticConfig>
-robin_hood::unordered_map<uint64_t, LogEntryList<StaticConfig>*>
-    SchedulerThread<StaticConfig>::waiting_queues_{};
+robin_hood::unordered_map<uint64_t, WorkerAssignment>
+    SchedulerThread<StaticConfig>::assignments_{};
 
 template <class StaticConfig>
 SchedulerThread<StaticConfig>::SchedulerThread(
     SchedulerPool<StaticConfig>* pool,
     moodycamel::ReaderWriterQueue<LogEntryList<StaticConfig>*>* io_queue,
     moodycamel::ReaderWriterQueue<LogEntryList<StaticConfig>*>* scheduler_queue,
-    std::vector<moodycamel::ReaderWriterQueue<LogEntryList<StaticConfig>*>*> ack_queues,
+    std::vector<moodycamel::ReaderWriterQueue<LogEntryList<StaticConfig>*>*>
+        ack_queues,
     pthread_barrier_t* start_barrier, uint16_t id, uint16_t nschedulers)
     : pool_{pool},
-      allocated_nodes_{nullptr},
-      allocated_lists_{nullptr},
       io_queue_{io_queue},
       scheduler_queue_{scheduler_queue},
       ack_queues_{ack_queues},
@@ -34,17 +33,7 @@ SchedulerThread<StaticConfig>::SchedulerThread(
       thread_{} {};
 
 template <class StaticConfig>
-SchedulerThread<StaticConfig>::~SchedulerThread() {
-  for (const auto& item : waiting_queues_) {
-    auto queue = item.second;
-    while (queue != nullptr) {
-      free_list(item.second);
-      queue = queue->next;
-    }
-  }
-
-  waiting_queues_.clear();
-};
+SchedulerThread<StaticConfig>::~SchedulerThread(){};
 
 template <class StaticConfig>
 void SchedulerThread<StaticConfig>::start() {
@@ -69,7 +58,6 @@ void SchedulerThread<StaticConfig>::run() {
   nanoseconds time_waiting{0};
   nanoseconds time_critical{0};
   nanoseconds time_total{0};
-  uint64_t nentries = 0;
 
   high_resolution_clock::time_point run_start;
   high_resolution_clock::time_point run_end;
@@ -78,11 +66,7 @@ void SchedulerThread<StaticConfig>::run() {
   high_resolution_clock::time_point end;
   nanoseconds diff;
 
-  std::size_t waiting_size = 0;
-
   pthread_barrier_wait(start_barrier_);
-  // uint64_t now = duration_cast<nanoseconds>(high_resolution_clock::now().time_since_epoch()).count();
-  // printf("scheduler thread starting at %lu\n", now);
   run_start = high_resolution_clock::now();
 
   while (true) {
@@ -93,70 +77,36 @@ void SchedulerThread<StaticConfig>::run() {
 
     LogEntryList<StaticConfig>* queue;
     if (io_queue_->try_dequeue(queue)) {
+      uint64_t row_id = queue->row_id;
 
-      auto row_id = queue->row_id;
+      auto search = assignments_.find(row_id);
+      if (search == assignments_.end()) {  // Not found
 
-      auto search = waiting_queues_.find(row_id);
-      if (search == waiting_queues_.end()) {  // Not found
+        // TODO: Use one queue per worker
         scheduler_queue_->enqueue(queue);
-        // printf("setting waiting queue at %p\n", next);
-        waiting_queues_[row_id] = nullptr;
+
+        // TODO: Choose next worker ID
+        uint64_t wid = 0;
+
+        assignments_[row_id] = {wid, 1};
       } else {  // Found
-        auto queue2 = search->second;
-        if (queue2 == nullptr) {
-          waiting_queues_[row_id] = queue;
-          // printf("setting waiting queue at %p\n", queue);
-        } else {
-          queue2->append(queue);
-        }
+        WorkerAssignment assignment = search->second;
+        assignment.nqueues += 1;
+
+        // TODO: Get correct worker queue
+        scheduler_queue_->enqueue(queue);
+
+        search->second = assignment;
       }
 
-      waiting_size = waiting_queues_.size();
-
-      // release_scheduler_lock();
       end = high_resolution_clock::now();
       diff = duration_cast<nanoseconds>(end - start);
       time_critical += diff;
 
-      // printf("finished segment %lu at %lu\n", cur_segment,
-      //        duration_cast<nanoseconds>(high_resolution_clock::now().time_since_epoch()).count());
     } else if (stop_) {
       break;
     }
   }
-
-  while (waiting_size != 0) {
-  //   start = high_resolution_clock::now();
-  //   acquire_scheduler_lock();
-  //   ::mica::util::memory_barrier();
-  //   end = high_resolution_clock::now();
-  //   diff = duration_cast<nanoseconds>(end - start);
-  //   time_waiting += diff;
-
-  //   start = high_resolution_clock::now();
-    ack_executed_rows();
-    waiting_size = waiting_queues_.size();
-
-  //   release_scheduler_lock();
-  //   end = high_resolution_clock::now();
-  //   diff = duration_cast<nanoseconds>(end - start);
-  //   time_critical += diff;
-
-  //   // std::this_thread::sleep_for(std::chrono::seconds(1));
-  }
-
-  // Mark my lock as done
-  // start = high_resolution_clock::now();
-  // acquire_scheduler_lock();
-  // end = high_resolution_clock::now();
-  // diff = duration_cast<nanoseconds>(end - start);
-  // time_waiting += diff;
-
-  // start = high_resolution_clock::now();
-  // release_scheduler_lock(true);
-  // end = high_resolution_clock::now();
-  // diff += duration_cast<nanoseconds>(end - start);
-  // time_critical += diff;
 
   run_end = high_resolution_clock::now();
   diff = duration_cast<nanoseconds>(run_end - run_start);
@@ -177,22 +127,15 @@ void SchedulerThread<StaticConfig>::ack_executed_rows() {
       uint64_t row_id = queue->row_id;
       // printf("acking row id %lu at %lu\n", row_id,
       //        duration_cast<nanoseconds>(high_resolution_clock::now().time_since_epoch()).count());
-      auto search = waiting_queues_.find(row_id);
-      if (search != waiting_queues_.end()) {  // Found
-        auto queue_next = search->second;
-        if (queue_next != nullptr) {
+      auto search = assignments_.find(row_id);
+      if (search != assignments_.end()) {  // Found
+        WorkerAssignment assignment = search->second;
+        assignment.nqueues -= 1;
 
-          // printf("pushing queue at %p with %lu entries\n", queue, queue->nentries);
-          scheduler_queue_->enqueue(queue_next);
-
-          waiting_queues_[row_id] = nullptr;
-          // printf("setting waiting queue at %p\n", next);
-          // printf("pushed row id %lu at %lu, %lu\n", row_id,
-          //        duration_cast<nanoseconds>(high_resolution_clock::now().time_since_epoch()).count(),
-          //        scheduler_queue_->unsafe_size());
+        if (assignment.nqueues == 0) {
+          assignments_.erase(search);
         } else {
-          waiting_queues_.erase(row_id);
-          // printf("erasing nullptr waiting queue\n");
+          search->second = assignment;
         }
       } else {
         throw std::runtime_error("unexpected row id: " + row_id);
@@ -208,34 +151,9 @@ void SchedulerThread<StaticConfig>::ack_executed_rows() {
 };
 
 template <class StaticConfig>
-LogEntryList<StaticConfig>* SchedulerThread<StaticConfig>::allocate_list() {
-  if (allocated_lists_ == nullptr) {
-    allocated_lists_ = pool_->allocate_list(1024);
-    if (allocated_lists_ == nullptr) {
-      printf("pool->allocate_list() returned nullptr\n");
-    }
-  }
-
-  LogEntryList<StaticConfig>* list = allocated_lists_;
-  allocated_lists_ =
-      reinterpret_cast<LogEntryList<StaticConfig>*>(allocated_lists_->next);
-
-  list->next = nullptr;
-  list->tail = list;
-  list->cur = list->buf;
-  list->nentries = 0;
-
-  // printf("allocated new queue at %p\n", list);
-
-  return list;
-}
-
-template <class StaticConfig>
 void SchedulerThread<StaticConfig>::free_list(
     LogEntryList<StaticConfig>* list) {
   pool_->free_list(list);
-  // list->next = allocated_lists_;
-  // allocated_lists_ = list;
 }
 
 };  // namespace transaction

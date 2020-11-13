@@ -318,7 +318,6 @@ class IOThread {
  public:
   IOThread(std::shared_ptr<MmappedLogFile<StaticConfig>> log,
            SchedulerPool<StaticConfig>* pool, pthread_barrier_t* start_barrier,
-           moodycamel::ReaderWriterQueue<std::pair<uint64_t, uint64_t>>* op_count_queue,
            moodycamel::ReaderWriterQueue<LogEntryList<StaticConfig>*>* io_queue,
            IOLock* my_lock, uint16_t id, uint16_t nios);
   ~IOThread();
@@ -332,7 +331,6 @@ class IOThread {
   pthread_barrier_t* start_barrier_;
   SchedulerPool<StaticConfig>* pool_;
   LogEntryList<StaticConfig>* allocated_lists_;
-  moodycamel::ReaderWriterQueue<std::pair<uint64_t, uint64_t>>* op_count_queue_;
   moodycamel::ReaderWriterQueue<LogEntryList<StaticConfig>*>* io_queue_;
   IOLock* my_lock_;
   uint16_t id_;
@@ -346,10 +344,13 @@ class IOThread {
 
   LogEntryList<StaticConfig>* allocate_list();
 
-  uint64_t build_local_lists(
-      std::size_t segment,
-      std::vector<LogEntryList<StaticConfig>*>& lists,
-      std::vector<std::pair<uint64_t, uint64_t>>& op_counts);
+  uint64_t build_local_lists(std::size_t segment,
+                             std::vector<LogEntryList<StaticConfig>*>& lists);
+};
+
+struct WorkerAssignment {
+  uint64_t wid;
+  uint64_t nqueues;
 };
 
 template <class StaticConfig>
@@ -358,7 +359,8 @@ class SchedulerThread {
   SchedulerThread(
       SchedulerPool<StaticConfig>* pool,
       moodycamel::ReaderWriterQueue<LogEntryList<StaticConfig>*>* io_queue,
-      moodycamel::ReaderWriterQueue<LogEntryList<StaticConfig>*>* scheduler_queue,
+      moodycamel::ReaderWriterQueue<LogEntryList<StaticConfig>*>*
+          scheduler_queue,
       std::vector<moodycamel::ReaderWriterQueue<LogEntryList<StaticConfig>*>*>
           ack_queues,
       pthread_barrier_t* start_barrier, uint16_t id, uint16_t nschedulers);
@@ -369,12 +371,9 @@ class SchedulerThread {
   void stop();
 
  private:
-  static robin_hood::unordered_map<uint64_t, LogEntryList<StaticConfig>*>
-      waiting_queues_;
+  static robin_hood::unordered_map<uint64_t, WorkerAssignment> assignments_;
 
   SchedulerPool<StaticConfig>* pool_;
-  LogEntryNode* allocated_nodes_;
-  LogEntryList<StaticConfig>* allocated_lists_;
   moodycamel::ReaderWriterQueue<LogEntryList<StaticConfig>*>* io_queue_;
   moodycamel::ReaderWriterQueue<LogEntryList<StaticConfig>*>* scheduler_queue_;
   std::vector<moodycamel::ReaderWriterQueue<LogEntryList<StaticConfig>*>*>
@@ -389,18 +388,18 @@ class SchedulerThread {
 
   void ack_executed_rows();
 
-  LogEntryList<StaticConfig>* allocate_list();
   void free_list(LogEntryList<StaticConfig>* list);
 };
+
+struct WorkerMinWTS {
+  volatile uint64_t min_wts;
+} __attribute__((__aligned__(64)));
 
 template <class StaticConfig>
 class SnapshotThread {
  public:
-  SnapshotThread(
-      DB<StaticConfig>* db, pthread_barrier_t* start_barrier,
-      moodycamel::ReaderWriterQueue<std::pair<uint64_t, uint64_t>>*
-          op_count_queue,
-      std::vector<moodycamel::ReaderWriterQueue<uint64_t>*> op_done_queues);
+  SnapshotThread(DB<StaticConfig>* db, pthread_barrier_t* start_barrier,
+                 std::vector<WorkerMinWTS>& min_wtss);
 
   ~SnapshotThread();
 
@@ -409,12 +408,9 @@ class SnapshotThread {
 
  private:
   DB<StaticConfig>* db_;
-  std::unordered_map<uint64_t,
-                     std::list<std::pair<uint64_t, uint64_t>>::iterator>
-      counts_index_;
+  std::vector<WorkerMinWTS>& min_wtss_;
+  robin_hood::unordered_map<uint64_t, uint64_t> counts_index_;
   std::list<std::pair<uint64_t, uint64_t>> counts_;
-  moodycamel::ReaderWriterQueue<std::pair<uint64_t, uint64_t>>* op_count_queue_;
-  std::vector<moodycamel::ReaderWriterQueue<uint64_t>*> op_done_queues_;
   volatile bool stop_;
   std::thread thread_;
   pthread_barrier_t* start_barrier_;
@@ -427,10 +423,11 @@ class WorkerThread {
  public:
   WorkerThread(
       DB<StaticConfig>* db,
-      moodycamel::ReaderWriterQueue<LogEntryList<StaticConfig>*>* scheduler_queue,
+      moodycamel::ReaderWriterQueue<LogEntryList<StaticConfig>*>*
+          scheduler_queue,
       moodycamel::ReaderWriterQueue<LogEntryList<StaticConfig>*>* ack_queue,
-      moodycamel::ReaderWriterQueue<uint64_t>* op_done_queue,
-      pthread_barrier_t* start_barrier, uint16_t id, uint16_t nschedulers);
+      WorkerMinWTS* min_wts, pthread_barrier_t* start_barrier, uint16_t id,
+      uint16_t nschedulers);
 
   ~WorkerThread();
 
@@ -441,7 +438,7 @@ class WorkerThread {
   DB<StaticConfig>* db_;
   moodycamel::ReaderWriterQueue<LogEntryList<StaticConfig>*>* scheduler_queue_;
   moodycamel::ReaderWriterQueue<LogEntryList<StaticConfig>*>* ack_queue_;
-  moodycamel::ReaderWriterQueue<uint64_t>* op_done_queue_;
+  WorkerMinWTS* min_wts_;
   pthread_barrier_t* start_barrier_;
   uint16_t id_;
   uint16_t nschedulers_;
@@ -532,7 +529,6 @@ class CopyCat : public CCCInterface<StaticConfig> {
  private:
   moodycamel::ReaderWriterQueue<LogEntryList<StaticConfig>*> io_queue_;
   moodycamel::ReaderWriterQueue<LogEntryList<StaticConfig>*> scheduler_queue_;
-  moodycamel::ReaderWriterQueue<std::pair<uint64_t, uint64_t>> op_count_queue_;
   DB<StaticConfig>* db_;
   SchedulerPool<StaticConfig>* pool_;
 
@@ -553,11 +549,11 @@ class CopyCat : public CCCInterface<StaticConfig> {
   pthread_barrier_t scheduler_barrier_;
   std::vector<SchedulerThread<StaticConfig>*> schedulers_;
 
+  std::vector<WorkerMinWTS> min_wtss_;
   pthread_barrier_t worker_barrier_;
   std::vector<WorkerThread<StaticConfig>*> workers_;
   std::vector<moodycamel::ReaderWriterQueue<LogEntryList<StaticConfig>*>*>
       ack_queues_;
-  std::vector<moodycamel::ReaderWriterQueue<uint64_t>*> op_done_queues_;
 
   pthread_barrier_t snapshot_barrier_;
   SnapshotThread<StaticConfig>* snapshot_manager_;

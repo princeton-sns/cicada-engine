@@ -73,7 +73,14 @@ void IOThread<StaticConfig>::run() {
 
   std::vector<LogEntryList<StaticConfig>*> local_lists{};
 
+  nanoseconds time_total{0};
+  nanoseconds diff;
+
+  high_resolution_clock::time_point run_start;
+  high_resolution_clock::time_point run_end;
+
   pthread_barrier_wait(start_barrier_);
+  run_start = high_resolution_clock::now();
 
   for (std::size_t cur_segment = id_; cur_segment < nsegments;
        cur_segment += nios_) {
@@ -93,7 +100,12 @@ void IOThread<StaticConfig>::run() {
     local_lists.clear();
   }
 
+  run_end = high_resolution_clock::now();
+  diff = duration_cast<nanoseconds>(run_end - run_start);
+  time_total += diff;
+
   printf("Exiting replica IO thread: %u\n", id_);
+  printf("Time total: %ld nanoseconds\n", time_total.count());
 };
 
 template <class StaticConfig>
@@ -110,7 +122,6 @@ LogEntryList<StaticConfig>* IOThread<StaticConfig>::allocate_list() {
       reinterpret_cast<LogEntryList<StaticConfig>*>(allocated_lists_->next);
 
   list->next = nullptr;
-  list->tail = list;
   list->cur = list->buf;
   list->nentries = 0;
 
@@ -166,16 +177,18 @@ uint64_t IOThread<StaticConfig>::build_local_lists(
       list = allocate_list();
       list->row_id = row_id;
       std::memcpy(list->tbl_name, tbl_name, StaticConfig::kMaxTableNameSize);
+      list->push(le, size);
+
       index[row_id] = list;
       lists.push_back(list);
-    } else {
-      list = search->second;
-    }
+    } else if (!search->second->push(le, size)) {
+      list = allocate_list();
+      list->row_id = row_id;
+      std::memcpy(list->tbl_name, tbl_name, StaticConfig::kMaxTableNameSize);
+      list->push(le, size);
 
-    if (!list->tail->push(le, size)) {
-      LogEntryList<StaticConfig>* list2 = allocate_list();
-      list2->push(le, size);
-      list->append(list2);
+      search->second = list;
+      lists.push_back(list);
     }
 
     ptr += size;

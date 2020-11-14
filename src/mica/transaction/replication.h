@@ -198,24 +198,16 @@ class LogEntryNode {
 template <class StaticConfig>
 class LogEntryList {
  public:
-  // Total bytes: (4056 - tbl_name.size) + 8 + 8 + 8 + 8 + 8 = 4096
-  static const std::size_t kBufSize = 4056 - StaticConfig::kMaxTableNameSize;
+  // Total bytes: (4064 - tbl_name.size) + tbl_name.size + 8 + 8 + 8 + 8 = 4096
+  static const std::size_t kBufSize = 4064 - StaticConfig::kMaxTableNameSize;
 
   LogEntryList<StaticConfig>* next;
-  LogEntryList<StaticConfig>* tail;
+
   uint64_t nentries;
   uint64_t row_id;
   char tbl_name[StaticConfig::kMaxTableNameSize];
   char* cur;
   char buf[kBufSize];  // TODO: make this a constant parameter
-
-  void append(LogEntryList<StaticConfig>* list) {
-    tail->next = list;
-    tail = list->tail;
-
-    // printf("appended queue at %p with %lu entries to queue at %p\n", list, list->nentries, this);
-    // printf("updated tail to %p\n", tail);
-  }
 
   bool push(LogEntry<StaticConfig>* le, std::size_t size) {
     if ((cur + size) >= (buf + kBufSize)) {

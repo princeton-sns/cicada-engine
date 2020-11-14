@@ -78,65 +78,56 @@ void WorkerThread<StaticConfig>::run() {
 
   total_start = high_resolution_clock::now();
   while (true) {
-    LogEntryList<StaticConfig>* first = nullptr;
     LogEntryList<StaticConfig>* queue = nullptr;
-    if (scheduler_queue_->try_dequeue(first)) {
-      npops += 1;
+    if (scheduler_queue_->try_dequeue(queue)) {
       // working_start_ = high_resolution_clock::now();
-      queue = first;
+      npops += 1;
       tbl = db_->get_table(std::string{queue->tbl_name});
       txn_ts = static_cast<uint64_t>(-1);
-      while (queue != nullptr) {
-        nqueues += 1;
-        queuelen += queue->nentries;
-        // printf("executing queue with %lu entries\n", queue->nentries);
-        // row_id = static_cast<uint64_t>(-1);
-        uint64_t nentries = queue->nentries;
-        char* ptr = queue->buf;
-        for (uint64_t i = 0; i < nentries; i++) {
-          LogEntry<StaticConfig>* le =
-              reinterpret_cast<LogEntry<StaticConfig>*>(ptr);
+      nqueues += 1;
+      queuelen += queue->nentries;
+      // printf("executing queue with %lu entries\n", queue->nentries);
 
-          // le->print();
+      uint64_t nentries = queue->nentries;
+      char* ptr = queue->buf;
+      for (uint64_t i = 0; i < nentries; i++) {
+        LogEntry<StaticConfig>* le =
+          reinterpret_cast<LogEntry<StaticConfig>*>(ptr);
 
-          InsertRowLogEntry<StaticConfig>* irle = nullptr;
-          WriteRowLogEntry<StaticConfig>* wrle = nullptr;
-          switch (le->type) {
-            case LogEntryType::INSERT_ROW:
-              irle = static_cast<InsertRowLogEntry<StaticConfig>*>(le);
-              if (txn_ts == static_cast<uint64_t>(-1)) {
-                txn_ts = irle->txn_ts;
-              }
-              // irle->print();
-              insert_row(tbl, &tx, &rah, irle);
-              break;
+        // le->print();
 
-            case LogEntryType::WRITE_ROW:
-              wrle = static_cast<WriteRowLogEntry<StaticConfig>*>(le);
-              if (txn_ts == static_cast<uint64_t>(-1)) {
-                txn_ts = wrle->txn_ts;
-              }
-              // wrle->print();
-              write_row(tbl, &tx, &rah, wrle);
-
-              break;
-
-            default:
-              throw std::runtime_error(
-                  "WorkerThread::run: Unexpected log entry type.");
+        InsertRowLogEntry<StaticConfig>* irle = nullptr;
+        WriteRowLogEntry<StaticConfig>* wrle = nullptr;
+        switch (le->type) {
+        case LogEntryType::INSERT_ROW:
+          irle = static_cast<InsertRowLogEntry<StaticConfig>*>(le);
+          if (txn_ts == static_cast<uint64_t>(-1)) {
+            txn_ts = irle->txn_ts;
           }
+          // irle->print();
+          insert_row(tbl, &tx, &rah, irle);
+          break;
 
-          ptr += le->size;
+        case LogEntryType::WRITE_ROW:
+          wrle = static_cast<WriteRowLogEntry<StaticConfig>*>(le);
+          if (txn_ts == static_cast<uint64_t>(-1)) {
+            txn_ts = wrle->txn_ts;
+          }
+          // wrle->print();
+          write_row(tbl, &tx, &rah, wrle);
+
+          break;
+
+        default:
+          throw std::runtime_error(
+                                   "WorkerThread::run: Unexpected log entry type.");
         }
 
-        queue = queue->next;
+        ptr += le->size;
       }
 
-      if (txn_ts != static_cast<uint64_t>(-1)) {
-        min_wts_->min_wts = txn_ts;
-      }
-
-      ack_queue_->enqueue(first);
+      min_wts_->min_wts = txn_ts;
+      ack_queue_->enqueue(queue);
 
       // working_end_ = high_resolution_clock::now();
       // time_working_ +=

@@ -150,19 +150,19 @@ uint64_t IOThread<StaticConfig>::build_local_lists(
     // le->print();
 
     uint64_t row_id = 0;
-    char* tbl_name = nullptr;
+    std::size_t table_index = static_cast<std::size_t>(-1);
     switch (type) {
       case LogEntryType::INSERT_ROW:
         irle = static_cast<InsertRowLogEntry<StaticConfig>*>(le);
         row_id = irle->row_id;
-        tbl_name = irle->tbl_name;
+        table_index = irle->table_index;
         // irle->print();
         break;
 
       case LogEntryType::WRITE_ROW:
         wrle = static_cast<WriteRowLogEntry<StaticConfig>*>(le);
         row_id = wrle->row_id;
-        tbl_name = wrle->tbl_name;
+        table_index = wrle->table_index;
         // wrle->print();
         break;
 
@@ -176,7 +176,7 @@ uint64_t IOThread<StaticConfig>::build_local_lists(
     if (search == index.end()) {  // Not found
       list = allocate_list();
       list->row_id = row_id;
-      std::memcpy(list->tbl_name, tbl_name, StaticConfig::kMaxTableNameSize);
+      list->table_index = table_index;
       list->push(le, size);
 
       index[row_id] = list;
@@ -184,7 +184,7 @@ uint64_t IOThread<StaticConfig>::build_local_lists(
     } else if (!search->second->push(le, size)) {
       list = allocate_list();
       list->row_id = row_id;
-      std::memcpy(list->tbl_name, tbl_name, StaticConfig::kMaxTableNameSize);
+      list->table_index = table_index;
       list->push(le, size);
 
       search->second = list;

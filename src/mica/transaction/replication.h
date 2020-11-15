@@ -198,16 +198,17 @@ class LogEntryNode {
 template <class StaticConfig>
 class LogEntryList {
  public:
-  // Total bytes: (4064 - tbl_name.size) + tbl_name.size + 8 + 8 + 8 + 8 = 4096
-  static const std::size_t kBufSize = 4064 - StaticConfig::kMaxTableNameSize;
+  // Total bytes: 4056 + (5 * 8) = 4096
+  static const std::size_t kBufSize = 4056;
 
   LogEntryList<StaticConfig>* next;
 
   uint64_t nentries;
   uint64_t row_id;
-  char tbl_name[StaticConfig::kMaxTableNameSize];
+  std::size_t table_index;
   char* cur;
-  char buf[kBufSize];  // TODO: make this a constant parameter
+
+  char buf[kBufSize];
 
   bool push(LogEntry<StaticConfig>* le, std::size_t size) {
     if ((cur + size) >= (buf + kBufSize)) {
@@ -446,24 +447,10 @@ class WorkerThread {
   void insert_row(Table<StaticConfig>* tbl, Transaction<StaticConfig>* tx,
                   RowAccessHandle<StaticConfig>* rah,
                   InsertRowLogEntry<StaticConfig>* le);
-  void insert_data_row(Table<StaticConfig>* tbl, Transaction<StaticConfig>* tx,
-                       RowAccessHandle<StaticConfig>* rah,
-                       InsertRowLogEntry<StaticConfig>* le);
-  void insert_hash_idx_row(Table<StaticConfig>* tbl,
-                           Transaction<StaticConfig>* tx,
-                           RowAccessHandle<StaticConfig>* rah,
-                           InsertRowLogEntry<StaticConfig>* le);
 
   void write_row(Table<StaticConfig>* tbl, Transaction<StaticConfig>* tx,
                  RowAccessHandle<StaticConfig>* rah,
                  WriteRowLogEntry<StaticConfig>* le);
-  void write_data_row(Table<StaticConfig>* tbl, Transaction<StaticConfig>* tx,
-                      RowAccessHandle<StaticConfig>* rah,
-                      WriteRowLogEntry<StaticConfig>* le);
-  void write_hash_idx_row(Table<StaticConfig>* tbl,
-                          Transaction<StaticConfig>* tx,
-                          RowAccessHandle<StaticConfig>* rah,
-                          WriteRowLogEntry<StaticConfig>* le);
 };
 
 template <class StaticConfig>

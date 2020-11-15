@@ -253,6 +253,8 @@ bool MmapLogger<StaticConfig>::log(const Context<StaticConfig>* ctx,
     le->size = size;
     le->type = LogEntryType::INSERT_ROW;
 
+    le->table_index = tbl->index();
+
     le->txn_ts = tx->ts().t2;
     le->cf_id = item.cf_id;
     le->row_id = item.row_id;
@@ -261,10 +263,7 @@ bool MmapLogger<StaticConfig>::log(const Context<StaticConfig>* ctx,
     le->rts = write_rv->rts.get().t2;
 
     le->data_size = data_size;
-    le->tbl_type = static_cast<uint8_t>(tbl->type());
 
-    std::memcpy(&le->tbl_name[0], tbl->name().c_str(),
-                1 + tbl->name().size());
     std::memcpy(le->data, data, data_size);
 
     // le->print();
@@ -289,6 +288,8 @@ bool MmapLogger<StaticConfig>::log(const Context<StaticConfig>* ctx,
     le->size = size;
     le->type = LogEntryType::WRITE_ROW;
 
+    le->table_index = tbl->index();
+
     le->txn_ts = tx->ts().t2;
     le->cf_id = item.cf_id;
     le->row_id = item.row_id;
@@ -297,10 +298,7 @@ bool MmapLogger<StaticConfig>::log(const Context<StaticConfig>* ctx,
     le->rts = write_rv->rts.get().t2;
 
     le->data_size = data_size;
-    le->tbl_type = static_cast<uint8_t>(tbl->type());
 
-    std::memcpy(&le->tbl_name[0], tbl->name().c_str(),
-                1 + tbl->name().size());
     std::memcpy(le->data, data, data_size);
 
     // le->print();

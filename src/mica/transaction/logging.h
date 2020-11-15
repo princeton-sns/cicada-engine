@@ -239,6 +239,8 @@ class CreateHashIndexLogEntry : public LogEntry<StaticConfig> {
 template <class StaticConfig>
 class InsertRowLogEntry : public LogEntry<StaticConfig> {
  public:
+  std::size_t table_index;
+
   uint64_t txn_ts;
 
   uint64_t row_id;
@@ -252,7 +254,6 @@ class InsertRowLogEntry : public LogEntry<StaticConfig> {
 
   uint8_t tbl_type;
 
-  char tbl_name[StaticConfig::kMaxTableNameSize];
   char data[0] __attribute__((aligned(8)));
 
   void print() {
@@ -260,7 +261,6 @@ class InsertRowLogEntry : public LogEntry<StaticConfig> {
 
     std::stringstream stream;
 
-    stream << "Table Name: " << std::string{tbl_name} << std::endl;
     stream << "Table Type: " << std::to_string(tbl_type) << std::endl;
     stream << "Column Family ID: " << cf_id << std::endl;
     stream << "Row ID: " << row_id << std::endl;
@@ -276,6 +276,8 @@ class InsertRowLogEntry : public LogEntry<StaticConfig> {
 template <class StaticConfig>
 class WriteRowLogEntry : public LogEntry<StaticConfig> {
  public:
+  std::size_t table_index;
+
   uint64_t txn_ts;
 
   uint64_t row_id;
@@ -289,7 +291,6 @@ class WriteRowLogEntry : public LogEntry<StaticConfig> {
 
   uint8_t tbl_type;
 
-  char tbl_name[StaticConfig::kMaxTableNameSize];
   char data[0] __attribute__((aligned(8)));
 
   void print() {
@@ -297,7 +298,6 @@ class WriteRowLogEntry : public LogEntry<StaticConfig> {
 
     std::stringstream stream;
 
-    stream << "Table Name: " << std::string{tbl_name} << std::endl;
     stream << "Table Type: " << std::to_string(tbl_type) << std::endl;
     stream << "Column Family ID: " << cf_id << std::endl;
     stream << "Row ID: " << row_id << std::endl;

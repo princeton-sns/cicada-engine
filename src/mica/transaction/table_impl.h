@@ -8,8 +8,8 @@ namespace mica {
 namespace transaction {
 template <class StaticConfig>
 Table<StaticConfig>::Table(DB<StaticConfig>* db, std::string name, uint16_t cf_count,
-                           const uint64_t* data_size_hints, TableType type)
-  : db_(db), name_(name), cf_count_(cf_count), type_(type) {
+                           const uint64_t* data_size_hints, std::size_t i)
+  : db_(db), name_(name), cf_count_(cf_count), i_(i) {
   assert(cf_count <= StaticConfig::kMaxColumnFamilyCount);
 
   constexpr size_t kAlignment = 64;

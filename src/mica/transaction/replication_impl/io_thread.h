@@ -12,11 +12,12 @@ using std::chrono::nanoseconds;
 
 template <class StaticConfig>
 IOThread<StaticConfig>::IOThread(
-    std::shared_ptr<MmappedLogFile<StaticConfig>> log,
+    DB<StaticConfig>* db, std::shared_ptr<MmappedLogFile<StaticConfig>> log,
     SchedulerPool<StaticConfig>* pool, pthread_barrier_t* start_barrier,
     moodycamel::ReaderWriterQueue<LogEntryList<StaticConfig>*>* io_queue,
     IOLock* my_lock, uint16_t id, uint16_t nios)
-    : log_{log},
+    : db_{db},
+      log_{log},
       thread_{},
       start_barrier_{start_barrier},
       pool_{pool},
@@ -122,8 +123,10 @@ LogEntryList<StaticConfig>* IOThread<StaticConfig>::allocate_list() {
       reinterpret_cast<LogEntryList<StaticConfig>*>(allocated_lists_->next);
 
   list->next = nullptr;
-  list->cur = list->buf;
+  // list->cur = list->buf;
   list->nentries = 0;
+  list->head_rv = nullptr;
+  list->tail_rv = nullptr;
 
   // printf("allocated new queue at %p\n", list);
 
@@ -133,8 +136,10 @@ LogEntryList<StaticConfig>* IOThread<StaticConfig>::allocate_list() {
 template <class StaticConfig>
 uint64_t IOThread<StaticConfig>::build_local_lists(
     std::size_t segment, std::vector<LogEntryList<StaticConfig>*>& lists) {
+  auto pool = db_->row_version_pool(0);  // TODO: fix hardcoded thread ID here.
 
   robin_hood::unordered_map<uint64_t, LogEntryList<StaticConfig>*> index{};
+
   LogFile<StaticConfig>* lf = log_->get_lf(segment);
   // lf->print();
 
@@ -151,11 +156,31 @@ uint64_t IOThread<StaticConfig>::build_local_lists(
 
     uint64_t row_id = 0;
     std::size_t table_index = static_cast<std::size_t>(-1);
+    uint64_t ts = 0;
+    RowVersion<StaticConfig>* rv = nullptr;
+    uint32_t data_size = 0;
+    uint16_t size_cls = 0;
     switch (type) {
       case LogEntryType::INSERT_ROW:
         irle = static_cast<InsertRowLogEntry<StaticConfig>*>(le);
         row_id = irle->row_id;
         table_index = irle->table_index;
+
+        data_size = irle->data_size;
+        size_cls =
+            SharedRowVersionPool<StaticConfig>::data_size_to_class(data_size);
+
+        rv = pool->allocate(size_cls);
+
+        ts = irle->txn_ts;
+        rv->wts.t2 = ts;
+        rv->rts.init({ts});
+
+        rv->status = RowVersionStatus::kCommitted;
+
+        rv->data_size = static_cast<uint32_t>(data_size);
+        std::memcpy(rv->data, irle->data, data_size);
+
         // irle->print();
         break;
 
@@ -163,6 +188,22 @@ uint64_t IOThread<StaticConfig>::build_local_lists(
         wrle = static_cast<WriteRowLogEntry<StaticConfig>*>(le);
         row_id = wrle->row_id;
         table_index = wrle->table_index;
+
+        data_size = wrle->data_size;
+        size_cls =
+            SharedRowVersionPool<StaticConfig>::data_size_to_class(data_size);
+
+        rv = pool->allocate(size_cls);
+
+        ts = wrle->txn_ts;
+        rv->wts.t2 = ts;
+        rv->rts.init({ts});
+
+        rv->status = RowVersionStatus::kCommitted;
+
+        rv->data_size = static_cast<uint32_t>(data_size);
+        std::memcpy(rv->data, wrle->data, data_size);
+
         // wrle->print();
         break;
 
@@ -175,20 +216,16 @@ uint64_t IOThread<StaticConfig>::build_local_lists(
     auto search = index.find(row_id);
     if (search == index.end()) {  // Not found
       list = allocate_list();
-      list->row_id = row_id;
       list->table_index = table_index;
-      list->push(le, size);
+      list->row_id = row_id;
+      list->head_ts = ts;
+
+      list->push(rv);
 
       index[row_id] = list;
       lists.push_back(list);
-    } else if (!search->second->push(le, size)) {
-      list = allocate_list();
-      list->row_id = row_id;
-      list->table_index = table_index;
-      list->push(le, size);
-
-      search->second = list;
-      lists.push_back(list);
+    } else {
+      search->second->push(rv);
     }
 
     ptr += size;

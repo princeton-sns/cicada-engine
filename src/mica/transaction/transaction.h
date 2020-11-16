@@ -42,6 +42,7 @@ class Transaction {
   // transaction_impl/commit.h
   bool begin(bool peek_only = false,
              const Timestamp *with_ts = nullptr);
+  bool begin_replica();
 
   // transaction_impl/operation.h
   struct NoopDataCopier {
@@ -105,8 +106,7 @@ class Transaction {
   bool commit(Result* detail = nullptr,
               const WriteFunc& write_func = WriteFunc());
   template <class WriteFunc = NoopWriteFunc>
-  bool commit_replica(Result* detail = nullptr,
-                      const WriteFunc& write_func = WriteFunc());
+  bool commit_replica(uint64_t num_rvs);
   bool abort(bool skip_backoff = false);
 
   bool has_began() const { return began_; }

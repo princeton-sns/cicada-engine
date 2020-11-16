@@ -17,6 +17,7 @@
 
 #include "mica/transaction/db.h"
 #include "mica/transaction/logging.h"
+#include "mica/transaction/row_version_pool.h"
 #include "mica/util/posix_io.h"
 #include "mica/util/robin_hood.h"
 #include "readerwriterqueue.h"
@@ -198,31 +199,26 @@ class LogEntryNode {
 template <class StaticConfig>
 class LogEntryList {
  public:
-  // Total bytes: 4056 + (5 * 8) = 4096
-  static const std::size_t kBufSize = 4056;
-
   LogEntryList<StaticConfig>* next;
 
-  uint64_t nentries;
-  uint64_t row_id;
   std::size_t table_index;
-  char* cur;
+  uint64_t row_id;
+  uint64_t head_ts; // TODO; Rename to tail_ts
 
-  char buf[kBufSize];
+  uint64_t nentries;
 
-  bool push(LogEntry<StaticConfig>* le, std::size_t size) {
-    if ((cur + size) >= (buf + kBufSize)) {
-      return false;
+  RowVersion<StaticConfig>* head_rv;
+  RowVersion<StaticConfig>* tail_rv;
+
+  void push(RowVersion<StaticConfig>* rv) {
+    if (tail_rv == nullptr) {
+      tail_rv = rv;
     }
 
-    std::memcpy(cur, le, size);
+    rv->older_rv = head_rv;
+    head_rv = rv;
 
     nentries += 1;
-    cur += size;
-
-    // printf("Pushed le at %p to queue at %p: %lu\n", le, this, nentries);
-
-    return true;
   }
 
   // void print() {
@@ -309,7 +305,8 @@ struct IOLock {
 template <class StaticConfig>
 class IOThread {
  public:
-  IOThread(std::shared_ptr<MmappedLogFile<StaticConfig>> log,
+  IOThread(DB<StaticConfig>* db,
+           std::shared_ptr<MmappedLogFile<StaticConfig>> log,
            SchedulerPool<StaticConfig>* pool, pthread_barrier_t* start_barrier,
            moodycamel::ReaderWriterQueue<LogEntryList<StaticConfig>*>* io_queue,
            IOLock* my_lock, uint16_t id, uint16_t nios);
@@ -319,6 +316,7 @@ class IOThread {
   void stop();
 
  private:
+  DB<StaticConfig>* db_;
   std::shared_ptr<MmappedLogFile<StaticConfig>> log_;
   std::thread thread_;
   pthread_barrier_t* start_barrier_;

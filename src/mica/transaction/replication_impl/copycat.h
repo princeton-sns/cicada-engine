@@ -127,7 +127,7 @@ void CopyCat<StaticConfig>::start_ios() {
   }
 
   for (uint16_t iid = 0; iid < nios_; iid++) {
-    auto i = new IOThread<StaticConfig>{
+    auto i = new IOThread<StaticConfig>{db_,
       log_, pool_, &io_barrier_, &io_queue_, &io_locks_[iid], iid, nios_};
 
     i->start();

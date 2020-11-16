@@ -61,8 +61,6 @@ void WorkerThread<StaticConfig>::run() {
   Context<StaticConfig>* ctx = db_->context(id_);
   Transaction<StaticConfig> tx{ctx};
   RowAccessHandle<StaticConfig> rah{&tx};
-  uint64_t txn_ts = static_cast<uint64_t>(-1);
-  Table<StaticConfig>* tbl = nullptr;
 
   nanoseconds time_total{0};
   time_working_ = nanoseconds{0};
@@ -80,68 +78,62 @@ void WorkerThread<StaticConfig>::run() {
   while (true) {
     LogEntryList<StaticConfig>* queue = nullptr;
     if (scheduler_queue_->try_dequeue(queue)) {
+      uint64_t nentries = queue->nentries;
       // working_start_ = high_resolution_clock::now();
       npops += 1;
-      tbl = db_->get_table_by_index(queue->table_index);
-      txn_ts = static_cast<uint64_t>(-1);
       nqueues += 1;
-      queuelen += queue->nentries;
-      // printf("executing queue with %lu entries\n", queue->nentries);
+      queuelen += nentries;
 
-      uint64_t nentries = queue->nentries;
-      char* ptr = queue->buf;
-      for (uint64_t i = 0; i < nentries; i++) {
-        LogEntry<StaticConfig>* le =
-            reinterpret_cast<LogEntry<StaticConfig>*>(ptr);
+      Table<StaticConfig>* tbl = db_->get_table_by_index(queue->table_index);
+      uint16_t cf_id = 0;  // TODO: fix hardcoded column family
+      uint64_t row_id = queue->row_id;
+      uint64_t head_ts = queue->head_ts;
 
-        // le->print();
+      // printf("executing queue: %lu %lu %lu\n", row_id, head_ts, nentries);
 
-        InsertRowLogEntry<StaticConfig>* irle = nullptr;
-        WriteRowLogEntry<StaticConfig>* wrle = nullptr;
-        switch (le->type) {
-          case LogEntryType::INSERT_ROW:
-            irle = static_cast<InsertRowLogEntry<StaticConfig>*>(le);
-            if (txn_ts == static_cast<uint64_t>(-1)) {
-              txn_ts = irle->txn_ts;
-            }
-            // irle->print();
-            insert_row(tbl, &tx, &rah, irle);
-            break;
-
-          case LogEntryType::WRITE_ROW:
-            wrle = static_cast<WriteRowLogEntry<StaticConfig>*>(le);
-            if (txn_ts == static_cast<uint64_t>(-1)) {
-              txn_ts = wrle->txn_ts;
-            }
-            // wrle->print();
-            write_row(tbl, &tx, &rah, wrle);
-
-            break;
-
-          default:
-            throw std::runtime_error(
-                "WorkerThread::run: Unexpected log entry type.");
-        }
-
-        ptr += le->size;
+      if (!tx.begin_replica()) {
+        throw std::runtime_error("run: Failed to begin transaction.");
       }
 
-      min_wts_->min_wts = txn_ts;
+      row_id = ctx->allocate_row(tbl, row_id);
+      if (row_id == static_cast<uint64_t>(-1)) {
+        throw std::runtime_error("run: Unable to allocate row ID.");
+      }
+
+      RowHead<StaticConfig>* row_head = tbl->head(cf_id, row_id);
+      RowVersion<StaticConfig>* queue_head = queue->head_rv;
+      RowVersion<StaticConfig>* queue_tail = queue->tail_rv;
+
+      // RowVersion<StaticConfig>* temp = queue_head;
+      // while (temp != nullptr) {
+      //   printf("rv wts: %lu\n", temp->wts.t2);
+      //   temp = temp->older_rv;
+      // }
+
+      queue_tail->older_rv = row_head->older_rv;
+
+      row_head->older_rv = queue_head;
+
+      ::mica::util::memory_barrier();
+
+      if (queue_tail->older_rv != nullptr) {
+        uint8_t deleted = false;  // TODO: Handle deleted rows
+        ctx->schedule_gc({head_ts}, tbl, cf_id, deleted, row_id, row_head,
+                         queue_tail);
+      }
+
+      min_wts_->min_wts = head_ts;
       ack_queue_->enqueue(queue);
+
+      if (!tx.commit_replica(nentries)) {
+        throw std::runtime_error("run: Failed to commit transaction.");
+      }
 
       // working_end_ = high_resolution_clock::now();
       // time_working_ +=
       //   duration_cast<nanoseconds>(working_end_ - working_start_);
     } else if (stop_) {
       break;
-    }
-  }
-
-  if (tx.has_began()) {
-    Result result;
-    tx.commit_replica(&result);
-    if (result != Result::kCommitted) {
-      throw std::runtime_error("Failed to commit transaction.");
     }
   }
 
@@ -155,48 +147,49 @@ void WorkerThread<StaticConfig>::run() {
   printf("Time working: %ld nanoseconds\n", time_working_.count());
   printf("Avg. queues per pop: %g queues\n", (double)nqueues / (double)npops);
   printf("Avg. queue len: %g entries\n", (double)queuelen / (double)nqueues);
+  printf("Total row versions: %lu versions\n", queuelen);
 };
 
 template <class StaticConfig>
 void WorkerThread<StaticConfig>::insert_row(
     Table<StaticConfig>* tbl, Transaction<StaticConfig>* tx,
     RowAccessHandle<StaticConfig>* rah, InsertRowLogEntry<StaticConfig>* le) {
-  typename StaticConfig::Timestamp txn_ts;
-  txn_ts.t2 = le->txn_ts;
+  // typename StaticConfig::Timestamp txn_ts;
+  // txn_ts.t2 = le->txn_ts;
 
-  if (!tx->has_began()) {
-    if (!tx->begin(false, &txn_ts)) {
-      throw std::runtime_error("insert_row: Failed to begin transaction.");
-    }
-  } else if (tx->ts() != txn_ts) {
-    Result result;
-    tx->commit_replica(&result);
-    if (result != Result::kCommitted) {
-      throw std::runtime_error("insert_row: Failed to commit transaction.");
-    }
+  // if (!tx->has_began()) {
+  //   if (!tx->begin(false, &txn_ts)) {
+  //     throw std::runtime_error("insert_row: Failed to begin transaction.");
+  //   }
+  // } else if (tx->ts() != txn_ts) {
+  //   Result result;
+  //   tx->commit_replica(&result);
+  //   if (result != Result::kCommitted) {
+  //     throw std::runtime_error("insert_row: Failed to commit transaction.");
+  //   }
 
-    if (!tx->begin(false, &txn_ts)) {
-      throw std::runtime_error("insert_row: Failed to begin transaction.");
-    }
-  }
+  //   if (!tx->begin(false, &txn_ts)) {
+  //     throw std::runtime_error("insert_row: Failed to begin transaction.");
+  //   }
+  // }
 
-  rah->reset();
+  // rah->reset();
 
-  if (StaticConfig::kReplUseUpsert) {
-    if (!rah->upsert_row(tbl, le->cf_id, le->row_id, false, le->data_size)) {
-      throw std::runtime_error("insert_row: Failed to upsert row " +
-                               le->row_id);
-    }
-  } else {
-    if (!rah->new_row_replica(tbl, le->cf_id, le->row_id, false,
-                              le->data_size)) {
-      throw std::runtime_error("insert_row: Failed to create new row " +
-                               le->row_id);
-    }
-  }
+  // if (StaticConfig::kReplUseUpsert) {
+  //   if (!rah->upsert_row(tbl, le->cf_id, le->row_id, false, le->data_size)) {
+  //     throw std::runtime_error("insert_row: Failed to upsert row " +
+  //                              le->row_id);
+  //   }
+  // } else {
+  //   if (!rah->new_row_replica(tbl, le->cf_id, le->row_id, false,
+  //                             le->data_size)) {
+  //     throw std::runtime_error("insert_row: Failed to create new row " +
+  //                              le->row_id);
+  //   }
+  // }
 
-  char* data = rah->data();
-  std::memcpy(data, le->data, le->data_size);
+  // char* data = rah->data();
+  // std::memcpy(data, le->data, le->data_size);
 }
 
 template <class StaticConfig>
@@ -204,37 +197,37 @@ void WorkerThread<StaticConfig>::write_row(Table<StaticConfig>* tbl,
                                            Transaction<StaticConfig>* tx,
                                            RowAccessHandle<StaticConfig>* rah,
                                            WriteRowLogEntry<StaticConfig>* le) {
-  typename StaticConfig::Timestamp txn_ts;
-  txn_ts.t2 = le->txn_ts;
+  // typename StaticConfig::Timestamp txn_ts;
+  // txn_ts.t2 = le->txn_ts;
 
-  if (!tx->has_began()) {
-    if (!tx->begin(false, &txn_ts)) {
-      throw std::runtime_error("write_row: Failed to begin transaction.");
-    }
-  } else if (tx->ts() != txn_ts) {
-    Result result;
-    tx->commit_replica(&result);
-    if (result != Result::kCommitted) {
-      throw std::runtime_error("write_row: Failed to commit transaction.");
-    }
+  // if (!tx->has_began()) {
+  //   if (!tx->begin(false, &txn_ts)) {
+  //     throw std::runtime_error("write_row: Failed to begin transaction.");
+  //   }
+  // } else if (tx->ts() != txn_ts) {
+  //   Result result;
+  //   tx->commit_replica(&result);
+  //   if (result != Result::kCommitted) {
+  //     throw std::runtime_error("write_row: Failed to commit transaction.");
+  //   }
 
-    if (!tx->begin(false, &txn_ts)) {
-      throw std::runtime_error("write_row: Failed to begin transaction.");
-    }
-  }
+  //   if (!tx->begin(false, &txn_ts)) {
+  //     throw std::runtime_error("write_row: Failed to begin transaction.");
+  //   }
+  // }
 
-  rah->reset();
+  // rah->reset();
 
-  if (!rah->peek_row_replica(tbl, le->cf_id, le->row_id, false, false, true)) {
-    throw std::runtime_error("write_row: Failed to peek row.");
-  }
+  // if (!rah->peek_row_replica(tbl, le->cf_id, le->row_id, false, false, true)) {
+  //   throw std::runtime_error("write_row: Failed to peek row.");
+  // }
 
-  if (!rah->write_row_replica(le->data_size)) {
-    throw std::runtime_error("write_row: Failed to write row.");
-  }
+  // if (!rah->write_row_replica(le->data_size)) {
+  //   throw std::runtime_error("write_row: Failed to write row.");
+  // }
 
-  char* data = rah->data();
-  std::memcpy(data, le->data, le->data_size);
+  // char* data = rah->data();
+  // std::memcpy(data, le->data, le->data_size);
 }
 
 };  // namespace transaction

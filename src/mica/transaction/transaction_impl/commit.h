@@ -89,6 +89,20 @@ bool Transaction<StaticConfig>::begin(bool peek_only,
 }
 
 template <class StaticConfig>
+bool Transaction<StaticConfig>::begin_replica() {
+  if (!ctx_->db_->is_active(ctx_->thread_id_)) return false;
+
+  if (began_)
+    return false;
+  else
+    began_ = true;
+
+  // begin_time_ = ctx_->db_->sw()->now();
+
+  return true;
+}
+
+template <class StaticConfig>
 void Transaction<StaticConfig>::sort_wset() {
   // Sort the write set's rows by contention level in descending order (high
   // wts to low wts).  This reduces visible row footprint by failing as soon
@@ -407,65 +421,9 @@ bool Transaction<StaticConfig>::commit(Result* detail,
 
 template <class StaticConfig>
 template <class WriteFunc>
-bool Transaction<StaticConfig>::commit_replica(Result* detail,
-                                               const WriteFunc& write_func) {
-  Timing t(ctx_->timing_stack(), &Stats::main_validation);
-
+bool Transaction<StaticConfig>::commit_replica(uint64_t num_rvs) {
   if (!began_) {
-    if (detail != nullptr) *detail = Result::kInvalid;
     return false;
-  }
-
-  // Insert writes
-  for (auto j = 0; j < wset_size_; j++) {
-    auto i = wset_idx_[j];
-    auto item = &accesses_[i];
-    assert(item->write_rv != nullptr);
-
-    auto older_rv = item->newer_rv->older_rv;
-    item->write_rv->older_rv = older_rv;
-
-    item->newer_rv->older_rv = item->write_rv;
-
-    if (item->state == RowAccessState::kDelete ||
-        item->state == RowAccessState::kReadDelete)
-      item->write_rv->status = RowVersionStatus::kDeleted;
-    else
-      item->write_rv->status = RowVersionStatus::kCommitted;
-
-    item->inserted = 1;
-  }
-
-  // Call write func
-  if (!write_func()) return false;
-
-  // Insert new rows
-  for (auto j = 0; j < iset_size_; j++) {
-    auto i = iset_idx_[j];
-    auto item = &accesses_[i];
-
-    if (item->state == RowAccessState::kInvalid) continue;
-
-    assert(item->write_rv != nullptr);
-    item->head->older_rv = item->write_rv;
-    item->write_rv->status = RowVersionStatus::kCommitted;
-
-    item->inserted = 1;
-  }
-
-  ::mica::util::memory_barrier();
-
-  // auto gc_epoch = ctx_->db_->gc_epoch();
-  for (auto j = 0; j < wset_size_; j++) {
-    auto i = wset_idx_[j];
-    auto item = &accesses_[i];
-
-    if (item->write_rv->older_rv != nullptr) {
-      uint8_t deleted = item->state == RowAccessState::kDelete ||
-        item->state == RowAccessState::kReadDelete;
-      ctx_->schedule_gc(/*gc_epoch,*/ ts_, item->tbl, item->cf_id, deleted,
-                        item->row_id, item->head, item->write_rv);
-    }
   }
 
   began_ = false;
@@ -477,9 +435,9 @@ bool Transaction<StaticConfig>::commit_replica(Result* detail,
   if (StaticConfig::kCollectCommitStats) {
     auto now = ctx_->db_->sw()->now();
     auto diff = now - begin_time_;
-    ctx_->stats().tx_count++;
+    ctx_->stats().tx_count += num_rvs;
     ctx_->stats().tx_time += diff;
-    ctx_->stats().committed_count++;
+    ctx_->stats().committed_count += num_rvs;
     ctx_->stats().committed_time += diff;
     if (StaticConfig::kCollectExtraCommitStats)
       ctx_->commit_latency_.update(diff / ctx_->db_->sw()->c_1_usec());
@@ -492,7 +450,6 @@ bool Transaction<StaticConfig>::commit_replica(Result* detail,
 
   maintenance_replica();
 
-  if (detail != nullptr) *detail = Result::kCommitted;
   return true;
 }
 
@@ -657,6 +614,8 @@ void Transaction<StaticConfig>::maintenance() {
 
   template <class StaticConfig>
   void Transaction<StaticConfig>::maintenance_replica() {
+    // printf("called maintenance_replica\n");
+
     assert(!began_);
 
     ctx_->db_->update_backoff(ctx_->thread_id_);

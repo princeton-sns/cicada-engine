@@ -140,7 +140,7 @@ uint64_t IOThread<StaticConfig>::build_local_lists(
     std::size_t segment, std::vector<LogEntryList<StaticConfig>*>& lists) {
   auto pool = db_->row_version_pool(db_id_);
 
-  robin_hood::unordered_map<uint64_t, LogEntryList<StaticConfig>*> index{};
+  robin_hood::unordered_map<TableRowID, LogEntryList<StaticConfig>*> index{};
 
   LogFile<StaticConfig>* lf = log_->get_lf(segment);
   // lf->print();
@@ -157,7 +157,7 @@ uint64_t IOThread<StaticConfig>::build_local_lists(
     // le->print();
 
     uint64_t row_id = 0;
-    std::size_t table_index = static_cast<std::size_t>(-1);
+    uint64_t table_index = static_cast<uint64_t>(-1);
     uint64_t ts = 0;
     RowVersion<StaticConfig>* rv = nullptr;
     uint32_t data_size = 0;
@@ -214,17 +214,19 @@ uint64_t IOThread<StaticConfig>::build_local_lists(
             "build_local_lists: Unexpected log entry type.");
     }
 
+    TableRowID key = {table_index, row_id};
+
     LogEntryList<StaticConfig>* list = nullptr;
-    auto search = index.find(row_id);
+    auto search = index.find(key);
     if (search == index.end()) {  // Not found
       list = allocate_list();
       list->table_index = table_index;
       list->row_id = row_id;
-      list->head_ts = ts;
+      list->tail_ts = ts;
 
       list->push(rv);
 
-      index[row_id] = list;
+      index[key] = list;
       lists.push_back(list);
     } else {
       search->second->push(rv);

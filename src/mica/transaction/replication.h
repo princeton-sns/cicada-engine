@@ -6,6 +6,7 @@
 #include <stdio.h>
 
 #include <chrono>
+#include <functional>
 #include <list>
 #include <memory>
 #include <sstream>
@@ -201,9 +202,9 @@ class LogEntryList {
  public:
   LogEntryList<StaticConfig>* next;
 
-  std::size_t table_index;
+  uint64_t table_index;
   uint64_t row_id;
-  uint64_t head_ts; // TODO; Rename to tail_ts
+  uint64_t tail_ts;
 
   uint64_t nentries;
 
@@ -240,6 +241,20 @@ class LogEntryList {
   // }
 
 } __attribute__((aligned(64)));
+
+struct TableRowID {
+  uint64_t table_index;
+  uint64_t row_id;
+
+  bool const operator==(const TableRowID& t) const {
+    return table_index == t.table_index && row_id == t.row_id;
+  }
+
+  bool const operator<(const TableRowID& t) const {
+    return table_index < t.table_index ||
+           (table_index == t.table_index && row_id < t.row_id);
+  }
+};
 
 template <class StaticConfig>
 class SchedulerPool {
@@ -309,7 +324,8 @@ class IOThread {
            std::shared_ptr<MmappedLogFile<StaticConfig>> log,
            SchedulerPool<StaticConfig>* pool, pthread_barrier_t* start_barrier,
            moodycamel::ReaderWriterQueue<LogEntryList<StaticConfig>*>* io_queue,
-           IOLock* my_lock, uint16_t id, uint16_t nios, uint16_t db_id, uint16_t lcore);
+           IOLock* my_lock, uint16_t id, uint16_t nios, uint16_t db_id,
+           uint16_t lcore);
   ~IOThread();
 
   void start();
@@ -364,7 +380,7 @@ class SchedulerThread {
   void stop();
 
  private:
-  static robin_hood::unordered_map<uint64_t, WorkerAssignment> assignments_;
+  static robin_hood::unordered_map<TableRowID, WorkerAssignment> assignments_;
 
   SchedulerPool<StaticConfig>* pool_;
   moodycamel::ReaderWriterQueue<LogEntryList<StaticConfig>*>* io_queue_;
@@ -392,7 +408,8 @@ template <class StaticConfig>
 class SnapshotThread {
  public:
   SnapshotThread(DB<StaticConfig>* db, pthread_barrier_t* start_barrier,
-                 std::vector<WorkerMinWTS>& min_wtss, uint16_t id, uint16_t lcore);
+                 std::vector<WorkerMinWTS>& min_wtss, uint16_t id,
+                 uint16_t lcore);
 
   ~SnapshotThread();
 
@@ -555,6 +572,17 @@ class CopyCat : public CCCInterface<StaticConfig> {
 };  // namespace transaction
 };  // namespace mica
 
+
+namespace std {
+template <>
+struct hash<mica::transaction::TableRowID> {
+  std::size_t operator()(const mica::transaction::TableRowID& t) const noexcept {
+    std::size_t h1 = std::hash<uint64_t>{}(t.table_index);
+    std::size_t h2 = std::hash<uint64_t>{}(t.row_id);
+    return h1 ^ (h2 << 1);
+  }
+};
+};
 #include "replication_impl/copycat.h"
 #include "replication_impl/io_thread.h"
 #include "replication_impl/scheduler_pool.h"

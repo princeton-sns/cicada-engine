@@ -32,8 +32,7 @@
 
 #define MICA_COLUMN_COUNT 1
 
-// #define INDEX_STRUCT IDX_MICA
-#define INDEX_STRUCT 0
+#define INDEX_STRUCT IDX_MICA
 #define MICA_FULLINDEX false
 
 #define MICA_USE_SCAN false

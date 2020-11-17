@@ -88,9 +88,9 @@ void WorkerThread<StaticConfig>::run() {
       Table<StaticConfig>* tbl = db_->get_table_by_index(queue->table_index);
       uint16_t cf_id = 0;  // TODO: fix hardcoded column family
       uint64_t row_id = queue->row_id;
-      uint64_t head_ts = queue->head_ts;
+      uint64_t tail_ts = queue->tail_ts;
 
-      // printf("executing queue: %lu %lu %lu\n", row_id, head_ts, nentries);
+      // printf("executing queue: %lu %lu %lu\n", row_id, tail_ts, nentries);
 
       if (!tx.begin_replica()) {
         throw std::runtime_error("run: Failed to begin transaction.");
@@ -119,11 +119,11 @@ void WorkerThread<StaticConfig>::run() {
 
       if (queue_tail->older_rv != nullptr) {
         uint8_t deleted = false;  // TODO: Handle deleted rows
-        ctx->schedule_gc({head_ts}, tbl, cf_id, deleted, row_id, row_head,
+        ctx->schedule_gc({tail_ts}, tbl, cf_id, deleted, row_id, row_head,
                          queue_tail);
       }
 
-      min_wts_->min_wts = head_ts;
+      min_wts_->min_wts = tail_ts;
       ack_queue_->enqueue(queue);
 
       if (!tx.commit_replica(nentries)) {

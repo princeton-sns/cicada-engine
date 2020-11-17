@@ -11,7 +11,7 @@ using std::chrono::high_resolution_clock;
 using std::chrono::nanoseconds;
 
 template <class StaticConfig>
-robin_hood::unordered_map<uint64_t, WorkerAssignment>
+robin_hood::unordered_map<TableRowID, WorkerAssignment>
     SchedulerThread<StaticConfig>::assignments_{};
 
 template <class StaticConfig>
@@ -77,9 +77,11 @@ void SchedulerThread<StaticConfig>::run() {
 
     LogEntryList<StaticConfig>* queue;
     if (io_queue_->try_dequeue(queue)) {
+      uint64_t table_index = queue->table_index;
       uint64_t row_id = queue->row_id;
+      TableRowID key = {table_index, row_id};
 
-      auto search = assignments_.find(row_id);
+      auto search = assignments_.find(key);
       if (search == assignments_.end()) {  // Not found
 
         // TODO: Use one queue per worker
@@ -88,7 +90,7 @@ void SchedulerThread<StaticConfig>::run() {
         // TODO: Choose next worker ID
         uint64_t wid = 0;
 
-        assignments_[row_id] = {wid, 1};
+        assignments_[key] = {wid, 1};
       } else {  // Found
         WorkerAssignment assignment = search->second;
         assignment.nqueues += 1;
@@ -124,10 +126,12 @@ void SchedulerThread<StaticConfig>::ack_executed_rows() {
   for (auto ack_queue : ack_queues_) {
     LogEntryList<StaticConfig>* queue;
     while (ack_queue->try_dequeue(queue)) {
+      uint64_t table_index = queue->table_index;
       uint64_t row_id = queue->row_id;
+      TableRowID key = {table_index, row_id};
       // printf("acking row id %lu at %lu\n", row_id,
       //        duration_cast<nanoseconds>(high_resolution_clock::now().time_since_epoch()).count());
-      auto search = assignments_.find(row_id);
+      auto search = assignments_.find(key);
       if (search != assignments_.end()) {  // Found
         WorkerAssignment assignment = search->second;
         assignment.nqueues -= 1;

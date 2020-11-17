@@ -770,8 +770,8 @@ int main(int argc, const char* argv[]) {
                      std::string{MICA_RELAY_WORKLOAD_DIR});
   }
 
-  DB replica{page_pools, &logger, &sw, static_cast<uint16_t>(num_workers),
-             true};
+  DB replica{page_pools, &logger, &sw,
+             static_cast<uint16_t>(num_ios + num_workers), true};
 
   {
     auto sched_pool_size = 4 * uint64_t(1073741824);
@@ -850,8 +850,8 @@ int main(int argc, const char* argv[]) {
       double total_time = diff * static_cast<double>(num_threads);
       replica.print_stats(diff, total_time);
 
-      for (const auto& item : replica.get_all_tables()) {
-        item.second->print_table_status();
+      for (const auto& item : replica.get_tables_index()) {
+        replica.get_table_by_index(item.second)->print_table_status();
       }
 
       for (const auto& item : replica.get_all_hash_index_unique_u64()) {
@@ -871,10 +871,10 @@ int main(int argc, const char* argv[]) {
   {
     printf("Verifying replica state\n");
 
-    auto db_tables = db.get_all_tables();
-    auto replica_tables = replica.get_all_tables();
+    auto db_tables_index = db.get_tables_index();
+    auto replica_tables = replica.get_tables_index();
 
-    for (const auto& t : db_tables) {
+    for (const auto& t : db_tables_index) {
       auto search = replica_tables.find(t.first);
       if (search == replica_tables.end()) {
         fprintf(stderr, "Replica does not contain table: %s\n",

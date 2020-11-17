@@ -13,11 +13,13 @@ using std::chrono::nanoseconds;
 template <class StaticConfig>
 SnapshotThread<StaticConfig>::SnapshotThread(
     DB<StaticConfig>* db, pthread_barrier_t* start_barrier,
-    std::vector<WorkerMinWTS>& min_wtss)
+    std::vector<WorkerMinWTS>& min_wtss, uint16_t id, uint16_t lcore)
     : db_{db},
       min_wtss_{min_wtss},
       counts_index_{},
       counts_{},
+      id_{id},
+      lcore_{lcore},
       stop_{false},
       thread_{},
       start_barrier_{start_barrier} {};
@@ -39,11 +41,10 @@ void SnapshotThread<StaticConfig>::stop() {
 
 template <class StaticConfig>
 void SnapshotThread<StaticConfig>::run() {
-  printf("Starting snapshot manager\n");
+  printf("Starting snapshot manager: %u - %u\n", id_, lcore_);
 
-  // TODO: fix thread pinning
-  printf("pinning to thread %d\n", 6);
-  mica::util::lcore.pin_thread(6);
+  printf("pinning to thread %u\n", lcore_);
+  mica::util::lcore.pin_thread(lcore_);
 
   nanoseconds time_total{0};
   high_resolution_clock::time_point total_start;
@@ -72,8 +73,7 @@ void SnapshotThread<StaticConfig>::run() {
     }
   }
 
-
-  printf("Exiting snapshot manager\n");
+  printf("Exiting snapshot manager: %u\n", id_);
   printf("Time total: %ld nanoseconds\n", time_total.count());
 };
 };  // namespace transaction

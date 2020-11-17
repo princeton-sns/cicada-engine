@@ -16,14 +16,15 @@ WorkerThread<StaticConfig>::WorkerThread(
     moodycamel::ReaderWriterQueue<LogEntryList<StaticConfig>*>* scheduler_queue,
     moodycamel::ReaderWriterQueue<LogEntryList<StaticConfig>*>* ack_queue,
     WorkerMinWTS* min_wts, pthread_barrier_t* start_barrier, uint16_t id,
-    uint16_t nschedulers)
+    uint16_t db_id, uint16_t lcore)
     : db_{db},
       scheduler_queue_{scheduler_queue},
       ack_queue_{ack_queue},
       min_wts_{min_wts},
       start_barrier_{start_barrier},
       id_{id},
-      nschedulers_{nschedulers},
+      db_id_{db_id},
+      lcore_{lcore},
       stop_{false},
       thread_{},
       time_working_{0},
@@ -51,14 +52,14 @@ void WorkerThread<StaticConfig>::stop() {
 
 template <class StaticConfig>
 void WorkerThread<StaticConfig>::run() {
-  printf("Starting replica worker: %u\n", id_);
+  printf("Starting replica worker: %u %u %u\n", id_, db_id_, lcore_);
 
-  printf("pinning to thread %d\n", id_ + 4);
-  mica::util::lcore.pin_thread(id_ + 4);
+  printf("pinning to thread %u\n", lcore_);
+  mica::util::lcore.pin_thread(lcore_);
 
-  db_->activate(id_);
+  db_->activate(db_id_);
 
-  Context<StaticConfig>* ctx = db_->context(id_);
+  Context<StaticConfig>* ctx = db_->context(db_id_);
   Transaction<StaticConfig> tx{ctx};
   RowAccessHandle<StaticConfig> rah{&tx};
 
@@ -140,7 +141,7 @@ void WorkerThread<StaticConfig>::run() {
   total_end = high_resolution_clock::now();
   time_total += duration_cast<nanoseconds>(total_end - total_start);
 
-  db_->deactivate(id_);
+  db_->deactivate(db_id_);
 
   printf("Exiting replica worker: %u\n", id_);
   printf("Time total: %ld nanoseconds\n", time_total.count());

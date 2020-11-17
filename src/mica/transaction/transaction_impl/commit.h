@@ -97,7 +97,7 @@ bool Transaction<StaticConfig>::begin_replica() {
   else
     began_ = true;
 
-  // begin_time_ = ctx_->db_->sw()->now();
+  begin_time_ = ctx_->db_->sw()->now();
 
   return true;
 }

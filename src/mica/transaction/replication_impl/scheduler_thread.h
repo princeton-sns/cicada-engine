@@ -21,14 +21,14 @@ SchedulerThread<StaticConfig>::SchedulerThread(
     moodycamel::ReaderWriterQueue<LogEntryList<StaticConfig>*>* scheduler_queue,
     std::vector<moodycamel::ReaderWriterQueue<LogEntryList<StaticConfig>*>*>
         ack_queues,
-    pthread_barrier_t* start_barrier, uint16_t id, uint16_t nschedulers)
+    pthread_barrier_t* start_barrier, uint16_t id, uint16_t lcore)
     : pool_{pool},
       io_queue_{io_queue},
       scheduler_queue_{scheduler_queue},
       ack_queues_{ack_queues},
       start_barrier_{start_barrier},
       id_{id},
-      nschedulers_{nschedulers},
+      lcore_{lcore},
       stop_{false},
       thread_{} {};
 
@@ -49,10 +49,10 @@ void SchedulerThread<StaticConfig>::stop() {
 
 template <class StaticConfig>
 void SchedulerThread<StaticConfig>::run() {
-  printf("Starting replica scheduler: %u\n", id_);
+  printf("Starting replica scheduler: %u - %u\n", id_, lcore_);
 
-  printf("pinning to thread %d\n", id_ + 2);
-  mica::util::lcore.pin_thread(id_ + 2);
+  printf("pinning to thread %u\n", lcore_);
+  mica::util::lcore.pin_thread(lcore_);
 
   nanoseconds time_noncritical{0};
   nanoseconds time_waiting{0};

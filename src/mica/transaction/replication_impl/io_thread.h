@@ -15,7 +15,7 @@ IOThread<StaticConfig>::IOThread(
     DB<StaticConfig>* db, std::shared_ptr<MmappedLogFile<StaticConfig>> log,
     SchedulerPool<StaticConfig>* pool, pthread_barrier_t* start_barrier,
     moodycamel::ReaderWriterQueue<LogEntryList<StaticConfig>*>* io_queue,
-    IOLock* my_lock, uint16_t id, uint16_t nios)
+    IOLock* my_lock, uint16_t id, uint16_t nios, uint16_t db_id, uint16_t lcore)
     : db_{db},
       log_{log},
       thread_{},
@@ -25,6 +25,8 @@ IOThread<StaticConfig>::IOThread(
       io_queue_{io_queue},
       my_lock_{my_lock},
       id_{id},
+      db_id_{db_id},
+      lcore_{lcore},
       nios_{nios},
       stop_{false} {};
 
@@ -65,10 +67,10 @@ void IOThread<StaticConfig>::release_io_lock() {
 
 template <class StaticConfig>
 void IOThread<StaticConfig>::run() {
-  printf("Starting replica IO thread: %u\n", id_);
+  printf("Starting replica IO thread: %u %u %u\n", id_, db_id_, lcore_);
 
-  printf("pinning to thread %d\n", id_);
-  mica::util::lcore.pin_thread(id_);
+  printf("pinning to thread %d\n", lcore_);
+  mica::util::lcore.pin_thread(lcore_);
 
   std::size_t nsegments = log_->get_nsegments();
 
@@ -136,7 +138,7 @@ LogEntryList<StaticConfig>* IOThread<StaticConfig>::allocate_list() {
 template <class StaticConfig>
 uint64_t IOThread<StaticConfig>::build_local_lists(
     std::size_t segment, std::vector<LogEntryList<StaticConfig>*>& lists) {
-  auto pool = db_->row_version_pool(0);  // TODO: fix hardcoded thread ID here.
+  auto pool = db_->row_version_pool(db_id_);
 
   robin_hood::unordered_map<uint64_t, LogEntryList<StaticConfig>*> index{};
 

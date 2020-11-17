@@ -29,6 +29,8 @@ CopyCat<StaticConfig>::CopyCat(DB<StaticConfig>* db,
       nios_{nios},
       nschedulers_{nschedulers},
       nworkers_{nworkers},
+      db_id_{0},
+      lcore_{0},
       logdir_{logdir},
       log_{nullptr},
       ios_{},
@@ -127,8 +129,10 @@ void CopyCat<StaticConfig>::start_ios() {
   }
 
   for (uint16_t iid = 0; iid < nios_; iid++) {
+    auto lcore = lcore_;
+    lcore_ += 2;
     auto i = new IOThread<StaticConfig>{db_,
-      log_, pool_, &io_barrier_, &io_queue_, &io_locks_[iid], iid, nios_};
+      log_, pool_, &io_barrier_, &io_queue_, &io_locks_[iid], iid, nios_, db_id_++, lcore};
 
     i->start();
 
@@ -148,13 +152,15 @@ void CopyCat<StaticConfig>::stop_ios() {
 template <class StaticConfig>
 void CopyCat<StaticConfig>::start_schedulers() {
   for (uint16_t sid = 0; sid < nschedulers_; sid++) {
+    auto lcore = lcore_;
+    lcore_ += 2;
     auto s = new SchedulerThread<StaticConfig>{pool_,
                                                &io_queue_,
                                                &scheduler_queue_,
                                                ack_queues_,
                                                &scheduler_barrier_,
                                                sid,
-                                               nschedulers_};
+                                               lcore};
 
     s->start();
 
@@ -177,7 +183,9 @@ void CopyCat<StaticConfig>::start_snapshot_manager() {
     min_wtss_.push_back({0});
   }
 
-  snapshot_manager_ = new SnapshotThread<StaticConfig>{db_, &snapshot_barrier_, min_wtss_};
+  auto lcore = lcore_;
+  lcore_ += 2;
+  snapshot_manager_ = new SnapshotThread<StaticConfig>{db_, &snapshot_barrier_, min_wtss_, 0, lcore};
 
   snapshot_manager_->start();
 
@@ -203,13 +211,15 @@ void CopyCat<StaticConfig>::start_workers() {
   }
 
   for (uint16_t wid = 0; wid < nworkers_; wid++) {
+    auto lcore = lcore_;
+    lcore_ += 2;
     auto w = new WorkerThread<StaticConfig>{db_,
                                             &scheduler_queue_,
                                             ack_queues_[wid],
                                             &min_wtss_[wid],
                                             &worker_barrier_,
                                             wid,
-                                            nschedulers_};
+                                            db_id_++, lcore};
 
     w->start();
 
@@ -228,6 +238,9 @@ void CopyCat<StaticConfig>::stop_workers() {
 
 template <class StaticConfig>
 void CopyCat<StaticConfig>::reset() {
+  db_id_ = 0;
+  lcore_ = 0;
+
   for (auto i : ios_) {
     delete i;
   }

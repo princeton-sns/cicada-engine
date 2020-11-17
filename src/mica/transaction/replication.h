@@ -309,7 +309,7 @@ class IOThread {
            std::shared_ptr<MmappedLogFile<StaticConfig>> log,
            SchedulerPool<StaticConfig>* pool, pthread_barrier_t* start_barrier,
            moodycamel::ReaderWriterQueue<LogEntryList<StaticConfig>*>* io_queue,
-           IOLock* my_lock, uint16_t id, uint16_t nios);
+           IOLock* my_lock, uint16_t id, uint16_t nios, uint16_t db_id, uint16_t lcore);
   ~IOThread();
 
   void start();
@@ -325,6 +325,8 @@ class IOThread {
   moodycamel::ReaderWriterQueue<LogEntryList<StaticConfig>*>* io_queue_;
   IOLock* my_lock_;
   uint16_t id_;
+  uint16_t db_id_;
+  uint16_t lcore_;
   uint16_t nios_;
   volatile bool stop_;
 
@@ -354,7 +356,7 @@ class SchedulerThread {
           scheduler_queue,
       std::vector<moodycamel::ReaderWriterQueue<LogEntryList<StaticConfig>*>*>
           ack_queues,
-      pthread_barrier_t* start_barrier, uint16_t id, uint16_t nschedulers);
+      pthread_barrier_t* start_barrier, uint16_t id, uint16_t lcore);
 
   ~SchedulerThread();
 
@@ -371,7 +373,7 @@ class SchedulerThread {
       ack_queues_;
   pthread_barrier_t* start_barrier_;
   uint16_t id_;
-  uint16_t nschedulers_;
+  uint16_t lcore_;
   volatile bool stop_;
   std::thread thread_;
 
@@ -390,7 +392,7 @@ template <class StaticConfig>
 class SnapshotThread {
  public:
   SnapshotThread(DB<StaticConfig>* db, pthread_barrier_t* start_barrier,
-                 std::vector<WorkerMinWTS>& min_wtss);
+                 std::vector<WorkerMinWTS>& min_wtss, uint16_t id, uint16_t lcore);
 
   ~SnapshotThread();
 
@@ -402,6 +404,8 @@ class SnapshotThread {
   std::vector<WorkerMinWTS>& min_wtss_;
   robin_hood::unordered_map<uint64_t, uint64_t> counts_index_;
   std::list<std::pair<uint64_t, uint64_t>> counts_;
+  uint16_t id_;
+  uint16_t lcore_;
   volatile bool stop_;
   std::thread thread_;
   pthread_barrier_t* start_barrier_;
@@ -418,7 +422,7 @@ class WorkerThread {
           scheduler_queue,
       moodycamel::ReaderWriterQueue<LogEntryList<StaticConfig>*>* ack_queue,
       WorkerMinWTS* min_wts, pthread_barrier_t* start_barrier, uint16_t id,
-      uint16_t nschedulers);
+      uint16_t db_id, uint16_t lcore);
 
   ~WorkerThread();
 
@@ -432,7 +436,8 @@ class WorkerThread {
   WorkerMinWTS* min_wts_;
   pthread_barrier_t* start_barrier_;
   uint16_t id_;
-  uint16_t nschedulers_;
+  uint16_t db_id_;
+  uint16_t lcore_;
   volatile bool stop_;
   std::thread thread_;
 
@@ -515,6 +520,8 @@ class CopyCat : public CCCInterface<StaticConfig> {
   uint16_t nios_;
   uint16_t nschedulers_;
   uint16_t nworkers_;
+  uint16_t db_id_;
+  uint16_t lcore_;
 
   std::string logdir_;
   std::shared_ptr<MmappedLogFile<StaticConfig>> log_;

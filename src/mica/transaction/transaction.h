@@ -85,17 +85,12 @@ class Transaction {
   bool peek_row(RAH& rah, Table<StaticConfig>* tbl, uint16_t cf_id,
                 uint64_t row_id, bool check_dup_access, bool read_hint,
                 bool write_hint);
-  bool peek_row_replica(RAH& rah, Table<StaticConfig>* tbl, uint16_t cf_id,
-                        uint64_t row_id, bool check_dup_access, bool read_hint,
-                        bool write_hint);
   bool peek_row(RAHPO& rah, Table<StaticConfig>* tbl, uint16_t cf_id,
                 uint64_t row_id, bool check_dup_access);
   template <class DataCopier>
   bool read_row(RAH& rah, const DataCopier& data_copier);
   template <class DataCopier>
   bool write_row(RAH& rah, uint64_t data_size, const DataCopier& data_copier);
-  template <class DataCopier>
-  bool write_row_replica(RAH& rah, uint64_t data_size, const DataCopier& data_copier);
   bool delete_row(RAH& rah);
 
   // transaction_impl/commit.h
@@ -151,7 +146,6 @@ class Transaction {
   void write();
 
   void maintenance();
-  void maintenance_replica();
   void backoff();
 
  private:

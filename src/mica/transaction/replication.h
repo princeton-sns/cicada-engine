@@ -456,14 +456,6 @@ class WorkerThread {
   high_resolution_clock::time_point working_end_;
 
   void run();
-
-  void insert_row(Table<StaticConfig>* tbl, Transaction<StaticConfig>* tx,
-                  RowAccessHandle<StaticConfig>* rah,
-                  InsertRowLogEntry<StaticConfig>* le);
-
-  void write_row(Table<StaticConfig>* tbl, Transaction<StaticConfig>* tx,
-                 RowAccessHandle<StaticConfig>* rah,
-                 WriteRowLogEntry<StaticConfig>* le);
 };
 
 template <class StaticConfig>

@@ -448,7 +448,7 @@ bool Transaction<StaticConfig>::commit_replica(uint64_t num_rvs) {
     last_commit_time_ = now;
   }
 
-  maintenance_replica();
+  maintenance();
 
   return true;
 }
@@ -611,36 +611,6 @@ void Transaction<StaticConfig>::maintenance() {
     ctx_->synchronize_clock();
   }
 }
-
-  template <class StaticConfig>
-  void Transaction<StaticConfig>::maintenance_replica() {
-    // printf("called maintenance_replica\n");
-
-    assert(!began_);
-
-    ctx_->db_->update_backoff(ctx_->thread_id_);
-
-    // uint64_t now = ctx_->db_->sw()->now();
-    uint64_t now = begin_time_;
-
-    if (static_cast<int64_t>(now - ctx_->last_quiescence_) >
-        StaticConfig::kMinQuiescenceInterval *
-        static_cast<int64_t>(ctx_->db_->sw()->c_1_usec())) {
-      ctx_->last_quiescence_ = now;
-
-      ctx_->quiescence();
-
-      ctx_->gc(false);
-    }
-
-    if (static_cast<int64_t>(now - ctx_->last_clock_sync_) >
-        StaticConfig::kMinClockSyncInterval *
-        static_cast<int64_t>(ctx_->db_->sw()->c_1_usec())) {
-      ctx_->last_clock_sync_ = now;
-
-      ctx_->synchronize_clock();
-    }
-  }
 }
 }
 

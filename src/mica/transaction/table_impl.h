@@ -8,8 +8,8 @@ namespace mica {
 namespace transaction {
 template <class StaticConfig>
 Table<StaticConfig>::Table(DB<StaticConfig>* db, std::string name, uint16_t cf_count,
-                           const uint64_t* data_size_hints, TableType type)
-  : db_(db), name_(name), cf_count_(cf_count), type_(type) {
+                           const uint64_t* data_size_hints, std::size_t i)
+  : db_(db), name_(name), cf_count_(cf_count), i_(i) {
   assert(cf_count <= StaticConfig::kMaxColumnFamilyCount);
 
   constexpr size_t kAlignment = 64;
@@ -473,6 +473,8 @@ void Table<StaticConfig>::print_table_status() const {
           chain_length++;
         }
 
+        // printf("row id: %lu, row wts: %lu\n", i, rv->wts.t2);
+
         rv = rv->older_rv;
       }
       if (StaticConfig::kInlinedRowVersion && cf.inlining &&
@@ -500,6 +502,7 @@ void Table<StaticConfig>::print_table_status() const {
         100. * static_cast<double>(total) / static_cast<double>(net_row_count) -
             100.);
 
+    printf("  chain len: %.2lf\n", static_cast<double>(chain_length));
     printf("  avg chain len: %.2lf\n", static_cast<double>(chain_length) /
                                            static_cast<double>(net_row_count));
     printf("  memory use:    %10.3lf MB\n",

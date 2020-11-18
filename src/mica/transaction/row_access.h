@@ -59,14 +59,6 @@ class RowAccessHandle {
   }
   template <
     class DataCopier = typename Transaction<StaticConfig>::TrivialDataCopier>
-  bool new_row_replica(Table<StaticConfig>* tbl, uint16_t cf_id, uint64_t row_id,
-                       bool check_dup_access, uint64_t data_size,
-                       const DataCopier& data_copier = DataCopier()) {
-    return tx_->new_row_replica(*this, tbl, cf_id, row_id, check_dup_access, data_size,
-                                data_copier);
-  }
-  template <
-    class DataCopier = typename Transaction<StaticConfig>::TrivialDataCopier>
   bool upsert_row(Table<StaticConfig>* tbl, uint16_t cf_id, uint64_t row_id,
                bool check_dup_access, uint64_t data_size,
                const DataCopier& data_copier = DataCopier()) {
@@ -81,11 +73,6 @@ class RowAccessHandle {
                 bool check_dup_access, bool read_hint, bool write_hint) {
     return tx_->peek_row(*this, tbl, cf_id, row_id, check_dup_access, read_hint,
                          write_hint);
-  }
-  bool peek_row_replica(Table<StaticConfig>* tbl, uint16_t cf_id, uint64_t row_id,
-                        bool check_dup_access, bool read_hint, bool write_hint) {
-    return tx_->peek_row_replica(*this, tbl, cf_id, row_id, check_dup_access, read_hint,
-                                 write_hint);
   }
   template <
       class DataCopier = typename Transaction<StaticConfig>::TrivialDataCopier>

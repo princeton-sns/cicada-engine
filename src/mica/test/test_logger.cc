@@ -6,6 +6,7 @@
 #include "mica/test/test_logger_conf.h"
 #include "mica/transaction/db.h"
 #include "mica/transaction/logging.h"
+#include "mica/transaction/replication.h"
 #include "mica/util/lcore.h"
 #include "mica/util/posix_io.h"
 #include "mica/util/rand.h"
@@ -16,6 +17,7 @@ using mica::util::PosixIO;
 typedef DBConfig::Alloc Alloc;
 typedef DBConfig::Logger Logger;
 typedef DBConfig::CCC CCC;
+typedef ::mica::transaction::SchedulerPool<DBConfig> SchedulerPool;
 typedef DBConfig::Timestamp Timestamp;
 typedef DBConfig::ConcurrentTimestamp ConcurrentTimestamp;
 typedef DBConfig::Timing Timing;
@@ -328,10 +330,10 @@ void worker_proc(Task* task) {
 }
 
 int main(int argc, const char* argv[]) {
-  if (argc != 8) {
+  if (argc != 10) {
     printf(
         "%s NUM-ROWS REQS-PER-TX READ-RATIO ZIPF-THETA TX-COUNT "
-        "THREAD-COUNT WORKER-COUNT\n",
+        "THREAD-COUNT IO-COUNT SCHEDULER-COUNT WORKER-COUNT\n",
         argv[0]);
     return EXIT_FAILURE;
   }
@@ -344,7 +346,9 @@ int main(int argc, const char* argv[]) {
   double zipf_theta = atof(argv[4]);
   uint64_t tx_count = static_cast<uint64_t>(atol(argv[5]));
   uint64_t num_threads = static_cast<uint64_t>(atol(argv[6]));
-  uint64_t num_workers = static_cast<uint64_t>(atol(argv[7]));
+  uint64_t num_ios = static_cast<uint64_t>(atol(argv[7]));
+  uint64_t num_schedulers = static_cast<uint64_t>(atol(argv[8]));
+  uint64_t num_workers = static_cast<uint64_t>(atol(argv[9]));
 
   Alloc alloc(config.get("alloc"));
   auto page_pool_size = 1 * uint64_t(1073741824);
@@ -381,6 +385,8 @@ int main(int argc, const char* argv[]) {
   printf("zipf_theta = %lf\n", zipf_theta);
   printf("tx_count = %" PRIu64 "\n", tx_count);
   printf("num_threads = %" PRIu64 "\n", num_threads);
+  printf("num_ios = %" PRIu64 "\n", num_ios);
+  printf("num_schedulers = %" PRIu64 "\n", num_schedulers);
   printf("num_workers = %" PRIu64 "\n", num_workers);
 #ifndef NDEBUG
   printf("!NDEBUG\n");
@@ -388,8 +394,9 @@ int main(int argc, const char* argv[]) {
   printf("\n");
 
   printf("Removing old log files\n\n");
-  std::vector<std::string> dirs = {MICA_LOG_INIT_DIR, MICA_LOG_WARMUP_DIR, MICA_LOG_WORKLOAD_DIR,
-    MICA_RELAY_INIT_DIR, MICA_RELAY_WARMUP_DIR, MICA_RELAY_WORKLOAD_DIR};
+  std::vector<std::string> dirs = {
+      MICA_LOG_INIT_DIR,   MICA_LOG_WARMUP_DIR,   MICA_LOG_WORKLOAD_DIR,
+      MICA_RELAY_INIT_DIR, MICA_RELAY_WARMUP_DIR, MICA_RELAY_WORKLOAD_DIR};
   for (std::string dir : dirs) {
     std::string cmd = "rm -f " + dir + "/* ;";
     int r = std::system(cmd.c_str());
@@ -399,7 +406,8 @@ int main(int argc, const char* argv[]) {
     }
   }
 
-  Logger logger{static_cast<uint16_t>(num_threads), std::string{MICA_LOG_INIT_DIR}};
+  Logger logger{static_cast<uint16_t>(num_threads),
+                std::string{MICA_LOG_INIT_DIR}};
   // Logger logger{};
 
   DB db(page_pools, &logger, &sw, static_cast<uint16_t>(num_threads));
@@ -677,12 +685,13 @@ int main(int argc, const char* argv[]) {
 
   for (auto phase = 0; phase < 2; phase++) {
     if (phase == 0) {
-      logger.change_logdir(std::string{MICA_LOG_WARMUP_DIR});
       printf("warming up\n");
+      logger.change_logdir(std::string{MICA_LOG_WARMUP_DIR});
+      db.reset_stats();
     } else {
+      printf("executing workload\n");
       logger.change_logdir(std::string{MICA_LOG_WORKLOAD_DIR});
       db.reset_stats();
-      printf("executing workload\n");
     }
 
     running_threads = 0;
@@ -754,59 +763,118 @@ int main(int argc, const char* argv[]) {
     logger.flush();
 
     logger.copy_logs(std::string{MICA_LOG_INIT_DIR},
-                      std::string{MICA_RELAY_INIT_DIR});
+                     std::string{MICA_RELAY_INIT_DIR});
     logger.copy_logs(std::string{MICA_LOG_WARMUP_DIR},
-                      std::string{MICA_RELAY_WARMUP_DIR});
+                     std::string{MICA_RELAY_WARMUP_DIR});
     logger.copy_logs(std::string{MICA_LOG_WORKLOAD_DIR},
-                      std::string{MICA_RELAY_WORKLOAD_DIR});
+                     std::string{MICA_RELAY_WORKLOAD_DIR});
   }
 
-  DB replica{page_pools, &logger, &sw, static_cast<uint16_t>(num_threads)};
-  logger.disable();
+  DB replica{page_pools, &logger, &sw,
+             static_cast<uint16_t>(num_ios + num_workers), true};
 
   {
-    CCC ccc{&replica, static_cast<uint16_t>(num_threads),
-      static_cast<uint16_t>(num_threads), std::string{MICA_RELAY_INIT_DIR}};
+    auto sched_pool_size = 4 * uint64_t(1073741824);
+    std::size_t lcore = 0;
+    printf("creating sched pool\n");
+    SchedulerPool* sched_pool =
+        new SchedulerPool(&alloc, sched_pool_size, lcore);
+    printf("created sched pool\n");
 
-    printf("Preprocessing logs\n");
-    ccc.preprocess_logs();
+    // return 0;
 
-    printf("Starting cloned concurrency control INIT\n");
-    replica.reset_stats();
-    replica.reset_backoff();
-    ccc.start_workers();
-    // int64_t starttime = get_server_clock();
-    ccc.stop_workers();
-    // int64_t endtime = get_server_clock();
+    CCC ccc{&replica,
+            sched_pool,
+            static_cast<uint16_t>(num_threads),
+            static_cast<uint16_t>(num_ios),
+            static_cast<uint16_t>(num_schedulers),
+            static_cast<uint16_t>(num_workers),
+            std::string{MICA_RELAY_INIT_DIR}};
 
-    printf("Starting cloned concurrency control WARMUP\n");
-    ccc.set_logdir(std::string{MICA_RELAY_WARMUP_DIR});
-    replica.reset_stats();
-    replica.reset_backoff();
-    ccc.start_workers();
-    // starttime = get_server_clock();
-    ccc.stop_workers();
-    // endtime = get_server_clock();
+    std::vector<std::string> relaydirs = {std::string{MICA_RELAY_INIT_DIR},
+                                          std::string{MICA_RELAY_WARMUP_DIR},
+                                          std::string{MICA_RELAY_WORKLOAD_DIR}};
 
-    printf("Starting cloned concurrency control WORKLOAD\n");
-    ccc.set_logdir(std::string{MICA_RELAY_WORKLOAD_DIR});
-    replica.reset_stats();
-    replica.reset_backoff();
-    ccc.start_workers();
-    // starttime = get_server_clock();
-    ccc.stop_workers();
-    // endtime = get_server_clock();
+    for (std::string dir : relaydirs) {
+      ccc.set_logdir(dir);
+      printf("Preprocessing logs in %s\n", dir.c_str());
+      ccc.preprocess_logs();
+    }
+
+    int i = 0;
+    for (std::string dir : relaydirs) {
+      switch (i) {
+        case 0:
+          printf("Starting cloned concurrency control INIT\n");
+          break;
+        case 1:
+          printf("Starting cloned concurrency control WARMUP\n");
+          break;
+        case 2:
+          printf("Starting cloned concurrency control WORKLOAD\n");
+          break;
+        default:
+          throw std::runtime_error("Unexpected relay dir.");
+      }
+
+      ccc.set_logdir(dir);
+
+      replica.reset_stats();
+      replica.reset_backoff();
+
+      struct timeval tv_start;
+      struct timeval tv_end;
+      ccc.start_snapshot_manager();
+      ccc.start_workers();
+      ccc.start_schedulers();
+      ccc.start_ios();
+      gettimeofday(&tv_start, nullptr);
+      // int64_t starttime = get_server_clock();
+      ccc.stop_ios();
+      ccc.stop_schedulers();
+      ccc.stop_workers();
+      gettimeofday(&tv_end, nullptr);
+      // Don't count snapshot manager time in throughput measurements
+      ccc.stop_snapshot_manager();
+      ccc.reset();
+      // int64_t endtime = get_server_clock();
+
+      // ccc.print_scheduler_queue();
+
+      double start =
+          (double)tv_start.tv_sec * 1. + (double)tv_start.tv_usec * 0.000001;
+      double end =
+          (double)tv_end.tv_sec * 1. + (double)tv_end.tv_usec * 0.000001;
+
+      double diff = end - start;
+      double total_time = diff * static_cast<double>(num_threads);
+      replica.print_stats(diff, total_time);
+
+      for (const auto& item : replica.get_tables_index()) {
+        replica.get_table_by_index(item.second)->print_table_status();
+      }
+
+      for (const auto& item : replica.get_all_hash_index_unique_u64()) {
+        item.second->index_table()->print_table_status();
+      }
+
+      if (DBConfig::kShowPoolStats) replica.print_pool_status();
+
+      i++;
+    }
   }
+
+  return 0;
 
   db.activate(0);
   replica.activate(0);
   {
     printf("Verifying replica state\n");
 
-    auto db_tables = db.get_all_tables();
-    auto replica_tables = replica.get_all_tables();
+    auto db_tables_index = db.get_tables_index();
+    auto replica_tables = replica.get_tables_index();
 
-    for (const auto& t : db_tables) {
+    for (const auto& t : db_tables_index) {
       auto search = replica_tables.find(t.first);
       if (search == replica_tables.end()) {
         fprintf(stderr, "Replica does not contain table: %s\n",

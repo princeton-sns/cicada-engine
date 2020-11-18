@@ -42,6 +42,7 @@ class Transaction {
   // transaction_impl/commit.h
   bool begin(bool peek_only = false,
              const Timestamp *with_ts = nullptr);
+  bool begin_replica();
 
   // transaction_impl/operation.h
   struct NoopDataCopier {
@@ -84,9 +85,6 @@ class Transaction {
   bool peek_row(RAH& rah, Table<StaticConfig>* tbl, uint16_t cf_id,
                 uint64_t row_id, bool check_dup_access, bool read_hint,
                 bool write_hint);
-  bool peek_row_replica(RAH& rah, Table<StaticConfig>* tbl, uint16_t cf_id,
-                        uint64_t row_id, bool check_dup_access, bool read_hint,
-                        bool write_hint);
   bool peek_row(RAHPO& rah, Table<StaticConfig>* tbl, uint16_t cf_id,
                 uint64_t row_id, bool check_dup_access);
   template <class DataCopier>
@@ -103,8 +101,7 @@ class Transaction {
   bool commit(Result* detail = nullptr,
               const WriteFunc& write_func = WriteFunc());
   template <class WriteFunc = NoopWriteFunc>
-  bool commit_replica(Result* detail = nullptr,
-                      const WriteFunc& write_func = WriteFunc());
+  bool commit_replica(uint64_t num_rvs);
   bool abort(bool skip_backoff = false);
 
   bool has_began() const { return began_; }
@@ -135,7 +132,6 @@ class Transaction {
   void locate(RowCommon<StaticConfig>*& newer_rv,
               RowVersion<StaticConfig>*& rv);
   bool insert_version_deferred();
-  bool insert_version_deferred_replica();
   RowVersionStatus wait_for_pending(RowVersion<StaticConfig>* rv);
   void insert_row_deferred();
 

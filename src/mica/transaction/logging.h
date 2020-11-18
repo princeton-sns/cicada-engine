@@ -11,25 +11,22 @@
 #include <deque>
 #include <fstream>
 #include <iostream>
+#include <memory>
 #include <mutex>
 #include <set>
 #include <sstream>
 #include <string>
 #include <thread>
-#include <unordered_map>
 #include <utility>
 
 #include "mica/common.h"
 #include "mica/transaction/context.h"
-#include "mica/transaction/db.h"
-#include "mica/transaction/page_pool.h"
-#include "mica/transaction/row.h"
-#include "mica/transaction/row_version_pool.h"
+#include "mica/transaction/hash_index.h"
 #include "mica/transaction/transaction.h"
-#include "mica/util/posix_io.h"
 
 namespace mica {
 namespace transaction {
+
 template <class StaticConfig>
 class LoggerInterface {
  public:
@@ -46,9 +43,6 @@ class LoggerInterface {
 
   void change_logdir(std::string logdir);
   void copy_logs(std::string srcdir, std::string dstdir);
-
-  void enable();
-  void disable();
 };
 
 template <class StaticConfig>
@@ -82,9 +76,6 @@ class NullLogger : public LoggerInterface<StaticConfig> {
     (void)srcdir;
     (void)dstdir;
   }
-
-  void enable() {}
-  void disable() {}
 };
 
 template <class StaticConfig>
@@ -107,17 +98,15 @@ class MmapLogger : public LoggerInterface<StaticConfig> {
   void change_logdir(std::string logdir);
   void copy_logs(std::string srcdir, std::string dstdir);
 
-  void enable() { enabled_ = true; }
-  void disable() { enabled_ = false; }
-
  private:
   class Mmapping {
-  public:
+   public:
     void* addr;
     std::size_t len;
     int fd;
 
-    Mmapping(void* addr, std::size_t len, int fd) : addr{addr}, len{len}, fd{fd} {}
+    Mmapping(void* addr, std::size_t len, int fd)
+        : addr{addr}, len{len}, fd{fd} {}
     ~Mmapping() {}
   };
 
@@ -149,24 +138,10 @@ class MmapLogger : public LoggerInterface<StaticConfig> {
   std::vector<std::vector<Mmapping>> mappings_;
   std::vector<LogBuffer> bufs_;
 
-  bool enabled_;
-
   LogBuffer mmap_log_buf(uint16_t thread_id, uint64_t file_index);
 
   char* alloc_log_buf(uint16_t thread_id, std::size_t nbytes);
-  void release_log_buf(uint16_t thread_id);
-};
-
-template <class StaticConfig>
-class CCCInterface {
- public:
-  void read_logs();
-
-  void set_logdir(std::string logdir);
-  void preprocess_logs();
-
-  void start_workers();
-  void stop_workers();
+  void release_log_buf(uint16_t thread_id, std::size_t nbytes);
 };
 
 enum class LogEntryType : uint8_t {
@@ -198,7 +173,9 @@ class LogEntry {
 template <class StaticConfig>
 class LogFile {
  public:
+  LogFile<StaticConfig>* next = nullptr;
   uint64_t nentries;
+  std::size_t size;
   LogEntry<StaticConfig> entries[0];
 
   void print() {
@@ -206,49 +183,8 @@ class LogFile {
 
     stream << "Log file:" << std::endl;
     stream << "N entries: " << nentries << std::endl;
-    stream << "First entry ptr: " << &entries[0] << std::endl;
-
-    std::cout << stream.str();
-  }
-};
-
-class LogEntryRef {
- public:
-  int fd;
-  long offset;
-  std::size_t size;
-  LogEntryType type;
-  uint64_t txn_ts;
-
-  static bool compare(const LogEntryRef& r1, const LogEntryRef& r2) {
-    switch (r1.type) {
-      case LogEntryType::CREATE_TABLE:
-        return true;
-      case LogEntryType::CREATE_HASH_IDX:
-        return r2.type != LogEntryType::CREATE_TABLE;
-      case LogEntryType::INSERT_ROW:
-      case LogEntryType::WRITE_ROW:
-        if (r2.type == LogEntryType::CREATE_TABLE ||
-            r2.type == LogEntryType::CREATE_HASH_IDX)
-          return false;
-        else
-          return r1.txn_ts < r2.txn_ts;
-    }
-
-    throw std::runtime_error("Unhandled comparison!");
-  }
-
-  void print() {
-    std::stringstream stream;
-
-    stream << std::endl;
-    stream << "LogEntryRef:" << std::endl;
-    stream << "FD: " << fd << std::endl;
-    stream << "Offset: " << offset << std::endl;
     stream << "Size: " << size << std::endl;
-    stream << "Type: " << std::to_string(static_cast<uint8_t>(type))
-           << std::endl;
-    stream << "Transaction TS: " << txn_ts << std::endl;
+    stream << "First entry ptr: " << &entries[0] << std::endl;
 
     std::cout << stream.str();
   }
@@ -303,6 +239,8 @@ class CreateHashIndexLogEntry : public LogEntry<StaticConfig> {
 template <class StaticConfig>
 class InsertRowLogEntry : public LogEntry<StaticConfig> {
  public:
+  std::size_t table_index;
+
   uint64_t txn_ts;
 
   uint64_t row_id;
@@ -316,7 +254,6 @@ class InsertRowLogEntry : public LogEntry<StaticConfig> {
 
   uint8_t tbl_type;
 
-  char tbl_name[StaticConfig::kMaxTableNameSize];
   char data[0] __attribute__((aligned(8)));
 
   void print() {
@@ -324,7 +261,6 @@ class InsertRowLogEntry : public LogEntry<StaticConfig> {
 
     std::stringstream stream;
 
-    stream << "Table Name: " << std::string{tbl_name} << std::endl;
     stream << "Table Type: " << std::to_string(tbl_type) << std::endl;
     stream << "Column Family ID: " << cf_id << std::endl;
     stream << "Row ID: " << row_id << std::endl;
@@ -340,6 +276,8 @@ class InsertRowLogEntry : public LogEntry<StaticConfig> {
 template <class StaticConfig>
 class WriteRowLogEntry : public LogEntry<StaticConfig> {
  public:
+  std::size_t table_index;
+
   uint64_t txn_ts;
 
   uint64_t row_id;
@@ -353,7 +291,6 @@ class WriteRowLogEntry : public LogEntry<StaticConfig> {
 
   uint8_t tbl_type;
 
-  char tbl_name[StaticConfig::kMaxTableNameSize];
   char data[0] __attribute__((aligned(8)));
 
   void print() {
@@ -361,7 +298,6 @@ class WriteRowLogEntry : public LogEntry<StaticConfig> {
 
     std::stringstream stream;
 
-    stream << "Table Name: " << std::string{tbl_name} << std::endl;
     stream << "Table Type: " << std::to_string(tbl_type) << std::endl;
     stream << "Column Family ID: " << cf_id << std::endl;
     stream << "Row ID: " << row_id << std::endl;
@@ -374,71 +310,9 @@ class WriteRowLogEntry : public LogEntry<StaticConfig> {
   }
 };
 
-template <class StaticConfig>
-class CopyCat : public CCCInterface<StaticConfig> {
- public:
-  CopyCat(DB<StaticConfig>* db, uint16_t nloggers, uint16_t nworkers,
-          std::string logdir);
-
-  ~CopyCat();
-
-  void read_logs();
-
-  void set_logdir(std::string logdir) { logdir_ = logdir; }
-
-  void preprocess_logs();
-
-  void start_workers();
-  void stop_workers();
-
- private:
-  DB<StaticConfig>* db_;
-  std::size_t len_;
-
-  uint16_t nloggers_;
-  uint16_t nworkers_;
-
-  std::string logdir_;
-
-  pthread_barrier_t worker_barrier_;
-  std::vector<std::thread> workers_;
-  std::atomic<bool> workers_stop_;
-
-  void worker_thread(DB<StaticConfig>* db, uint16_t id);
-
-  void create_table(DB<StaticConfig>* db,
-                    CreateTableLogEntry<StaticConfig>* le);
-
-  void create_hash_index(DB<StaticConfig>* db,
-                         CreateHashIndexLogEntry<StaticConfig>* le);
-
-  void insert_row(Context<StaticConfig>* ctx,
-                  Transaction<StaticConfig>* tx,
-                  RowAccessHandle<StaticConfig>* rah,
-                  InsertRowLogEntry<StaticConfig>* le);
-  void insert_data_row(Context<StaticConfig>* ctx,
-                       Transaction<StaticConfig>* tx,
-                       RowAccessHandle<StaticConfig>* rah,
-                       InsertRowLogEntry<StaticConfig>* le);
-  void insert_hash_idx_row(Context<StaticConfig>* ctx,
-                           Transaction<StaticConfig>* tx,
-                           RowAccessHandle<StaticConfig>* rah,
-                           InsertRowLogEntry<StaticConfig>* le);
-
-  void write_row(Context<StaticConfig>* ctx,
-                 Transaction<StaticConfig>* tx,
-                 RowAccessHandle<StaticConfig>* rah,
-                 WriteRowLogEntry<StaticConfig>* le);
-  void write_data_row(Context<StaticConfig>* ctx,
-                      Transaction<StaticConfig>* tx,
-                      RowAccessHandle<StaticConfig>* rah,
-                      WriteRowLogEntry<StaticConfig>* le);
-  void write_hash_idx_row(Context<StaticConfig>* ctx,
-                          Transaction<StaticConfig>* tx,
-                          RowAccessHandle<StaticConfig>* rah,
-                          WriteRowLogEntry<StaticConfig>* le);
-};
 }  // namespace transaction
 }  // namespace mica
+
+#include "logging_impl/mmap_logger.h"
 
 #endif

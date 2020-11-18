@@ -183,7 +183,7 @@ class DB {
       BTreeIndexNonuniqueU64;
 
   DB(PagePool<StaticConfig>** page_pools, Logger* logger, Stopwatch* sw,
-     uint16_t num_threads);
+     uint16_t num_threads, bool is_replica = false);
   ~DB();
 
   PagePool<StaticConfig>* page_pool(uint8_t numa_id) {
@@ -242,13 +242,22 @@ class DB {
   bool create_table(std::string name, uint16_t cf_count,
                     const uint64_t* data_size_hints);
 
-  auto get_all_tables() {
-    return tables_;
+  auto get_tables_index() {
+    return tables_index_;
   }
 
-  Table<StaticConfig>* get_table(std::string name) { return tables_[name]; }
+  Table<StaticConfig>* get_table_by_index(std::size_t i) {
+    return tables_[i];
+  }
+
+  Table<StaticConfig>* get_table(std::string name) {
+    auto i = tables_index_[name];
+    return tables_[i];
+  }
+
   const Table<StaticConfig>* get_table(std::string name) const {
-    return tables_[name];
+    auto i = tables_index_.at(name);
+    return tables_[i];
   }
 
   auto get_all_hash_index_unique_u64() {
@@ -307,6 +316,9 @@ class DB {
   Timestamp min_wts() const { return min_wts_.get(); }
   Timestamp min_rts() const { return min_rts_.get(); }
 
+  void set_min_wts(uint64_t wts) { min_wts_.t2 = wts; }
+  void set_min_rts(uint64_t rts) { min_rts_.t2 = rts; }
+
   // uint64_t gc_epoch() const { return gc_epoch_; }
 
   // db_print_stats.h
@@ -331,7 +343,8 @@ class DB {
   RowVersionPool<StaticConfig>*
       row_version_pools_[StaticConfig::kMaxLCoreCount];
 
-  std::unordered_map<std::string, Table<StaticConfig>*> tables_;
+  std::vector<Table<StaticConfig>*> tables_;
+  std::unordered_map<std::string, std::size_t> tables_index_;
 
   std::unordered_map<std::string, HashIndexUniqueU64*> hash_idxs_unique_u64_;
   std::unordered_map<std::string, HashIndexNonuniqueU64*>
@@ -346,6 +359,7 @@ class DB {
   volatile uint16_t active_thread_count_;
   volatile bool thread_active_[StaticConfig::kMaxLCoreCount];
   bool clock_init_[StaticConfig::kMaxLCoreCount];
+  bool is_replica_;
 
   // Modified by the leader thread.
   ConcurrentTimestamp min_wts_ __attribute__((aligned(64)));
@@ -369,6 +383,9 @@ class DB {
   } __attribute__((aligned(64)));
 
   ThreadState thread_states_[StaticConfig::kMaxLCoreCount];
+
+  std::size_t create_table_(std::string name, uint16_t cf_count,
+                            const uint64_t* data_size_hints);
 
 } __attribute__((aligned(64)));
 }

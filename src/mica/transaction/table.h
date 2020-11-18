@@ -15,19 +15,13 @@ namespace transaction {
 template <class StaticConfig>
 class DB;
 
-enum TableType : uint8_t {
-  DATA = 0,
-  HASH_IDX,
-  BTREE_IDX,
-};
-
 template <class StaticConfig>
 class Table {
  public:
   typedef typename StaticConfig::Timestamp Timestamp;
 
   Table(DB<StaticConfig>* db, std::string name, uint16_t cf_count,
-        const uint64_t* data_size_hints, TableType type = TableType::DATA);
+        const uint64_t* data_size_hints, std::size_t i);
   ~Table();
 
   DB<StaticConfig>* db() { return db_; }
@@ -36,7 +30,7 @@ class Table {
   std::string name() { return name_; }
   const std::string name() const { return name_; }
 
-  TableType type() { return type_; }
+  std::size_t index() { return i_; }
 
   uint16_t cf_count() const { return cf_count_; }
 
@@ -82,7 +76,7 @@ class Table {
   DB<StaticConfig>* db_;
   std::string name_;
   uint16_t cf_count_;
-  TableType type_;
+  std::size_t i_;
 
   struct ColumnFamilyInfo {
     uint64_t data_size_hint;

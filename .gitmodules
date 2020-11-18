@@ -1,0 +1,7 @@
+[submodule "third_party/tbb"]
+	path = third_party/tbb
+	url = https://github.com/oneapi-src/oneTBB.git
+	branch = tbb_2020
+[submodule "third_party/readerwriterqueue"]
+	path = third_party/readerwriterqueue
+	url = https://github.com/cameron314/readerwriterqueue.git

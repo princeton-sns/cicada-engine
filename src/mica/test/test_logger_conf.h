@@ -3,8 +3,7 @@
 
 #include "mica/transaction/db.h"
 #include "mica/transaction/logging.h"
-#include "mica/transaction/logging_impl/mmap_logger.h"
-#include "mica/transaction/logging_impl/copycat.h"
+#include "mica/transaction/replication.h"
 
 // For compatibility.
 
@@ -62,7 +61,7 @@
 #define MICA_RELAY_WARMUP_DIR "/mnt/huge/cicada/relay/warmup"
 #define MICA_RELAY_WORKLOAD_DIR "/mnt/huge/cicada/relay/workload"
 
-#define MICA_REPL_USE_UPSERT true
+#define MICA_REPL_USE_UPSERT false
 #define MICA_REPL_UPSERT_ASSUME_NEW false
 
 struct DBConfig : public ::mica::transaction::BasicDBConfig {

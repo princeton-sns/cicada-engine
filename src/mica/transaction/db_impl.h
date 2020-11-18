@@ -8,11 +8,12 @@ namespace mica {
 namespace transaction {
 template <class StaticConfig>
 DB<StaticConfig>::DB(PagePool<StaticConfig>** page_pools, Logger* logger,
-                     Stopwatch* sw, uint16_t num_threads)
+                     Stopwatch* sw, uint16_t num_threads, bool is_replica)
     : page_pools_(page_pools),
       logger_(logger),
       sw_(sw),
-      num_threads_(num_threads) {
+      num_threads_(num_threads),
+      is_replica_{is_replica} {
   assert(num_threads_ <=
          static_cast<uint16_t>(::mica::util::lcore.lcore_count()));
   assert(num_threads_ <= StaticConfig::kMaxLCoreCount);
@@ -53,7 +54,11 @@ DB<StaticConfig>::DB(PagePool<StaticConfig>** page_pools, Logger* logger,
   active_thread_count_ = 0;
   leader_thread_id_ = static_cast<uint16_t>(-1);
 
-  min_wts_.init(ctxs_[0]->generate_timestamp());
+  if (!is_replica_) {
+    min_wts_.init(ctxs_[0]->generate_timestamp());
+  } else {
+    min_wts_.init(Timestamp::make(0, 0, 0));
+  }
   min_rts_.init(min_wts_.get());
   ref_clock_ = 0;
   // gc_epoch_ = 0;
@@ -64,7 +69,8 @@ DB<StaticConfig>::~DB() {
   // TODO: Deallocate all rows that are cached in Context before deleting
   // tables.
 
-  for (auto& e : tables_) delete e.second;
+  for (auto& t : tables_) delete t;
+  tables_index_.clear();
 
   for (auto thread_id = 0; thread_id < num_threads_; thread_id++)
     delete row_version_pools_[thread_id];
@@ -78,16 +84,26 @@ DB<StaticConfig>::~DB() {
 template <class StaticConfig>
 bool DB<StaticConfig>::create_table(std::string name, uint16_t cf_count,
                                     const uint64_t* data_size_hints) {
-  if (tables_.find(name) != tables_.end()) return false;
+  if (tables_index_.find(name) != tables_index_.end()) return false;
 
-  auto tbl = new Table<StaticConfig>(this, name, cf_count, data_size_hints,
-                                     TableType::DATA);
-  tables_[name] = tbl;
+  std::size_t i = create_table_(name, cf_count, data_size_hints);
+  auto tbl = tables_[i];
+  tables_index_[name] = i;
 
   if (!logger_->log(context(0), tbl))  // TODO: Fix hardcoded thread_id
     return false;
 
   return true;
+}
+
+template <class StaticConfig>
+std::size_t DB<StaticConfig>::create_table_(std::string name, uint16_t cf_count,
+                                            const uint64_t* data_size_hints) {
+  std::size_t i = tables_.size();
+  auto tbl = new Table<StaticConfig>(this, name, cf_count, data_size_hints, i);
+  tables_.push_back(tbl);
+
+  return i;
 }
 
 template <class StaticConfig>
@@ -98,10 +114,10 @@ bool DB<StaticConfig>::create_hash_index_unique_u64(
     return false;
 
   const uint64_t kDataSizes[] = {HashIndexUniqueU64::kDataSize};
-  auto idx = new HashIndexUniqueU64(
-      this, main_tbl,
-      new Table<StaticConfig>(this, name, 1, kDataSizes, TableType::HASH_IDX),
-      expected_row_count);
+  std::size_t i = create_table_(name, 1, kDataSizes);
+  auto tbl = tables_[i];
+
+  auto idx = new HashIndexUniqueU64(this, main_tbl, tbl, expected_row_count);
   hash_idxs_unique_u64_[name] = idx;
 
   if (!logger_->log(context(0), idx))  // TODO: Fix hardcoded thread_id
@@ -118,10 +134,9 @@ bool DB<StaticConfig>::create_hash_index_nonunique_u64(
     return false;
 
   const uint64_t kDataSizes[] = {HashIndexNonuniqueU64::kDataSize};
-  auto idx = new HashIndexNonuniqueU64(
-      this, main_tbl,
-      new Table<StaticConfig>(this, name, 1, kDataSizes, TableType::HASH_IDX),
-      expected_row_count);
+  std::size_t i = create_table_(name, 1, kDataSizes);
+  auto tbl = tables_[i];
+  auto idx = new HashIndexNonuniqueU64(this, main_tbl, tbl, expected_row_count);
   hash_idxs_nonunique_u64_[name] = idx;
   return true;
 }
@@ -133,9 +148,9 @@ bool DB<StaticConfig>::create_btree_index_unique_u64(
     return false;
 
   const uint64_t kDataSizes[] = {BTreeIndexUniqueU64::kDataSize};
-  auto idx = new BTreeIndexUniqueU64(
-      this, main_tbl,
-      new Table<StaticConfig>(this, name, 1, kDataSizes, TableType::BTREE_IDX));
+  std::size_t i = create_table_(name, 1, kDataSizes);
+  auto tbl = tables_[i];
+  auto idx = new BTreeIndexUniqueU64(this, main_tbl, tbl);
   btree_idxs_unique_u64_[name] = idx;
   return true;
 }
@@ -147,9 +162,9 @@ bool DB<StaticConfig>::create_btree_index_nonunique_u64(
     return false;
 
   const uint64_t kDataSizes[] = {BTreeIndexNonuniqueU64::kDataSize};
-  auto idx = new BTreeIndexNonuniqueU64(
-      this, main_tbl,
-      new Table<StaticConfig>(this, name, 1, kDataSizes, TableType::BTREE_IDX));
+  std::size_t i = create_table_(name, 1, kDataSizes);
+  auto tbl = tables_[i];
+  auto idx = new BTreeIndexNonuniqueU64(this, main_tbl, tbl);
   btree_idxs_nonunique_u64_[name] = idx;
   return true;
 }
@@ -164,7 +179,10 @@ void DB<StaticConfig>::activate(uint16_t thread_id) {
     ctxs_[thread_id]->set_clock(ref_clock_ + 1);
     clock_init_[thread_id] = true;
   }
-  ctxs_[thread_id]->generate_timestamp();
+
+  if (!is_replica_) {
+    ctxs_[thread_id]->generate_timestamp();
+  }
 
   // Ensure that no bogus clock/rts is accessed by other threads.
   ::mica::util::memory_barrier();
@@ -178,9 +196,8 @@ void DB<StaticConfig>::activate(uint16_t thread_id) {
   ::mica::util::memory_barrier();
 
   // Keep updating timestamp until it is reflected to min_wts and min_rts.
-  while (/*gc_epoch_ - init_gc_epoch < 2 ||*/ min_wts() >
-             ctxs_[thread_id]->wts() ||
-         min_rts() > ctxs_[thread_id]->rts()) {
+  while (!is_replica_ && (min_wts() > ctxs_[thread_id]->wts() ||
+                          min_rts() > ctxs_[thread_id]->rts())) {
     ::mica::util::pause();
 
     quiescence(thread_id);
@@ -203,7 +220,8 @@ void DB<StaticConfig>::deactivate(uint16_t thread_id) {
 
   // Wait until ref_clock becomes no smaller than this thread's clock.
   // This allows this thread to resume with ref_clock later.
-  while (static_cast<int64_t>(ctxs_[thread_id]->clock() - ref_clock_) > 0) {
+  while (!is_replica_ &&
+         static_cast<int64_t>(ctxs_[thread_id]->clock() - ref_clock_) > 0) {
     ::mica::util::pause();
 
     quiescence(thread_id);
@@ -237,7 +255,7 @@ void DB<StaticConfig>::quiescence(uint16_t thread_id) {
 
   thread_states_[thread_id].quiescence = true;
 
-  if (leader_thread_id_ == static_cast<uint16_t>(-1)) {
+  if (!is_replica_ && leader_thread_id_ == static_cast<uint16_t>(-1)) {
     if (__sync_bool_compare_and_swap(&leader_thread_id_,
                                      static_cast<uint16_t>(-1), thread_id)) {
       last_non_quiescence_thread_id_ = 0;

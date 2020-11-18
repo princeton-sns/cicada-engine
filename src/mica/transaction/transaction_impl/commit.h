@@ -37,10 +37,10 @@ bool Transaction<StaticConfig>::begin(bool peek_only,
   }
 
   while (true) {
-    ts_ = ctx_->generate_timestamp(peek_only);
     if (with_ts != nullptr) {
       ts_.t2 = with_ts->t2;
-      ctx_->wts_.write(ts_);
+    } else {
+      ts_ = ctx_->generate_timestamp(peek_only);
     }
 
     // // TODO: We should bump the clock instead of waiting for a high timestamp.
@@ -84,6 +84,20 @@ bool Transaction<StaticConfig>::begin(bool peek_only,
   access_bucket_count_ = 0;
 
   if (StaticConfig::kVerbose) printf("begin: ts=%" PRIu64 "\n", ts_.t2);
+
+  return true;
+}
+
+template <class StaticConfig>
+bool Transaction<StaticConfig>::begin_replica() {
+  if (!ctx_->db_->is_active(ctx_->thread_id_)) return false;
+
+  if (began_)
+    return false;
+  else
+    began_ = true;
+
+  begin_time_ = ctx_->db_->sw()->now();
 
   return true;
 }
@@ -407,65 +421,10 @@ bool Transaction<StaticConfig>::commit(Result* detail,
 
 template <class StaticConfig>
 template <class WriteFunc>
-bool Transaction<StaticConfig>::commit_replica(Result* detail,
-                                               const WriteFunc& write_func) {
-  Timing t(ctx_->timing_stack(), &Stats::main_validation);
-
+bool Transaction<StaticConfig>::commit_replica(uint64_t num_rvs) {
   if (!began_) {
-    if (detail != nullptr) *detail = Result::kInvalid;
     return false;
   }
-
-  //if (!peek_only_) {
-
-  if (StaticConfig::kVerbose) printf("try_to_commit: ts=%" PRIu64 "\n", ts_.t2);
-
-  {
-    t.switch_to(&Stats::deferred_row_insert);
-    if (StaticConfig::kVerbose)
-      printf("deferred_version_insert: ts=%" PRIu64 "\n", ts_.t2);
-    if (!insert_version_deferred_replica()) {
-      if (StaticConfig::kCollectExtraCommitStats) {
-        abort_reason_target_count_ =
-            &ctx_->stats().aborted_by_deferred_row_version_insert_count;
-        abort_reason_target_time_ =
-            &ctx_->stats().aborted_by_deferred_row_version_insert_time;
-      }
-      abort();
-      if (detail != nullptr)
-        *detail = Result::kAbortedByDeferredRowVersionInsert;
-      return false;
-    }
-  }
-
-  {
-    t.switch_to(&Stats::logging);
-    if (StaticConfig::kVerbose) printf("logging: ts=%" PRIu64 "\n", ts_.t2);
-    if (!ctx_->db_->logger()->log(ctx_, this)) {
-      if (StaticConfig::kCollectExtraCommitStats) {
-        abort_reason_target_count_ = &ctx_->stats().aborted_by_logging_count;
-        abort_reason_target_time_ = &ctx_->stats().aborted_by_logging_time;
-      }
-      abort();
-      if (detail != nullptr) *detail = Result::kAbortedByLogging;
-      return false;
-    }
-  }
-
-  {
-    t.switch_to(&Stats::write);
-    if (StaticConfig::kVerbose) printf("write: ts=%" PRIu64 "\n", ts_.t2);
-
-    if (!write_func()) return false;
-
-    // We must insert new rows before marking anything committed because earlier
-    // committed rows may have row IDs to new rows.
-    insert_row_deferred();
-
-    write();
-  }
-
-  // }    // if (peek_only_)
 
   began_ = false;
 
@@ -476,9 +435,9 @@ bool Transaction<StaticConfig>::commit_replica(Result* detail,
   if (StaticConfig::kCollectCommitStats) {
     auto now = ctx_->db_->sw()->now();
     auto diff = now - begin_time_;
-    ctx_->stats().tx_count++;
+    ctx_->stats().tx_count += num_rvs;
     ctx_->stats().tx_time += diff;
-    ctx_->stats().committed_count++;
+    ctx_->stats().committed_count += num_rvs;
     ctx_->stats().committed_time += diff;
     if (StaticConfig::kCollectExtraCommitStats)
       ctx_->commit_latency_.update(diff / ctx_->db_->sw()->c_1_usec());
@@ -491,7 +450,6 @@ bool Transaction<StaticConfig>::commit_replica(Result* detail,
 
   maintenance();
 
-  if (detail != nullptr) *detail = Result::kCommitted;
   return true;
 }
 

@@ -134,6 +134,5 @@ ELSE(LTO)
 
   ADD_EXECUTABLE(test_logger src/mica/test/test_logger.cc ${SOURCES})
   TARGET_LINK_LIBRARIES(test_logger ${LIBRARIES})
-  TARGET_LINK_LIBRARIES(test_logger ${TBB_IMPORTED_TARGETS})
 
 ENDIF(LTO)

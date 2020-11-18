@@ -11,10 +11,6 @@ using std::chrono::high_resolution_clock;
 using std::chrono::nanoseconds;
 
 template <class StaticConfig>
-robin_hood::unordered_map<TableRowID, WorkerAssignment>
-    SchedulerThread<StaticConfig>::assignments_{};
-
-template <class StaticConfig>
 SchedulerThread<StaticConfig>::SchedulerThread(
     SchedulerPool<StaticConfig>* pool,
     moodycamel::ReaderWriterQueue<LogEntryList<StaticConfig>*>* io_queue,
@@ -75,30 +71,12 @@ void SchedulerThread<StaticConfig>::run() {
       uint64_t row_id = queue->row_id;
       TableRowID key = {table_index, row_id};
 
-      auto search = assignments_.find(key);
-      if (search == assignments_.end()) {  // Not found
-
-        uint64_t wid = std::hash<TableRowID>{}(key) % nworkers;
-        // printf("wid: %lu %lu %lu\n", table_index, row_id, wid);
-
-        scheduler_queues_[wid]->enqueue(queue);
-
-        assignments_[key] = {wid, 1};
-      } else {  // Found
-        WorkerAssignment assignment = search->second;
-        assignment.nqueues += 1;
-
-        scheduler_queues_[assignment.wid]->enqueue(queue);
-
-        search->second = assignment;
-      }
-
+      uint64_t wid = std::hash<TableRowID>{}(key) % nworkers;
+      scheduler_queues_[wid]->enqueue(queue);
     } else if (stop_) {
       break;
     }
   }
-
-  assignments_.clear();
 
   run_end = high_resolution_clock::now();
   time_total += duration_cast<nanoseconds>(run_end - run_start);
@@ -112,30 +90,7 @@ void SchedulerThread<StaticConfig>::ack_executed_rows() {
   for (auto ack_queue : ack_queues_) {
     LogEntryList<StaticConfig>* queue;
     while (ack_queue->try_dequeue(queue)) {
-      uint64_t table_index = queue->table_index;
-      uint64_t row_id = queue->row_id;
-      TableRowID key = {table_index, row_id};
-      // printf("acking row id %lu at %lu\n", row_id,
-      //        duration_cast<nanoseconds>(high_resolution_clock::now().time_since_epoch()).count());
-      auto search = assignments_.find(key);
-      if (search != assignments_.end()) {  // Found
-        WorkerAssignment assignment = search->second;
-        assignment.nqueues -= 1;
-
-        if (assignment.nqueues == 0) {
-          assignments_.erase(search);
-        } else {
-          search->second = assignment;
-        }
-      } else {
-        throw std::runtime_error("unexpected row id: " + row_id);
-      }
-
-      while (queue != nullptr) {
-        auto next = queue->next;
-        free_list(queue);
-        queue = next;
-      }
+      free_list(queue);
     }
   }
 };

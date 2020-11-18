@@ -357,11 +357,6 @@ class IOThread {
                              std::vector<LogEntryList<StaticConfig>*>& lists);
 };
 
-struct WorkerAssignment {
-  uint64_t wid;
-  uint64_t nqueues;
-};
-
 template <class StaticConfig>
 class SchedulerThread {
  public:
@@ -380,8 +375,6 @@ class SchedulerThread {
   void stop();
 
  private:
-  static robin_hood::unordered_map<TableRowID, WorkerAssignment> assignments_;
-
   SchedulerPool<StaticConfig>* pool_;
   moodycamel::ReaderWriterQueue<LogEntryList<StaticConfig>*>* io_queue_;
   std::vector<moodycamel::ReaderWriterQueue<LogEntryList<StaticConfig>*>*> scheduler_queues_;

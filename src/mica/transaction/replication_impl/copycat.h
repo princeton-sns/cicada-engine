@@ -21,7 +21,7 @@ CopyCat<StaticConfig>::CopyCat(DB<StaticConfig>* db,
                                uint16_t nschedulers, uint16_t nworkers,
                                std::string logdir)
     : io_queue_{4096},
-      scheduler_queue_{4096},
+      scheduler_queues_{},
       db_{db},
       pool_{pool},
       len_{StaticConfig::kPageSize},
@@ -61,6 +61,8 @@ CopyCat<StaticConfig>::CopyCat(DB<StaticConfig>* db,
   }
 
   for (uint16_t wid = 0; wid < nworkers_; wid++) {
+    scheduler_queues_.push_back(
+        new moodycamel::ReaderWriterQueue<LogEntryList<StaticConfig>*>{4096});
     ack_queues_.push_back(
         new moodycamel::ReaderWriterQueue<LogEntryList<StaticConfig>*>{4096});
   }
@@ -87,6 +89,19 @@ CopyCat<StaticConfig>::~CopyCat() {
   if (ret != 0) {
     std::cerr << "Failed to destroy snapshot barrier: " + ret;
   }
+
+  for (auto scheduler_queue : scheduler_queues_) {
+    LogEntryList<StaticConfig>* list;
+    while (scheduler_queue->try_dequeue(list)) {
+      while (list != nullptr) {
+        auto next = list->next;
+        pool_->free_list(list);
+        list = next;
+      }
+    }
+    delete scheduler_queue;
+  }
+  scheduler_queues_.clear();
 
   for (auto ack_queue : ack_queues_) {
     LogEntryList<StaticConfig>* list;
@@ -131,8 +146,9 @@ void CopyCat<StaticConfig>::start_ios() {
   for (uint16_t iid = 0; iid < nios_; iid++) {
     auto lcore = lcore_;
     lcore_ += 2;
-    auto i = new IOThread<StaticConfig>{db_,
-      log_, pool_, &io_barrier_, &io_queue_, &io_locks_[iid], iid, nios_, db_id_++, lcore};
+    auto i = new IOThread<StaticConfig>{
+        db_, log_,  pool_,    &io_barrier_, &io_queue_, &io_locks_[iid],
+        iid, nios_, db_id_++, lcore};
 
     i->start();
 
@@ -154,13 +170,9 @@ void CopyCat<StaticConfig>::start_schedulers() {
   for (uint16_t sid = 0; sid < nschedulers_; sid++) {
     auto lcore = lcore_;
     lcore_ += 2;
-    auto s = new SchedulerThread<StaticConfig>{pool_,
-                                               &io_queue_,
-                                               &scheduler_queue_,
-                                               ack_queues_,
-                                               &scheduler_barrier_,
-                                               sid,
-                                               lcore};
+    auto s = new SchedulerThread<StaticConfig>{
+        pool_, &io_queue_, scheduler_queues_, ack_queues_, &scheduler_barrier_,
+        sid,   lcore};
 
     s->start();
 
@@ -185,7 +197,8 @@ void CopyCat<StaticConfig>::start_snapshot_manager() {
 
   auto lcore = lcore_;
   lcore_ += 2;
-  snapshot_manager_ = new SnapshotThread<StaticConfig>{db_, &snapshot_barrier_, min_wtss_, 0, lcore};
+  snapshot_manager_ = new SnapshotThread<StaticConfig>{db_, &snapshot_barrier_,
+                                                       min_wtss_, 0, lcore};
 
   snapshot_manager_->start();
 
@@ -214,12 +227,13 @@ void CopyCat<StaticConfig>::start_workers() {
     auto lcore = lcore_;
     lcore_ += 2;
     auto w = new WorkerThread<StaticConfig>{db_,
-                                            &scheduler_queue_,
+                                            scheduler_queues_[wid],
                                             ack_queues_[wid],
                                             &min_wtss_[wid],
                                             &worker_barrier_,
                                             wid,
-                                            db_id_++, lcore};
+                                            db_id_++,
+                                            lcore};
 
     w->start();
 

@@ -18,13 +18,14 @@ template <class StaticConfig>
 SchedulerThread<StaticConfig>::SchedulerThread(
     SchedulerPool<StaticConfig>* pool,
     moodycamel::ReaderWriterQueue<LogEntryList<StaticConfig>*>* io_queue,
-    moodycamel::ReaderWriterQueue<LogEntryList<StaticConfig>*>* scheduler_queue,
+    std::vector<moodycamel::ReaderWriterQueue<LogEntryList<StaticConfig>*>*>
+        scheduler_queues,
     std::vector<moodycamel::ReaderWriterQueue<LogEntryList<StaticConfig>*>*>
         ack_queues,
     pthread_barrier_t* start_barrier, uint16_t id, uint16_t lcore)
     : pool_{pool},
       io_queue_{io_queue},
-      scheduler_queue_{scheduler_queue},
+      scheduler_queues_{scheduler_queues},
       ack_queues_{ack_queues},
       start_barrier_{start_barrier},
       id_{id},
@@ -54,24 +55,17 @@ void SchedulerThread<StaticConfig>::run() {
   printf("pinning to thread %u\n", lcore_);
   mica::util::lcore.pin_thread(lcore_);
 
-  nanoseconds time_noncritical{0};
-  nanoseconds time_waiting{0};
-  nanoseconds time_critical{0};
+  uint64_t nworkers = scheduler_queues_.size();
+
   nanoseconds time_total{0};
 
   high_resolution_clock::time_point run_start;
   high_resolution_clock::time_point run_end;
 
-  high_resolution_clock::time_point start;
-  high_resolution_clock::time_point end;
-  nanoseconds diff;
-
   pthread_barrier_wait(start_barrier_);
   run_start = high_resolution_clock::now();
 
   while (true) {
-    start = high_resolution_clock::now();
-
     // Ack executed rows
     ack_executed_rows();
 
@@ -84,41 +78,33 @@ void SchedulerThread<StaticConfig>::run() {
       auto search = assignments_.find(key);
       if (search == assignments_.end()) {  // Not found
 
-        // TODO: Use one queue per worker
-        scheduler_queue_->enqueue(queue);
+        uint64_t wid = std::hash<TableRowID>{}(key) % nworkers;
+        // printf("wid: %lu %lu %lu\n", table_index, row_id, wid);
 
-        // TODO: Choose next worker ID
-        uint64_t wid = 0;
+        scheduler_queues_[wid]->enqueue(queue);
 
         assignments_[key] = {wid, 1};
       } else {  // Found
         WorkerAssignment assignment = search->second;
         assignment.nqueues += 1;
 
-        // TODO: Get correct worker queue
-        scheduler_queue_->enqueue(queue);
+        scheduler_queues_[assignment.wid]->enqueue(queue);
 
         search->second = assignment;
       }
-
-      end = high_resolution_clock::now();
-      diff = duration_cast<nanoseconds>(end - start);
-      time_critical += diff;
 
     } else if (stop_) {
       break;
     }
   }
 
+  assignments_.clear();
+
   run_end = high_resolution_clock::now();
-  diff = duration_cast<nanoseconds>(run_end - run_start);
-  time_total += diff;
+  time_total += duration_cast<nanoseconds>(run_end - run_start);
 
   printf("Exiting replica scheduler: %u\n", id_);
   printf("Time total: %ld nanoseconds\n", time_total.count());
-  printf("Time noncritical: %ld nanoseconds\n", time_noncritical.count());
-  printf("Time critical: %ld nanoseconds\n", time_critical.count());
-  printf("Time waiting: %ld nanoseconds\n", time_waiting.count());
 };
 
 template <class StaticConfig>

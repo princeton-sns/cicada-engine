@@ -368,8 +368,8 @@ class SchedulerThread {
   SchedulerThread(
       SchedulerPool<StaticConfig>* pool,
       moodycamel::ReaderWriterQueue<LogEntryList<StaticConfig>*>* io_queue,
-      moodycamel::ReaderWriterQueue<LogEntryList<StaticConfig>*>*
-          scheduler_queue,
+      std::vector<moodycamel::ReaderWriterQueue<LogEntryList<StaticConfig>*>*>
+          scheduler_queues,
       std::vector<moodycamel::ReaderWriterQueue<LogEntryList<StaticConfig>*>*>
           ack_queues,
       pthread_barrier_t* start_barrier, uint16_t id, uint16_t lcore);
@@ -384,7 +384,7 @@ class SchedulerThread {
 
   SchedulerPool<StaticConfig>* pool_;
   moodycamel::ReaderWriterQueue<LogEntryList<StaticConfig>*>* io_queue_;
-  moodycamel::ReaderWriterQueue<LogEntryList<StaticConfig>*>* scheduler_queue_;
+  std::vector<moodycamel::ReaderWriterQueue<LogEntryList<StaticConfig>*>*> scheduler_queues_;
   std::vector<moodycamel::ReaderWriterQueue<LogEntryList<StaticConfig>*>*>
       ack_queues_;
   pthread_barrier_t* start_barrier_;
@@ -527,7 +527,7 @@ class CopyCat : public CCCInterface<StaticConfig> {
 
  private:
   moodycamel::ReaderWriterQueue<LogEntryList<StaticConfig>*> io_queue_;
-  moodycamel::ReaderWriterQueue<LogEntryList<StaticConfig>*> scheduler_queue_;
+  std::vector<moodycamel::ReaderWriterQueue<LogEntryList<StaticConfig>*>*> scheduler_queues_;
   DB<StaticConfig>* db_;
   SchedulerPool<StaticConfig>* pool_;
 
@@ -579,7 +579,7 @@ struct hash<mica::transaction::TableRowID> {
   std::size_t operator()(const mica::transaction::TableRowID& t) const noexcept {
     std::size_t h1 = std::hash<uint64_t>{}(t.table_index);
     std::size_t h2 = std::hash<uint64_t>{}(t.row_id);
-    return h1 ^ (h2 << 1);
+    return h1 ^ h2;
   }
 };
 };

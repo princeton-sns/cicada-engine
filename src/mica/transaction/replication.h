@@ -22,7 +22,6 @@
 #include "mica/util/posix_io.h"
 #include "mica/util/readerwriterqueue.h"
 #include "mica/util/robin_hood.h"
-#include "tbb/concurrent_queue.h"
 
 namespace mica {
 namespace transaction {

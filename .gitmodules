@@ -1,4 +1,0 @@
-[submodule "third_party/tbb"]
-	path = third_party/tbb
-	url = https://github.com/oneapi-src/oneTBB.git
-	branch = tbb_2020

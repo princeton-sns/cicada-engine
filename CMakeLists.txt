@@ -76,13 +76,6 @@ ENDIF(LTO)
 
 # ENDIF(AVX2)
 
-#CMAKE_POLICY(SET CMP0074 NEW)
-SET(TBB_ROOT ${CMAKE_SOURCE_DIR}/third_party/tbb)
-INCLUDE(${TBB_ROOT}/cmake/TBBBuild.cmake)
-TBB_BUILD(TBB_ROOT ${TBB_ROOT} CONFIG_DIR TBB_DIR MAKE_ARGS tbb_cpf=1)
-FIND_PACKAGE(TBB REQUIRED tbb_preview)
-
-
 
 SET(SOURCES ${SOURCES} src/mica/alloc/hugetlbfs_shm.cc)
 SET(SOURCES ${SOURCES} src/mica/transaction/timestamp.cc)
@@ -94,7 +87,7 @@ SET(SOURCES ${SOURCES} src/mica/util/lcore.cc)
 SET(SOURCES ${SOURCES} src/mica/util/stopwatch.cc)
 SET(SOURCES ${SOURCES} src/mica/util/zipf.cc)
 
-SET(LIBRARIES ${LIBRARIES} rt numa pthread ${TBB_IMPORTED_TARGETS})
+SET(LIBRARIES ${LIBRARIES} rt numa pthread)
 
 IF(LTO)
 

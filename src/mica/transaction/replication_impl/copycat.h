@@ -144,11 +144,9 @@ void CopyCat<StaticConfig>::start_ios() {
   }
 
   for (uint16_t iid = 0; iid < nios_; iid++) {
-    auto lcore = lcore_;
-    lcore_ += 2;
     auto i = new IOThread<StaticConfig>{
         db_, log_,  pool_,    &io_barrier_, &io_queue_, &io_locks_[iid],
-        iid, nios_, db_id_++, lcore};
+        iid, nios_, db_id_++, lcore_++};
 
     i->start();
 
@@ -168,11 +166,9 @@ void CopyCat<StaticConfig>::stop_ios() {
 template <class StaticConfig>
 void CopyCat<StaticConfig>::start_schedulers() {
   for (uint16_t sid = 0; sid < nschedulers_; sid++) {
-    auto lcore = lcore_;
-    lcore_ += 2;
     auto s = new SchedulerThread<StaticConfig>{
         pool_, &io_queue_, scheduler_queues_, ack_queues_, &scheduler_barrier_,
-        sid,   lcore};
+        sid,   lcore_++};
 
     s->start();
 
@@ -195,10 +191,8 @@ void CopyCat<StaticConfig>::start_snapshot_manager() {
     min_wtss_.push_back({0});
   }
 
-  auto lcore = lcore_;
-  lcore_ += 2;
   snapshot_manager_ = new SnapshotThread<StaticConfig>{db_, &snapshot_barrier_,
-                                                       min_wtss_, 0, lcore};
+                                                       min_wtss_, 0, lcore_++};
 
   snapshot_manager_->start();
 
@@ -224,8 +218,6 @@ void CopyCat<StaticConfig>::start_workers() {
   }
 
   for (uint16_t wid = 0; wid < nworkers_; wid++) {
-    auto lcore = lcore_;
-    lcore_ += 2;
     auto w = new WorkerThread<StaticConfig>{db_,
                                             scheduler_queues_[wid],
                                             ack_queues_[wid],
@@ -233,7 +225,7 @@ void CopyCat<StaticConfig>::start_workers() {
                                             &worker_barrier_,
                                             wid,
                                             db_id_++,
-                                            lcore};
+                                            lcore_++};
 
     w->start();
 

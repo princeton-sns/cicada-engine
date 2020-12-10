@@ -16,8 +16,6 @@ SnapshotThread<StaticConfig>::SnapshotThread(
     std::vector<WorkerMinWTS>& min_wtss, uint16_t id, uint16_t lcore)
     : db_{db},
       min_wtss_{min_wtss},
-      counts_index_{},
-      counts_{},
       id_{id},
       lcore_{lcore},
       stop_{false},
@@ -47,10 +45,11 @@ void SnapshotThread<StaticConfig>::run() {
   mica::util::lcore.pin_thread(lcore_);
 
   nanoseconds time_total{0};
-  high_resolution_clock::time_point total_start;
-  high_resolution_clock::time_point total_end;
+  high_resolution_clock::time_point run_start;
+  high_resolution_clock::time_point run_end;
 
   pthread_barrier_wait(start_barrier_);
+  run_start = high_resolution_clock::now();
 
   while (true) {
     std::this_thread::sleep_for(std::chrono::microseconds(1));
@@ -72,6 +71,9 @@ void SnapshotThread<StaticConfig>::run() {
       break;
     }
   }
+
+  run_end = high_resolution_clock::now();
+  time_total += duration_cast<nanoseconds>(run_end - run_start);
 
   printf("Exiting snapshot manager: %u\n", id_);
   printf("Time total: %ld nanoseconds\n", time_total.count());

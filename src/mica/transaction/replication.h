@@ -19,9 +19,9 @@
 #include "mica/transaction/db.h"
 #include "mica/transaction/logging.h"
 #include "mica/transaction/row_version_pool.h"
+#include "mica/util/concurrentqueue.h"
 #include "mica/util/posix_io.h"
-#include "mica/util/readerwriterqueue.h"
-#include "mica/util/robin_hood.h"
+// #include "mica/util/readerwriterqueue.h"
 
 namespace mica {
 namespace transaction {
@@ -200,6 +200,7 @@ template <class StaticConfig>
 class LogEntryList {
  public:
   LogEntryList<StaticConfig>* next;
+  LogEntryList<StaticConfig>* tail;
 
   uint64_t table_index;
   uint64_t row_id;
@@ -241,36 +242,22 @@ class LogEntryList {
 
 } __attribute__((aligned(64)));
 
-struct TableRowID {
-  uint64_t table_index;
-  uint64_t row_id;
-
-  bool const operator==(const TableRowID& t) const {
-    return table_index == t.table_index && row_id == t.row_id;
-  }
-
-  bool const operator<(const TableRowID& t) const {
-    return table_index < t.table_index ||
-           (table_index == t.table_index && row_id < t.row_id);
-  }
-};
-
 template <class StaticConfig>
 class SchedulerPool {
  public:
   typedef typename StaticConfig::Alloc Alloc;
 
+  static constexpr uint64_t kAllocSize = 1024;
   static constexpr uint64_t list_size = sizeof(LogEntryList<StaticConfig>);
-  static constexpr uint64_t node_size = sizeof(LogEntryNode);
 
   SchedulerPool(Alloc* alloc, uint64_t size, size_t lcore);
   ~SchedulerPool();
 
-  LogEntryList<StaticConfig>* allocate_list(uint64_t n = 1);
-  void free_list(LogEntryList<StaticConfig>* p);
+  std::pair<LogEntryList<StaticConfig>*, LogEntryList<StaticConfig>*>
+  allocate_lists();
 
-  LogEntryNode* allocate_node(uint64_t n = 1);
-  void free_node(LogEntryNode* p);
+  void free_lists(LogEntryList<StaticConfig>* head,
+                  LogEntryList<StaticConfig>* tail, uint64_t n);
 
   void print_status() const {
     printf("SchedulerPool on numa node %" PRIu8 "\n", numa_id_);
@@ -282,25 +269,12 @@ class SchedulerPool {
            static_cast<double>(free_lists_ * list_size) / 1000000000.);
     printf("  total:  %7.3lf GB\n",
            static_cast<double>(total_lists_ * list_size) / 1000000000.);
-    printf(" nodes:");
-    printf("  in use: %7.3lf GB\n",
-           static_cast<double>((total_nodes_ - free_nodes_) * node_size) /
-               1000000000.);
-    printf("  free:   %7.3lf GB\n",
-           static_cast<double>(free_nodes_ * node_size) / 1000000000.);
-    printf("  total:  %7.3lf GB\n",
-           static_cast<double>(total_nodes_ * node_size) / 1000000000.);
   }
 
  private:
   Alloc* alloc_;
   uint64_t size_;
   uint8_t numa_id_;
-
-  uint64_t total_nodes_;
-  uint64_t free_nodes_;
-  char* node_pages_;
-  LogEntryNode* next_node_;
 
   uint64_t total_lists_;
   uint64_t free_lists_;
@@ -316,15 +290,19 @@ struct IOLock {
   volatile bool done;
 } __attribute__((__aligned__(64)));
 
+struct MyTraits : public moodycamel::ConcurrentQueueDefaultTraits {
+  static const size_t BLOCK_SIZE = 2048;  // Use bigger blocks
+};
+
 template <class StaticConfig>
 class IOThread {
  public:
   IOThread(DB<StaticConfig>* db,
            std::shared_ptr<MmappedLogFile<StaticConfig>> log,
            SchedulerPool<StaticConfig>* pool, pthread_barrier_t* start_barrier,
-           moodycamel::ReaderWriterQueue<LogEntryList<StaticConfig>*>* io_queue,
-           IOLock* my_lock, uint16_t id, uint16_t nios, uint16_t db_id,
-           uint16_t lcore);
+           moodycamel::ConcurrentQueue<LogEntryList<StaticConfig>*, MyTraits>* io_queue,
+           moodycamel::ProducerToken* io_queue_ptok, IOLock* my_lock,
+           uint16_t id, uint16_t nios, uint16_t db_id, uint16_t lcore);
   ~IOThread();
 
   void start();
@@ -337,7 +315,8 @@ class IOThread {
   pthread_barrier_t* start_barrier_;
   SchedulerPool<StaticConfig>* pool_;
   LogEntryList<StaticConfig>* allocated_lists_;
-  moodycamel::ReaderWriterQueue<LogEntryList<StaticConfig>*>* io_queue_;
+  moodycamel::ConcurrentQueue<LogEntryList<StaticConfig>*, MyTraits>* io_queue_;
+  moodycamel::ProducerToken* io_queue_ptok_;
   IOLock* my_lock_;
   uint16_t id_;
   uint16_t db_id_;
@@ -352,7 +331,8 @@ class IOThread {
 
   LogEntryList<StaticConfig>* allocate_list();
 
-  uint64_t build_local_lists(std::size_t segment,
+  uint64_t build_local_lists(RowVersionPool<StaticConfig>* pool,
+                             std::size_t segment,
                              std::vector<LogEntryList<StaticConfig>*>& lists);
 };
 
@@ -360,12 +340,11 @@ template <class StaticConfig>
 class SchedulerThread {
  public:
   SchedulerThread(
-      SchedulerPool<StaticConfig>* pool,
-      moodycamel::ReaderWriterQueue<LogEntryList<StaticConfig>*>* io_queue,
-      std::vector<moodycamel::ReaderWriterQueue<LogEntryList<StaticConfig>*>*>
-          scheduler_queues,
-      std::vector<moodycamel::ReaderWriterQueue<LogEntryList<StaticConfig>*>*>
-          ack_queues,
+      moodycamel::ConcurrentQueue<LogEntryList<StaticConfig>*, MyTraits>*
+          io_queue,
+      moodycamel::ProducerToken* io_queue_ptok,
+      moodycamel::ConcurrentQueue<LogEntryList<StaticConfig>*, MyTraits>* scheduler_queue,
+      moodycamel::ProducerToken* scheduler_queue_ptok,
       pthread_barrier_t* start_barrier, uint16_t id, uint16_t lcore);
 
   ~SchedulerThread();
@@ -374,11 +353,10 @@ class SchedulerThread {
   void stop();
 
  private:
-  SchedulerPool<StaticConfig>* pool_;
-  moodycamel::ReaderWriterQueue<LogEntryList<StaticConfig>*>* io_queue_;
-  std::vector<moodycamel::ReaderWriterQueue<LogEntryList<StaticConfig>*>*> scheduler_queues_;
-  std::vector<moodycamel::ReaderWriterQueue<LogEntryList<StaticConfig>*>*>
-      ack_queues_;
+  moodycamel::ConcurrentQueue<LogEntryList<StaticConfig>*, MyTraits>* io_queue_;
+  moodycamel::ProducerToken* io_queue_ptok_;
+  moodycamel::ConcurrentQueue<LogEntryList<StaticConfig>*, MyTraits>* scheduler_queue_;
+  moodycamel::ProducerToken* scheduler_queue_ptok_;
   pthread_barrier_t* start_barrier_;
   uint16_t id_;
   uint16_t lcore_;
@@ -386,10 +364,6 @@ class SchedulerThread {
   std::thread thread_;
 
   void run();
-
-  void ack_executed_rows();
-
-  void free_list(LogEntryList<StaticConfig>* list);
 };
 
 struct WorkerMinWTS {
@@ -411,8 +385,6 @@ class SnapshotThread {
  private:
   DB<StaticConfig>* db_;
   std::vector<WorkerMinWTS>& min_wtss_;
-  robin_hood::unordered_map<uint64_t, uint64_t> counts_index_;
-  std::list<std::pair<uint64_t, uint64_t>> counts_;
   uint16_t id_;
   uint16_t lcore_;
   volatile bool stop_;
@@ -426,10 +398,9 @@ template <class StaticConfig>
 class WorkerThread {
  public:
   WorkerThread(
-      DB<StaticConfig>* db,
-      moodycamel::ReaderWriterQueue<LogEntryList<StaticConfig>*>*
-          scheduler_queue,
-      moodycamel::ReaderWriterQueue<LogEntryList<StaticConfig>*>* ack_queue,
+      DB<StaticConfig>* db, SchedulerPool<StaticConfig>* pool,
+      moodycamel::ConcurrentQueue<LogEntryList<StaticConfig>*, MyTraits>* scheduler_queue,
+      moodycamel::ProducerToken* scheduler_queue_ptok,
       WorkerMinWTS* min_wts, pthread_barrier_t* start_barrier, uint16_t id,
       uint16_t db_id, uint16_t lcore);
 
@@ -440,21 +411,23 @@ class WorkerThread {
 
  private:
   DB<StaticConfig>* db_;
-  moodycamel::ReaderWriterQueue<LogEntryList<StaticConfig>*>* scheduler_queue_;
-  moodycamel::ReaderWriterQueue<LogEntryList<StaticConfig>*>* ack_queue_;
+  SchedulerPool<StaticConfig>* pool_;
+  moodycamel::ConcurrentQueue<LogEntryList<StaticConfig>*, MyTraits>* scheduler_queue_;
+  moodycamel::ProducerToken* scheduler_queue_ptok_;
   WorkerMinWTS* min_wts_;
   pthread_barrier_t* start_barrier_;
+  LogEntryList<StaticConfig>* freed_lists_head_;
+  LogEntryList<StaticConfig>* freed_lists_tail_;
+  uint64_t num_freed_lists_;
   uint16_t id_;
   uint16_t db_id_;
   uint16_t lcore_;
   volatile bool stop_;
   std::thread thread_;
 
-  nanoseconds time_working_;
-  high_resolution_clock::time_point working_start_;
-  high_resolution_clock::time_point working_end_;
-
   void run();
+
+  void free_list(LogEntryList<StaticConfig>* list);
 };
 
 template <class StaticConfig>
@@ -510,8 +483,10 @@ class CopyCat : public CCCInterface<StaticConfig> {
   void reset();
 
  private:
-  moodycamel::ReaderWriterQueue<LogEntryList<StaticConfig>*> io_queue_;
-  std::vector<moodycamel::ReaderWriterQueue<LogEntryList<StaticConfig>*>*> scheduler_queues_;
+  moodycamel::ConcurrentQueue<LogEntryList<StaticConfig>*, MyTraits> io_queue_;
+  moodycamel::ConcurrentQueue<LogEntryList<StaticConfig>*, MyTraits> scheduler_queue_;
+  moodycamel::ProducerToken io_queue_ptok_;
+  moodycamel::ProducerToken scheduler_queue_ptok_;
   DB<StaticConfig>* db_;
   SchedulerPool<StaticConfig>* pool_;
 
@@ -537,8 +512,6 @@ class CopyCat : public CCCInterface<StaticConfig> {
   std::vector<WorkerMinWTS> min_wtss_;
   pthread_barrier_t worker_barrier_;
   std::vector<WorkerThread<StaticConfig>*> workers_;
-  std::vector<moodycamel::ReaderWriterQueue<LogEntryList<StaticConfig>*>*>
-      ack_queues_;
 
   pthread_barrier_t snapshot_barrier_;
   SnapshotThread<StaticConfig>* snapshot_manager_;
@@ -556,17 +529,6 @@ class CopyCat : public CCCInterface<StaticConfig> {
 };  // namespace transaction
 };  // namespace mica
 
-
-namespace std {
-template <>
-struct hash<mica::transaction::TableRowID> {
-  std::size_t operator()(const mica::transaction::TableRowID& t) const noexcept {
-    std::size_t h1 = std::hash<uint64_t>{}(t.table_index);
-    std::size_t h2 = std::hash<uint64_t>{}(t.row_id);
-    return h1 ^ h2;
-  }
-};
-};
 #include "replication_impl/copycat.h"
 #include "replication_impl/io_thread.h"
 #include "replication_impl/scheduler_pool.h"

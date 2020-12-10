@@ -14,7 +14,8 @@ template <class StaticConfig>
 IOThread<StaticConfig>::IOThread(
     DB<StaticConfig>* db, std::shared_ptr<MmappedLogFile<StaticConfig>> log,
     SchedulerPool<StaticConfig>* pool, pthread_barrier_t* start_barrier,
-    moodycamel::ReaderWriterQueue<LogEntryList<StaticConfig>*>* io_queue,
+    moodycamel::ConcurrentQueue<LogEntryList<StaticConfig>*, MyTraits>* io_queue,
+    moodycamel::ProducerToken* io_queue_ptok,
     IOLock* my_lock, uint16_t id, uint16_t nios, uint16_t db_id, uint16_t lcore)
     : db_{db},
       log_{log},
@@ -23,6 +24,7 @@ IOThread<StaticConfig>::IOThread(
       pool_{pool},
       allocated_lists_{nullptr},
       io_queue_{io_queue},
+      io_queue_ptok_{io_queue_ptok},
       my_lock_{my_lock},
       id_{id},
       db_id_{db_id},
@@ -31,14 +33,7 @@ IOThread<StaticConfig>::IOThread(
       stop_{false} {};
 
 template <class StaticConfig>
-IOThread<StaticConfig>::~IOThread() {
-  LogEntryList<StaticConfig>* queue = allocated_lists_;
-  while (queue != nullptr) {
-    auto next = queue->next;
-    pool_->free_list(queue);
-    queue = next;
-  }
-};
+IOThread<StaticConfig>::~IOThread(){};
 
 template <class StaticConfig>
 void IOThread<StaticConfig>::start() {
@@ -73,29 +68,34 @@ void IOThread<StaticConfig>::run() {
   mica::util::lcore.pin_thread(lcore_);
 
   std::size_t nsegments = log_->get_nsegments();
-
+  RowVersionPool<StaticConfig>* pool = db_->row_version_pool(db_id_);
   std::vector<LogEntryList<StaticConfig>*> local_lists{};
 
   nanoseconds time_total{0};
-  nanoseconds diff;
 
   high_resolution_clock::time_point run_start;
   high_resolution_clock::time_point run_end;
+
+  // uint64_t n = 0;
+  uint64_t i = 0;
+  uint64_t max = 2048;
+  // LogEntryList<StaticConfig>* queues[max];
 
   pthread_barrier_wait(start_barrier_);
   run_start = high_resolution_clock::now();
 
   for (std::size_t cur_segment = id_; cur_segment < nsegments;
        cur_segment += nios_) {
-    build_local_lists(cur_segment, local_lists);
+    build_local_lists(pool, cur_segment, local_lists);
 
     acquire_io_lock();
-    // Memory barrier here so next IO thread sees all updates
-    // to all SPSC queues' internal variables
-    ::mica::util::memory_barrier();
 
-    for (const auto& item : local_lists) {
-      io_queue_->enqueue(item);
+    for (i = 0; local_lists.size() - i >= max; i += max) {
+      io_queue_->enqueue_bulk(*io_queue_ptok_, &local_lists[i], max);
+    }
+
+    if (local_lists.size() - i > 0) {
+      io_queue_->enqueue_bulk(*io_queue_ptok_, &local_lists[i], local_lists.size() - i);
     }
 
     release_io_lock();
@@ -104,8 +104,7 @@ void IOThread<StaticConfig>::run() {
   }
 
   run_end = high_resolution_clock::now();
-  diff = duration_cast<nanoseconds>(run_end - run_start);
-  time_total += diff;
+  time_total += duration_cast<nanoseconds>(run_end - run_start);
 
   printf("Exiting replica IO thread: %u\n", id_);
   printf("Time total: %ld nanoseconds\n", time_total.count());
@@ -114,18 +113,20 @@ void IOThread<StaticConfig>::run() {
 template <class StaticConfig>
 LogEntryList<StaticConfig>* IOThread<StaticConfig>::allocate_list() {
   if (allocated_lists_ == nullptr) {
-    allocated_lists_ = pool_->allocate_list(1024);
+    auto pair = pool_->allocate_lists();
+    auto head = pair.first;
+    auto tail = pair.second;
+    tail->next = allocated_lists_;
+    allocated_lists_ = head;
     if (allocated_lists_ == nullptr) {
       printf("pool->allocate_list() returned nullptr\n");
     }
   }
 
   LogEntryList<StaticConfig>* list = allocated_lists_;
-  allocated_lists_ =
-      reinterpret_cast<LogEntryList<StaticConfig>*>(allocated_lists_->next);
+  allocated_lists_ = allocated_lists_->next;
 
   list->next = nullptr;
-  // list->cur = list->buf;
   list->nentries = 0;
   list->head_rv = nullptr;
   list->tail_rv = nullptr;
@@ -137,10 +138,8 @@ LogEntryList<StaticConfig>* IOThread<StaticConfig>::allocate_list() {
 
 template <class StaticConfig>
 uint64_t IOThread<StaticConfig>::build_local_lists(
-    std::size_t segment, std::vector<LogEntryList<StaticConfig>*>& lists) {
-  auto pool = db_->row_version_pool(db_id_);
-
-  robin_hood::unordered_map<TableRowID, LogEntryList<StaticConfig>*> index{};
+    RowVersionPool<StaticConfig>* pool, std::size_t segment,
+    std::vector<LogEntryList<StaticConfig>*>& lists) {
 
   LogFile<StaticConfig>* lf = log_->get_lf(segment);
   // lf->print();
@@ -214,23 +213,14 @@ uint64_t IOThread<StaticConfig>::build_local_lists(
             "build_local_lists: Unexpected log entry type.");
     }
 
-    TableRowID key = {table_index, row_id};
+    LogEntryList<StaticConfig>* list = allocate_list();
+    list->table_index = table_index;
+    list->row_id = row_id;
+    list->tail_ts = ts;
 
-    LogEntryList<StaticConfig>* list = nullptr;
-    auto search = index.find(key);
-    if (search == index.end()) {  // Not found
-      list = allocate_list();
-      list->table_index = table_index;
-      list->row_id = row_id;
-      list->tail_ts = ts;
+    list->push(rv);
 
-      list->push(rv);
-
-      index[key] = list;
-      lists.push_back(list);
-    } else {
-      search->second->push(rv);
-    }
+    lists.push_back(list);
 
     ptr += size;
   }

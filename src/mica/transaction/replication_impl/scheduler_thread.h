@@ -12,17 +12,15 @@ using std::chrono::nanoseconds;
 
 template <class StaticConfig>
 SchedulerThread<StaticConfig>::SchedulerThread(
-    SchedulerPool<StaticConfig>* pool,
-    moodycamel::ReaderWriterQueue<LogEntryList<StaticConfig>*>* io_queue,
-    std::vector<moodycamel::ReaderWriterQueue<LogEntryList<StaticConfig>*>*>
-        scheduler_queues,
-    std::vector<moodycamel::ReaderWriterQueue<LogEntryList<StaticConfig>*>*>
-        ack_queues,
+    moodycamel::ConcurrentQueue<LogEntryList<StaticConfig>*, MyTraits>* io_queue,
+    moodycamel::ProducerToken* io_queue_ptok,
+    moodycamel::ConcurrentQueue<LogEntryList<StaticConfig>*, MyTraits>* scheduler_queue,
+    moodycamel::ProducerToken* scheduler_queue_ptok,
     pthread_barrier_t* start_barrier, uint16_t id, uint16_t lcore)
-    : pool_{pool},
-      io_queue_{io_queue},
-      scheduler_queues_{scheduler_queues},
-      ack_queues_{ack_queues},
+    : io_queue_{io_queue},
+      io_queue_ptok_{io_queue_ptok},
+      scheduler_queue_{scheduler_queue},
+      scheduler_queue_ptok_{scheduler_queue_ptok},
       start_barrier_{start_barrier},
       id_{id},
       lcore_{lcore},
@@ -51,28 +49,28 @@ void SchedulerThread<StaticConfig>::run() {
   printf("pinning to thread %u\n", lcore_);
   mica::util::lcore.pin_thread(lcore_);
 
-  uint64_t nworkers = scheduler_queues_.size();
-
   nanoseconds time_total{0};
 
   high_resolution_clock::time_point run_start;
   high_resolution_clock::time_point run_end;
 
+  uint64_t nqueues = 0;
+  uint64_t npops = 0;
+
+  uint64_t n = 0;
+  uint64_t max = 2048;
+  LogEntryList<StaticConfig>* queues[max];
+
   pthread_barrier_wait(start_barrier_);
   run_start = high_resolution_clock::now();
 
   while (true) {
-    // Ack executed rows
-    ack_executed_rows();
+    n = io_queue_->try_dequeue_bulk_from_producer(*io_queue_ptok_, queues, max);
 
-    LogEntryList<StaticConfig>* queue;
-    if (io_queue_->try_dequeue(queue)) {
-      uint64_t table_index = queue->table_index;
-      uint64_t row_id = queue->row_id;
-      TableRowID key = {table_index, row_id};
-
-      uint64_t wid = std::hash<TableRowID>{}(key) % nworkers;
-      scheduler_queues_[wid]->enqueue(queue);
+    if (n != 0) {
+      npops += 1;
+      nqueues += n;
+      scheduler_queue_->enqueue_bulk(*scheduler_queue_ptok_, queues, n);
     } else if (stop_) {
       break;
     }
@@ -82,24 +80,9 @@ void SchedulerThread<StaticConfig>::run() {
   time_total += duration_cast<nanoseconds>(run_end - run_start);
 
   printf("Exiting replica scheduler: %u\n", id_);
+  printf("Avg. queues per pop: %g queues\n", (double)nqueues / (double)npops);
   printf("Time total: %ld nanoseconds\n", time_total.count());
 };
-
-template <class StaticConfig>
-void SchedulerThread<StaticConfig>::ack_executed_rows() {
-  for (auto ack_queue : ack_queues_) {
-    LogEntryList<StaticConfig>* queue;
-    while (ack_queue->try_dequeue(queue)) {
-      free_list(queue);
-    }
-  }
-};
-
-template <class StaticConfig>
-void SchedulerThread<StaticConfig>::free_list(
-    LogEntryList<StaticConfig>* list) {
-  pool_->free_list(list);
-}
 
 };  // namespace transaction
 };  // namespace mica

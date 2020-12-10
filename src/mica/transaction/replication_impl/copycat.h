@@ -3,6 +3,7 @@
 #define MICA_TRANSACTION_COPYCAT_H_
 
 #include <chrono>
+#include <queue>
 #include <thread>
 
 #include "mica/transaction/logging.h"
@@ -20,8 +21,10 @@ CopyCat<StaticConfig>::CopyCat(DB<StaticConfig>* db,
                                uint16_t nloggers, uint16_t nios,
                                uint16_t nschedulers, uint16_t nworkers,
                                std::string logdir)
-    : io_queue_{4096},
-      scheduler_queues_{},
+    : io_queue_{4096, 1, 0},
+      scheduler_queue_{4096, 1, 0},
+      io_queue_ptok_{io_queue_},
+      scheduler_queue_ptok_{scheduler_queue_},
       db_{db},
       pool_{pool},
       len_{StaticConfig::kPageSize},
@@ -38,7 +41,6 @@ CopyCat<StaticConfig>::CopyCat(DB<StaticConfig>* db,
       schedulers_{},
       min_wtss_{},
       workers_{},
-      ack_queues_{},
       snapshot_manager_{nullptr} {
   int ret = pthread_barrier_init(&io_barrier_, nullptr, nios_ + 1);
   if (ret != 0) {
@@ -58,13 +60,6 @@ CopyCat<StaticConfig>::CopyCat(DB<StaticConfig>* db,
   ret = pthread_barrier_init(&snapshot_barrier_, nullptr, 2);
   if (ret != 0) {
     throw std::runtime_error("Failed to init snapshot barrier: " + ret);
-  }
-
-  for (uint16_t wid = 0; wid < nworkers_; wid++) {
-    scheduler_queues_.push_back(
-        new moodycamel::ReaderWriterQueue<LogEntryList<StaticConfig>*>{4096});
-    ack_queues_.push_back(
-        new moodycamel::ReaderWriterQueue<LogEntryList<StaticConfig>*>{4096});
   }
 }
 
@@ -89,32 +84,6 @@ CopyCat<StaticConfig>::~CopyCat() {
   if (ret != 0) {
     std::cerr << "Failed to destroy snapshot barrier: " + ret;
   }
-
-  for (auto scheduler_queue : scheduler_queues_) {
-    LogEntryList<StaticConfig>* list;
-    while (scheduler_queue->try_dequeue(list)) {
-      while (list != nullptr) {
-        auto next = list->next;
-        pool_->free_list(list);
-        list = next;
-      }
-    }
-    delete scheduler_queue;
-  }
-  scheduler_queues_.clear();
-
-  for (auto ack_queue : ack_queues_) {
-    LogEntryList<StaticConfig>* list;
-    while (ack_queue->try_dequeue(list)) {
-      while (list != nullptr) {
-        auto next = list->next;
-        pool_->free_list(list);
-        list = next;
-      }
-    }
-    delete ack_queue;
-  }
-  ack_queues_.clear();
 }
 
 template <class StaticConfig>
@@ -144,9 +113,17 @@ void CopyCat<StaticConfig>::start_ios() {
   }
 
   for (uint16_t iid = 0; iid < nios_; iid++) {
-    auto i = new IOThread<StaticConfig>{
-        db_, log_,  pool_,    &io_barrier_, &io_queue_, &io_locks_[iid],
-        iid, nios_, db_id_++, lcore_++};
+    auto i = new IOThread<StaticConfig>{db_,
+                                        log_,
+                                        pool_,
+                                        &io_barrier_,
+                                        &io_queue_,
+                                        &io_queue_ptok_,
+                                        &io_locks_[iid],
+                                        iid,
+                                        nios_,
+                                        db_id_++,
+                                        lcore_++};
 
     i->start();
 
@@ -166,23 +143,28 @@ void CopyCat<StaticConfig>::stop_ios() {
 template <class StaticConfig>
 void CopyCat<StaticConfig>::start_schedulers() {
   for (uint16_t sid = 0; sid < nschedulers_; sid++) {
-    auto s = new SchedulerThread<StaticConfig>{
-        pool_, &io_queue_, scheduler_queues_, ack_queues_, &scheduler_barrier_,
-        sid,   lcore_++};
+    //lcore_++;
+    //auto s = new SchedulerThread<StaticConfig>{&io_queue_,
+    //                                           &io_queue_ptok_,
+    //                                           &scheduler_queue_,
+    //                                           &scheduler_queue_ptok_,
+    //                                           &scheduler_barrier_,
+    //                                           sid,
+    //                                           lcore_++};
 
-    s->start();
+    //s->start();
 
-    schedulers_.push_back(s);
+    //schedulers_.push_back(s);
   }
 
-  pthread_barrier_wait(&scheduler_barrier_);
+  //pthread_barrier_wait(&scheduler_barrier_);
 }
 
 template <class StaticConfig>
 void CopyCat<StaticConfig>::stop_schedulers() {
-  for (auto s : schedulers_) {
-    s->stop();
-  }
+  //for (auto s : schedulers_) {
+  //  s->stop();
+  //}
 }
 
 template <class StaticConfig>
@@ -208,19 +190,13 @@ void CopyCat<StaticConfig>::stop_snapshot_manager() {
 
 template <class StaticConfig>
 void CopyCat<StaticConfig>::start_workers() {
-  for (uint16_t iid = 0; iid < nios_; iid++) {
-    bool locked = true;
-    if (iid == 0) {
-      locked = false;
-    }
-
-    io_locks_.push_back({nullptr, locked, false});
-  }
-
   for (uint16_t wid = 0; wid < nworkers_; wid++) {
     auto w = new WorkerThread<StaticConfig>{db_,
-                                            scheduler_queues_[wid],
-                                            ack_queues_[wid],
+                                            pool_,
+                                            &io_queue_,
+                                            &io_queue_ptok_,
+                                            //&scheduler_queue_,
+                                            //&scheduler_queue_ptok_,
                                             &min_wtss_[wid],
                                             &worker_barrier_,
                                             wid,
@@ -256,7 +232,7 @@ void CopyCat<StaticConfig>::reset() {
   ios_.clear();
 
   LogEntryList<StaticConfig>* list;
-  while (io_queue_.try_dequeue(list)) {
+  while (io_queue_.try_dequeue_from_producer(io_queue_ptok_, list)) {
   }  // Empty queue
 
   for (auto s : schedulers_) {
@@ -269,17 +245,10 @@ void CopyCat<StaticConfig>::reset() {
     delete w;
   }
 
-  for (auto queue : ack_queues_) {
-    while (queue->try_dequeue(list)) {
-      while (list != nullptr) {
-        auto next = list->next;
-        pool_->free_list(list);
-        list = next;
-      }
-    }
-  }
-
   workers_.clear();
+
+  while (scheduler_queue_.try_dequeue(list)) {
+  }  // Empty queue
 
   delete snapshot_manager_;
 
@@ -318,16 +287,12 @@ void CopyCat<StaticConfig>::create_hash_index(
 }
 
 template <class StaticConfig>
-void CopyCat<StaticConfig>::preprocess_logs() {
-  const std::string outfname = logdir_ + "/out.log";
-
-  std::vector<std::shared_ptr<MmappedLogFile<StaticConfig>>> mlfs{};
-
+std::size_t get_total_log_size(std::string logdir, uint64_t nloggers) {
   // Find output log file size
   std::size_t out_size = 0;
-  for (uint16_t thread_id = 0; thread_id < nloggers_; thread_id++) {
+  for (uint16_t thread_id = 0; thread_id < nloggers; thread_id++) {
     for (uint64_t file_index = 0;; file_index++) {
-      std::string fname = logdir_ + "/out." + std::to_string(thread_id) + "." +
+      std::string fname = logdir + "/out." + std::to_string(thread_id) + "." +
                           std::to_string(file_index) + ".log";
 
       auto mlf = MmappedLogFile<StaticConfig>::open_existing(fname, PROT_READ,
@@ -336,12 +301,36 @@ void CopyCat<StaticConfig>::preprocess_logs() {
         break;
       }
 
-      // mlf->get_lf()->print();
-
       out_size += mlf->get_size();
-      mlfs.push_back(mlf);
     }
   }
+
+  return out_size;
+}
+
+template <class StaticConfig>
+uint64_t get_ts(LogEntry<StaticConfig>* le) {
+  switch (le->type) {
+    case LogEntryType::CREATE_TABLE:
+    case LogEntryType::CREATE_HASH_IDX:
+      return 0;
+
+    case LogEntryType::INSERT_ROW:
+      return static_cast<InsertRowLogEntry<StaticConfig>*>(le)->txn_ts;
+
+    case LogEntryType::WRITE_ROW:
+      return static_cast<WriteRowLogEntry<StaticConfig>*>(le)->txn_ts;
+
+    default:
+      throw std::runtime_error("preprocess_logs: Unexpected log entry type.");
+  }
+}
+
+template <class StaticConfig>
+void CopyCat<StaticConfig>::preprocess_logs() {
+  const std::string outfname = logdir_ + "/out.log";
+
+  std::size_t out_size = get_total_log_size<StaticConfig>(logdir_, nloggers_);
 
   // Round up to next multiple of len_
   out_size = len_ * ((out_size + (len_ - 1)) / len_);
@@ -355,80 +344,93 @@ void CopyCat<StaticConfig>::preprocess_logs() {
                                              PROT_READ | PROT_WRITE, MAP_SHARED,
                                              nsegments(out_size));
 
-  // Sort log files by transaction timestamp
-  while (mlfs.size() != 0) {
-    uint64_t min_txn_ts = static_cast<uint64_t>(-1);
-    std::size_t next_i = 0;
+  class MLF {
+   public:
+    std::shared_ptr<MmappedLogFile<StaticConfig>> mlf;
+    uint64_t ts;
+    uint16_t thread_id;
 
-    // Find log file with min transaction timestamp
-    for (std::size_t i = 0; i < mlfs.size(); i++) {
-      std::shared_ptr<MmappedLogFile<StaticConfig>> mlf = mlfs[i];
+    MLF(std::shared_ptr<MmappedLogFile<StaticConfig>> mlf, uint64_t ts,
+        uint16_t thread_id) {
+      this->mlf = mlf;
+      this->ts = ts;
+      this->thread_id = thread_id;
+    }
+  };
 
-      LogEntry<StaticConfig>* le = mlf->get_cur_le();
-      // le->print();
+  auto cmp = [](MLF left, MLF right) { return left.ts > right.ts; };
 
-      CreateTableLogEntry<StaticConfig>* ctle = nullptr;
-      CreateHashIndexLogEntry<StaticConfig>* chile = nullptr;
-      InsertRowLogEntry<StaticConfig>* irle = nullptr;
-      WriteRowLogEntry<StaticConfig>* wrle = nullptr;
+  std::priority_queue<MLF, std::vector<MLF>, decltype(cmp)> pq{cmp};
+  std::vector<uint64_t> cur_file_indices{};
 
-      switch (le->type) {
-        case LogEntryType::CREATE_TABLE:
-          ctle = static_cast<CreateTableLogEntry<StaticConfig>*>(le);
-          // ctle->print();
-          create_table(db_, ctle);
-          mlf->read_next_le();
-          break;
+  for (uint16_t thread_id = 0; thread_id < nloggers_; thread_id++) {
+    uint64_t file_index = 0;
+    std::string fname = logdir_ + "/out." + std::to_string(thread_id) + "." +
+                        std::to_string(file_index) + ".log";
 
-        case LogEntryType::CREATE_HASH_IDX:
-          chile = static_cast<CreateHashIndexLogEntry<StaticConfig>*>(le);
-          // chile->print();
-          create_hash_index(db_, chile);
-          mlf->read_next_le();
-          break;
+    auto mlf = MmappedLogFile<StaticConfig>::open_existing(fname, PROT_READ,
+                                                           MAP_SHARED);
+    if (mlf != nullptr && mlf->get_nentries() > 0) {
+      pq.emplace(mlf, get_ts(mlf->get_cur_le()), thread_id);
+    }
 
-        case LogEntryType::INSERT_ROW:
-          irle = static_cast<InsertRowLogEntry<StaticConfig>*>(le);
-          // irle->print();
-          if (irle->txn_ts < min_txn_ts) {
-            min_txn_ts = irle->txn_ts;
-            next_i = i;
-          }
-          break;
+    cur_file_indices.push_back(file_index);
+  }
 
-        case LogEntryType::WRITE_ROW:
-          wrle = static_cast<WriteRowLogEntry<StaticConfig>*>(le);
-          // wrle->print();
-          if (wrle->txn_ts < min_txn_ts) {
-            min_txn_ts = wrle->txn_ts;
-            next_i = i;
-          }
-          break;
+  while (!pq.empty()) {
+    auto wrapper = pq.top();
+    pq.pop();
+    auto ts = wrapper.ts;
+    auto mlf = wrapper.mlf;
+    auto thread_id = wrapper.thread_id;
 
-        default:
-          throw std::runtime_error(
-              "preprocess_logs: Unexpected log entry type.");
+    LogEntry<StaticConfig>* le = mlf->get_cur_le();
+
+    CreateTableLogEntry<StaticConfig>* ctle = nullptr;
+    CreateHashIndexLogEntry<StaticConfig>* chile = nullptr;
+
+    switch (le->type) {
+      case LogEntryType::CREATE_TABLE:
+        ctle = static_cast<CreateTableLogEntry<StaticConfig>*>(le);
+        // ctle->print();
+        create_table(db_, ctle);
+        break;
+
+      case LogEntryType::CREATE_HASH_IDX:
+        chile = static_cast<CreateHashIndexLogEntry<StaticConfig>*>(le);
+        // chile->print();
+        create_hash_index(db_, chile);
+        break;
+
+      case LogEntryType::INSERT_ROW:
+        // static_cast<InsertRowLogEntry<StaticConfig>*>(le)->print();
+        out_mlf->write_next_le(le, le->size);
+        break;
+
+      case LogEntryType::WRITE_ROW:
+        // static_cast<WriteRowLogEntry<StaticConfig>*>(le)->print();
+        out_mlf->write_next_le(le, le->size);
+        break;
+
+      default:
+        throw std::runtime_error("preprocess_logs: Unexpected log entry type.");
+    }
+
+    mlf->read_next_le();
+    if (mlf->has_next_le()) {
+      pq.emplace(mlf, get_ts(mlf->get_cur_le()), thread_id);
+    } else {
+      uint64_t file_index = cur_file_indices[thread_id] + 1;
+      std::string fname = logdir_ + "/out." + std::to_string(thread_id) + "." +
+                          std::to_string(file_index) + ".log";
+
+      mlf = MmappedLogFile<StaticConfig>::open_existing(fname, PROT_READ,
+                                                        MAP_SHARED);
+      if (mlf != nullptr && mlf->get_nentries() > 0) {
+        pq.emplace(mlf, get_ts(mlf->get_cur_le()), thread_id);
+        cur_file_indices[thread_id] = file_index;
       }
     }
-
-    if (min_txn_ts != static_cast<uint64_t>(-1)) {
-      auto mlf = mlfs[next_i];
-      auto le = mlf->get_cur_le();
-
-      // le->print();
-
-      out_mlf->write_next_le(le, le->size);
-
-      mlf->read_next_le();
-    }
-
-    // Remove empty mlfs
-    mlfs.erase(
-        std::remove_if(mlfs.begin(), mlfs.end(),
-                       [](std::shared_ptr<MmappedLogFile<StaticConfig>> mlf) {
-                         return !mlf->has_next_le();
-                       }),
-        mlfs.end());
   }
 }
 
@@ -462,22 +464,22 @@ void CopyCat<StaticConfig>::read_logs() {
         switch (le->type) {
           case LogEntryType::CREATE_TABLE:
             ctle = static_cast<CreateTableLogEntry<StaticConfig>*>(le);
-            // ctle->print();
+            ctle->print();
             break;
 
           case LogEntryType::CREATE_HASH_IDX:
             chile = static_cast<CreateHashIndexLogEntry<StaticConfig>*>(le);
-            // chile->print();
+            chile->print();
             break;
 
           case LogEntryType::INSERT_ROW:
             irle = static_cast<InsertRowLogEntry<StaticConfig>*>(le);
-            // irle->print();
+            irle->print();
             break;
 
           case LogEntryType::WRITE_ROW:
             wrle = static_cast<WriteRowLogEntry<StaticConfig>*>(le);
-            // wrle->print();
+            wrle->print();
             break;
         }
 

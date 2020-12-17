@@ -112,6 +112,10 @@ void CopyCat<StaticConfig>::start_ios() {
     io_locks_[iid].next = &io_locks_[next_iid];
   }
 
+  // Put IO threads on NUMA 1
+  uint16_t lcore1 = (uint16_t)::mica::util::lcore.first_lcore_id_with_numa_id(1);
+  db_id_ = std::max(db_id_, lcore1);
+  lcore_ = std::max(lcore_, lcore1);
   for (uint16_t iid = 0; iid < nios_; iid++) {
     auto i = new IOThread<StaticConfig>{db_,
                                         log_,
@@ -322,7 +326,7 @@ uint64_t get_ts(LogEntry<StaticConfig>* le) {
       return static_cast<WriteRowLogEntry<StaticConfig>*>(le)->txn_ts;
 
     default:
-      throw std::runtime_error("preprocess_logs: Unexpected log entry type.");
+      throw std::runtime_error("get_ts: Unexpected log entry type.");
   }
 }
 
@@ -332,11 +336,17 @@ void CopyCat<StaticConfig>::preprocess_logs() {
 
   std::size_t out_size = get_total_log_size<StaticConfig>(logdir_, nloggers_);
 
+  // Add space overhead of segments
+  out_size += nsegments(out_size) * sizeof(LogFile<StaticConfig>);
+
   // Round up to next multiple of len_
   out_size = len_ * ((out_size + (len_ - 1)) / len_);
   if (out_size == 0) {
     return;
   }
+
+  // Add an extra len_ to account for internal fragmentation at segment boundaries
+  out_size += len_;
 
   // Allocate out file
   std::shared_ptr<MmappedLogFile<StaticConfig>> out_mlf =

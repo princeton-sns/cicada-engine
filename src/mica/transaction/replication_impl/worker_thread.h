@@ -111,6 +111,7 @@ void WorkerThread<StaticConfig>::run() {
         RowVersion<StaticConfig>* queue_head = queue->head_rv;
         RowVersion<StaticConfig>* queue_tail = queue->tail_rv;
         RowVersion<StaticConfig>* older_rv = nullptr;
+        bool skipped = false;
 
         // RowVersion<StaticConfig>* temp = queue_head;
         // while (temp != nullptr) {
@@ -121,6 +122,7 @@ void WorkerThread<StaticConfig>::run() {
         do {
           older_rv = row_head->older_rv;
           if (older_rv != nullptr && older_rv->wts.t2 > tail_ts) {
+            skipped = true;
             min_min_wts = std::max(min_min_wts, older_rv->wts.t2);
             break;
           }
@@ -132,7 +134,7 @@ void WorkerThread<StaticConfig>::run() {
 
         ::mica::util::memory_barrier();
 
-        if (queue_tail->older_rv != nullptr) {
+        if (!skipped && queue_tail->older_rv != nullptr) {
           uint8_t deleted = false;  // TODO: Handle deleted rows
           ctx->schedule_gc({tail_ts}, tbl, cf_id, deleted, row_id, row_head,
                            queue_tail);
@@ -145,6 +147,18 @@ void WorkerThread<StaticConfig>::run() {
         if (!tx.commit_replica(nentries)) {
           throw std::runtime_error("run: Failed to commit transaction.");
         }
+
+       if (skipped) {
+         //printf("gc'ing skipped rows!\n");
+         queue_tail->older_rv = nullptr;
+         older_rv = queue_head;
+         while (older_rv != nullptr) {
+           auto temp = older_rv->older_rv;
+           //older_rv->older_rv = nullptr;
+           ctx->deallocate_version(older_rv);
+           older_rv = temp;
+         }
+       }
 
         //free_list(queue);
       }

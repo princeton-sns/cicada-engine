@@ -12,12 +12,15 @@
 #include <sstream>
 #include <string>
 #include <thread>
+#include <type_traits>
 #include <unordered_map>
 #include <utility>
 #include <vector>
 
 #include "mica/transaction/db.h"
 #include "mica/transaction/logging.h"
+#include "mica/transaction/mmap_lf.h"
+#include "mica/transaction/replication_utils.h"
 #include "mica/transaction/row_version_pool.h"
 #include "mica/util/concurrentqueue.h"
 #include "mica/util/posix_io.h"
@@ -32,176 +35,35 @@ using std::chrono::nanoseconds;
 using mica::util::PosixIO;
 
 template <class StaticConfig>
-class MmappedLogFile {
+class CCCInterface {
  public:
-  static std::shared_ptr<MmappedLogFile<StaticConfig>> open_new(
-      std::string fname, std::size_t len, int prot, int flags,
-      uint16_t nsegments = 1) {
-    int fd = PosixIO::Open(fname.c_str(), O_RDWR | O_CREAT,
-                           S_IRUSR | S_IWUSR | S_IRGRP | S_IROTH);
+  void set_logdir(std::string logdir);
+  void preprocess_logs();
 
-    PosixIO::Ftruncate(fd, static_cast<off_t>(len));
-    char* start =
-        static_cast<char*>(PosixIO::Mmap(nullptr, len, prot, flags, fd, 0));
+  void start_ios();
+  void stop_ios();
 
-    std::vector<LogFile<StaticConfig>*> lfs{};
-    std::size_t segment_len = len / nsegments;
-    for (int s = 0; s < nsegments; s++) {
-      if (s == nsegments - 1) {
-        segment_len = len - (nsegments - 1) * segment_len;
-      }
+  void start_schedulers();
+  void stop_schedulers();
 
-      LogFile<StaticConfig>* lf =
-          reinterpret_cast<LogFile<StaticConfig>*>(start);
+  void start_snapshot_manager();
+  void stop_snapshot_manager();
 
-      lf->nentries = 0;
-      lf->size = sizeof(LogFile<StaticConfig>);
+  void start_workers();
+  void stop_workers();
 
-      lfs.push_back(lf);
-      start += segment_len;
-    }
-
-    auto mlf = new MmappedLogFile<StaticConfig>{fname, len, fd, lfs};
-
-    return std::shared_ptr<MmappedLogFile<StaticConfig>>{mlf};
-  }
-
-  static std::shared_ptr<MmappedLogFile<StaticConfig>> open_existing(
-      std::string fname, int prot, int flags, uint16_t nsegments = 1) {
-    if (PosixIO::Exists(fname.c_str())) {
-      int fd = PosixIO::Open(fname.c_str(), O_RDONLY);
-      std::size_t len = PosixIO::Size(fname.c_str());
-      char* start =
-          static_cast<char*>(PosixIO::Mmap(nullptr, len, prot, flags, fd, 0));
-
-      std::vector<LogFile<StaticConfig>*> lfs{};
-      std::size_t segment_len = len / nsegments;
-      for (int s = 0; s < nsegments; s++) {
-        if (s == nsegments - 1) {
-          segment_len = len - (nsegments - 1) * segment_len;
-        }
-
-        LogFile<StaticConfig>* lf =
-            reinterpret_cast<LogFile<StaticConfig>*>(start);
-
-        lfs.push_back(lf);
-        start += segment_len;
-      }
-
-      auto mlf = new MmappedLogFile<StaticConfig>{fname, len, fd, lfs};
-
-      return std::shared_ptr<MmappedLogFile<StaticConfig>>{mlf};
-    } else {
-      return std::shared_ptr<MmappedLogFile<StaticConfig>>{nullptr};
-    }
-  }
-
-  ~MmappedLogFile() {
-    PosixIO::Munmap(get_lf(0), len_);
-    PosixIO::Close(fd_);
-  }
-
-  std::size_t get_nsegments() { return lfs_.size(); }
-
-  LogFile<StaticConfig>* get_lf(std::size_t segment = 0) {
-    return reinterpret_cast<LogFile<StaticConfig>*>(lfs_[segment]);
-  }
-
-  LogEntry<StaticConfig>* get_cur_le() {
-    return reinterpret_cast<LogEntry<StaticConfig>*>(cur_read_ptr_);
-  }
-
-  bool has_next_le(std::size_t segment) {
-    return cur_read_ptr_ <
-           (reinterpret_cast<char*>(get_lf(segment)) + get_size(segment));
-  }
-
-  bool has_next_le() {
-    return has_next_le(cur_segment_) || (cur_segment_ < get_nsegments() - 1 &&
-                                         get_size(cur_segment_ + 1) != 0);
-  }
-
-  void read_next_le() {
-    auto le = reinterpret_cast<LogEntry<StaticConfig>*>(cur_read_ptr_);
-    if (has_next_le(cur_segment_)) {
-      cur_read_ptr_ += le->size;
-    } else if (has_next_le()) {
-      cur_segment_ += 1;
-      cur_read_ptr_ = reinterpret_cast<char*>(&lfs_[cur_segment_]->entries[0]);
-    } else {
-      throw std::runtime_error("read_next_le: nothing more to read!");
-    }
-  }
-
-  bool has_space_next_le(std::size_t n) {
-    char* end = reinterpret_cast<char*>(get_lf(0)) + len_;
-    if (cur_segment_ < get_nsegments() - 1) {
-      end = reinterpret_cast<char*>(get_lf(cur_segment_ + 1));
-    }
-
-    return cur_write_ptr_ + n < end;
-  }
-
-  void write_next_le(void* src, std::size_t n) {
-    if (!has_space_next_le(n)) {
-      cur_segment_ += 1;
-      cur_write_ptr_ = reinterpret_cast<char*>(&lfs_[cur_segment_]->entries[0]);
-    }
-
-    std::memcpy(cur_write_ptr_, src, n);
-    cur_write_ptr_ += n;
-    auto lf = get_lf(cur_segment_);
-    lf->nentries += 1;
-    lf->size += n;
-  }
-
-  std::size_t get_size(std::size_t segment = 0) {
-    return get_lf(segment)->size;
-  }
-
-  uint64_t get_nentries(std::size_t segment = 0) {
-    return get_lf(segment)->nentries;
-  }
-
- private:
-  std::string fname_;
-  std::size_t len_;
-  int fd_;
-  char* cur_read_ptr_;
-  char* cur_write_ptr_;
-  std::vector<LogFile<StaticConfig>*> lfs_;
-  std::size_t cur_segment_;
-
-  MmappedLogFile(std::string fname, std::size_t len, int fd,
-                 std::vector<LogFile<StaticConfig>*> lfs)
-      : fname_{fname}, len_{len}, fd_{fd}, lfs_{lfs}, cur_segment_{0} {
-    cur_read_ptr_ = reinterpret_cast<char*>(&lfs_[cur_segment_]->entries[0]);
-    cur_write_ptr_ = reinterpret_cast<char*>(&lfs_[cur_segment_]->entries[0]);
-  }
+  void reset();
 };
 
-class LogEntryNode {
+class ListNode {
  public:
-  LogEntryNode* next;
-  void* ptr;
-
-  void print() {
-    std::stringstream stream;
-
-    stream << "LogEntryNode: " << this << std::endl;
-    stream << "next: " << next << std::endl;
-    stream << "ptr: " << ptr << std::endl;
-
-    std::cout << stream.str();
-  }
-} __attribute__((aligned(64)));
+  ListNode* next;
+  ListNode* tail;
+};
 
 template <class StaticConfig>
-class LogEntryList {
+class LogEntryList : public ListNode {
  public:
-  LogEntryList<StaticConfig>* next;
-  LogEntryList<StaticConfig>* tail;
-
   uint64_t table_index;
   uint64_t row_id;
   uint64_t tail_ts;
@@ -222,53 +84,36 @@ class LogEntryList {
     nentries += 1;
   }
 
-  // void print() {
-  //   std::stringstream stream;
-
-  //   stream << "LogEntryList: " << this << std::endl;
-  //   stream << "next:" << next << std::endl;
-  //   stream << "status:" << status << std::endl;
-  //   stream << "tail:" << tail << std::endl;
-  //   stream << "list:" << std::endl;
-
-  //   std::cout << stream.str();
-
-  //   LogEntryNode* next = list;
-  //   while (next != nullptr) {
-  //     next->print();
-  //     next = next->next;
-  //   }
-  // }
-
 } __attribute__((aligned(64)));
 
-template <class StaticConfig>
+template <class StaticConfig, class Class>
 class SchedulerPool {
  public:
   typedef typename StaticConfig::Alloc Alloc;
 
+  static_assert(std::is_base_of<ListNode, Class>::value,
+                "Class must implement ListNode.");
+
   static constexpr uint64_t kAllocSize = 1024;
-  static constexpr uint64_t list_size = sizeof(LogEntryList<StaticConfig>);
+  static constexpr uint64_t class_size = sizeof(Class);
 
   SchedulerPool(Alloc* alloc, uint64_t size, size_t lcore);
   ~SchedulerPool();
 
-  std::pair<LogEntryList<StaticConfig>*, LogEntryList<StaticConfig>*>
-  allocate_lists();
+  std::pair<Class*, Class*> allocate_n();
 
-  void free_lists(LogEntryList<StaticConfig>* head,
-                  LogEntryList<StaticConfig>* tail, uint64_t n);
+  void free_n(Class* head, Class* tail, uint64_t n);
 
   void print_status() const {
     printf("SchedulerPool on numa node %" PRIu8 "\n", numa_id_);
     printf(" lists:");
     printf("  in use: %7.3lf GB\n",
-           static_cast<double>((total_lists_ - free_lists_) * list_size) /
+           static_cast<double>((total_classes_ - free_classes_) * class_size) /
                1000000000.);
     printf("  free:   %7.3lf GB\n",
-           static_cast<double>(free_lists_ * list_size) / 1000000000.);
+           static_cast<double>(free_classes_ * class_size) / 1000000000.);
     printf("  total:  %7.3lf GB\n",
-           static_cast<double>(total_lists_ * list_size) / 1000000000.);
+           static_cast<double>(total_classes_ * class_size) / 1000000000.);
   }
 
  private:
@@ -276,10 +121,10 @@ class SchedulerPool {
   uint64_t size_;
   uint8_t numa_id_;
 
-  uint64_t total_lists_;
-  uint64_t free_lists_;
-  char* list_pages_;
-  LogEntryList<StaticConfig>* next_list_;
+  uint64_t total_classes_;
+  uint64_t free_classes_;
+  char* pages_;
+  ListNode* next_class_;
 
   volatile uint32_t lock_;
 } __attribute__((aligned(64)));
@@ -299,8 +144,10 @@ class IOThread {
  public:
   IOThread(DB<StaticConfig>* db,
            std::shared_ptr<MmappedLogFile<StaticConfig>> log,
-           SchedulerPool<StaticConfig>* pool, pthread_barrier_t* start_barrier,
-           moodycamel::ConcurrentQueue<LogEntryList<StaticConfig>*, MyTraits>* io_queue,
+           SchedulerPool<StaticConfig, LogEntryList<StaticConfig>>* pool,
+           pthread_barrier_t* start_barrier,
+           moodycamel::ConcurrentQueue<LogEntryList<StaticConfig>*, MyTraits>*
+               io_queue,
            moodycamel::ProducerToken* io_queue_ptok, IOLock* my_lock,
            uint16_t id, uint16_t nios, uint16_t db_id, uint16_t lcore);
   ~IOThread();
@@ -313,7 +160,7 @@ class IOThread {
   std::shared_ptr<MmappedLogFile<StaticConfig>> log_;
   std::thread thread_;
   pthread_barrier_t* start_barrier_;
-  SchedulerPool<StaticConfig>* pool_;
+  SchedulerPool<StaticConfig, LogEntryList<StaticConfig>>* pool_;
   LogEntryList<StaticConfig>* allocated_lists_;
   moodycamel::ConcurrentQueue<LogEntryList<StaticConfig>*, MyTraits>* io_queue_;
   moodycamel::ProducerToken* io_queue_ptok_;
@@ -339,13 +186,14 @@ class IOThread {
 template <class StaticConfig>
 class SchedulerThread {
  public:
-  SchedulerThread(
-      moodycamel::ConcurrentQueue<LogEntryList<StaticConfig>*, MyTraits>*
-          io_queue,
-      moodycamel::ProducerToken* io_queue_ptok,
-      moodycamel::ConcurrentQueue<LogEntryList<StaticConfig>*, MyTraits>* scheduler_queue,
-      moodycamel::ProducerToken* scheduler_queue_ptok,
-      pthread_barrier_t* start_barrier, uint16_t id, uint16_t lcore);
+  SchedulerThread(moodycamel::ConcurrentQueue<LogEntryList<StaticConfig>*,
+                                              MyTraits>* io_queue,
+                  moodycamel::ProducerToken* io_queue_ptok,
+                  moodycamel::ConcurrentQueue<LogEntryList<StaticConfig>*,
+                                              MyTraits>* scheduler_queue,
+                  moodycamel::ProducerToken* scheduler_queue_ptok,
+                  pthread_barrier_t* start_barrier, uint16_t id,
+                  uint16_t lcore);
 
   ~SchedulerThread();
 
@@ -355,7 +203,8 @@ class SchedulerThread {
  private:
   moodycamel::ConcurrentQueue<LogEntryList<StaticConfig>*, MyTraits>* io_queue_;
   moodycamel::ProducerToken* io_queue_ptok_;
-  moodycamel::ConcurrentQueue<LogEntryList<StaticConfig>*, MyTraits>* scheduler_queue_;
+  moodycamel::ConcurrentQueue<LogEntryList<StaticConfig>*, MyTraits>*
+      scheduler_queue_;
   moodycamel::ProducerToken* scheduler_queue_ptok_;
   pthread_barrier_t* start_barrier_;
   uint16_t id_;
@@ -397,12 +246,13 @@ class SnapshotThread {
 template <class StaticConfig>
 class WorkerThread {
  public:
-  WorkerThread(
-      DB<StaticConfig>* db, SchedulerPool<StaticConfig>* pool,
-      moodycamel::ConcurrentQueue<LogEntryList<StaticConfig>*, MyTraits>* scheduler_queue,
-      moodycamel::ProducerToken* scheduler_queue_ptok,
-      WorkerMinWTS* min_wts, pthread_barrier_t* start_barrier, uint16_t id,
-      uint16_t db_id, uint16_t lcore);
+  WorkerThread(DB<StaticConfig>* db,
+               SchedulerPool<StaticConfig, LogEntryList<StaticConfig>>* pool,
+               moodycamel::ConcurrentQueue<LogEntryList<StaticConfig>*,
+                                           MyTraits>* scheduler_queue,
+               moodycamel::ProducerToken* scheduler_queue_ptok,
+               WorkerMinWTS* min_wts, pthread_barrier_t* start_barrier,
+               uint16_t id, uint16_t db_id, uint16_t lcore);
 
   ~WorkerThread();
 
@@ -411,8 +261,9 @@ class WorkerThread {
 
  private:
   DB<StaticConfig>* db_;
-  SchedulerPool<StaticConfig>* pool_;
-  moodycamel::ConcurrentQueue<LogEntryList<StaticConfig>*, MyTraits>* scheduler_queue_;
+  SchedulerPool<StaticConfig, LogEntryList<StaticConfig>>* pool_;
+  moodycamel::ConcurrentQueue<LogEntryList<StaticConfig>*, MyTraits>*
+      scheduler_queue_;
   moodycamel::ProducerToken* scheduler_queue_ptok_;
   WorkerMinWTS* min_wts_;
   pthread_barrier_t* start_barrier_;
@@ -431,38 +282,15 @@ class WorkerThread {
 };
 
 template <class StaticConfig>
-class CCCInterface {
- public:
-  void read_logs();
-
-  void set_logdir(std::string logdir);
-  void preprocess_logs();
-
-  void start_ios();
-  void stop_ios();
-
-  void start_schedulers();
-  void stop_schedulers();
-
-  void start_snapshot_manager();
-  void stop_snapshot_manager();
-
-  void start_workers();
-  void stop_workers();
-
-  void reset();
-};
-
-template <class StaticConfig>
 class CopyCat : public CCCInterface<StaticConfig> {
  public:
-  CopyCat(DB<StaticConfig>* db, SchedulerPool<StaticConfig>* pool,
-          uint16_t nloggers, uint16_t nios, uint16_t nschedulers,
-          uint16_t nworkers, std::string logdir);
+  typedef typename StaticConfig::Alloc Alloc;
+
+  CopyCat(DB<StaticConfig>* db, Alloc* alloc, uint64_t max_sched_pool_size,
+          uint64_t sched_pool_lcore, uint16_t nloggers, uint16_t nios,
+          uint16_t nschedulers, uint16_t nworkers, std::string logdir);
 
   ~CopyCat();
-
-  void read_logs();
 
   void set_logdir(std::string logdir) { logdir_ = logdir; }
 
@@ -484,11 +312,12 @@ class CopyCat : public CCCInterface<StaticConfig> {
 
  private:
   moodycamel::ConcurrentQueue<LogEntryList<StaticConfig>*, MyTraits> io_queue_;
-  moodycamel::ConcurrentQueue<LogEntryList<StaticConfig>*, MyTraits> scheduler_queue_;
+  moodycamel::ConcurrentQueue<LogEntryList<StaticConfig>*, MyTraits>
+      scheduler_queue_;
   moodycamel::ProducerToken io_queue_ptok_;
   moodycamel::ProducerToken scheduler_queue_ptok_;
   DB<StaticConfig>* db_;
-  SchedulerPool<StaticConfig>* pool_;
+  SchedulerPool<StaticConfig, LogEntryList<StaticConfig>>* pool_;
 
   std::size_t len_;
 
@@ -515,19 +344,287 @@ class CopyCat : public CCCInterface<StaticConfig> {
 
   pthread_barrier_t snapshot_barrier_;
   SnapshotThread<StaticConfig>* snapshot_manager_;
+};
 
-  uint16_t nsegments(std::size_t len) {
-    return static_cast<uint16_t>(len / StaticConfig::kPageSize);
+struct TableRowID {
+  uint64_t table_index;
+  uint64_t row_id;
+
+  bool operator==(const TableRowID& t) const {
+    return table_index == t.table_index && row_id == t.row_id;
   }
 
-  void create_table(DB<StaticConfig>* db,
-                    CreateTableLogEntry<StaticConfig>* le);
-
-  void create_hash_index(DB<StaticConfig>* db,
-                         CreateHashIndexLogEntry<StaticConfig>* le);
+  bool operator<(const TableRowID& t) const {
+    return table_index < t.table_index ||
+           (table_index == t.table_index && row_id < t.row_id);
+  }
 };
+
+template <class StaticConfig>
+class PerTransactionQueue : public ListNode {
+ public:
+  RowVersion<StaticConfig>* head_rv;
+  RowVersion<StaticConfig>* tail_rv;
+
+  uint64_t nwrites;
+  TableRowID* write_set;
+
+  uint64_t nconflicts;
+  uint64_t ndependents;
+  PerTransactionQueue<StaticConfig>** dependents;
+
+  volatile uint32_t lock;
+
+  volatile bool scheduled;
+  volatile bool executed;
+
+  bool add_dependent(PerTransactionQueue<StaticConfig>* dep) {
+    while (__sync_lock_test_and_set(&lock, 1) == 1) ::mica::util::pause();
+
+    if (executed) {
+      __sync_lock_release(&lock);
+      return false;
+    }
+
+    dependents[ndependents++] = dep;
+
+    __sync_lock_release(&lock);
+    return true;
+  }
+
+  bool ack() {
+    while (!scheduled) ::mica::util::pause();
+
+    while (__sync_lock_test_and_set(&lock, 1) == 1) ::mica::util::pause();
+    nconflicts -= 1;
+    bool done = (nconflicts == 0);
+    __sync_lock_release(&lock);
+
+    return done;
+  }
+
+  void ack_dependents(std::set<PerTransactionQueue<StaticConfig>*>& done) {
+    while (__sync_lock_test_and_set(&lock, 1) == 1) ::mica::util::pause();
+    executed = true;
+    __sync_lock_release(&lock);
+
+    for (uint64_t i = 0; i < ndependents; i++) {
+      PerTransactionQueue<StaticConfig>* dep = dependents[i];
+      if (dep->ack()) {
+        done.insert(dep);
+      }
+    }
+  }
+
+  void push_rv(RowVersion<StaticConfig>* rv) {
+    if (head_rv == nullptr) {
+      head_rv = rv;
+    }
+
+    if (tail_rv != nullptr) {
+      tail_rv->older_rv = rv;
+    }
+
+    rv->older_rv = nullptr;
+    tail_rv = rv;
+  }
+} __attribute__((aligned(64)));
+
+template <class StaticConfig>
+class KuaFuIOThread {
+ public:
+  KuaFuIOThread(
+      DB<StaticConfig>* db, std::shared_ptr<MmappedLogFile<StaticConfig>> log,
+      SchedulerPool<StaticConfig, PerTransactionQueue<StaticConfig>>* pool,
+      pthread_barrier_t* start_barrier,
+      moodycamel::ConcurrentQueue<PerTransactionQueue<StaticConfig>*, MyTraits>*
+          io_queue,
+      moodycamel::ProducerToken* io_queue_ptok, IOLock* my_lock, uint16_t id,
+      uint16_t nios, uint16_t db_id, uint16_t lcore);
+  ~KuaFuIOThread();
+
+  void start();
+  void stop();
+
+ private:
+  DB<StaticConfig>* db_;
+  std::shared_ptr<MmappedLogFile<StaticConfig>> log_;
+  std::thread thread_;
+  pthread_barrier_t* start_barrier_;
+  SchedulerPool<StaticConfig, PerTransactionQueue<StaticConfig>>* pool_;
+  PerTransactionQueue<StaticConfig>* allocated_queues_;
+  moodycamel::ConcurrentQueue<PerTransactionQueue<StaticConfig>*, MyTraits>*
+      io_queue_;
+  moodycamel::ProducerToken* io_queue_ptok_;
+  IOLock* my_lock_;
+  uint16_t id_;
+  uint16_t db_id_;
+  uint16_t lcore_;
+  uint16_t nios_;
+  volatile bool stop_;
+
+  void run();
+
+  void acquire_io_lock();
+  void release_io_lock();
+
+  PerTransactionQueue<StaticConfig>* allocate_queue();
+
+  void build_local_queues(
+      RowVersionPool<StaticConfig>* pool, std::size_t segment,
+      std::vector<PerTransactionQueue<StaticConfig>*>& queues);
+};
+
+template <class StaticConfig>
+class KuaFuSchedulerThread {
+ public:
+  KuaFuSchedulerThread(
+      moodycamel::ConcurrentQueue<PerTransactionQueue<StaticConfig>*, MyTraits>*
+          io_queue,
+      moodycamel::ProducerToken* io_queue_ptok,
+      moodycamel::ConcurrentQueue<PerTransactionQueue<StaticConfig>*, MyTraits>*
+          scheduler_queue,
+      moodycamel::ProducerToken* scheduler_queue_ptok,
+      pthread_barrier_t* start_barrier, uint16_t id, uint16_t lcore);
+
+  ~KuaFuSchedulerThread();
+
+  void start();
+  void stop();
+
+ private:
+  std::unordered_map<TableRowID, PerTransactionQueue<StaticConfig>*> conflicts_;
+  moodycamel::ConcurrentQueue<PerTransactionQueue<StaticConfig>*, MyTraits>*
+      io_queue_;
+  moodycamel::ProducerToken* io_queue_ptok_;
+  moodycamel::ConcurrentQueue<PerTransactionQueue<StaticConfig>*, MyTraits>*
+      scheduler_queue_;
+  moodycamel::ProducerToken* scheduler_queue_ptok_;
+  pthread_barrier_t* start_barrier_;
+  uint16_t id_;
+  uint16_t lcore_;
+  volatile bool stop_;
+  std::thread thread_;
+
+  void run();
+};
+
+template <class StaticConfig>
+class KuaFuWorkerThread {
+ public:
+  KuaFuWorkerThread(
+      DB<StaticConfig>* db,
+      SchedulerPool<StaticConfig, PerTransactionQueue<StaticConfig>>* pool,
+      moodycamel::ConcurrentQueue<PerTransactionQueue<StaticConfig>*, MyTraits>*
+          scheduler_queue,
+      WorkerMinWTS* min_wts, pthread_barrier_t* start_barrier, uint16_t id,
+      uint16_t db_id, uint16_t lcore);
+
+  ~KuaFuWorkerThread();
+
+  void start();
+  void stop();
+
+ private:
+  DB<StaticConfig>* db_;
+  SchedulerPool<StaticConfig, PerTransactionQueue<StaticConfig>>* pool_;
+  moodycamel::ConcurrentQueue<PerTransactionQueue<StaticConfig>*, MyTraits>*
+      scheduler_queue_;
+  moodycamel::ProducerToken scheduler_queue_ptok_;
+  WorkerMinWTS* min_wts_;
+  pthread_barrier_t* start_barrier_;
+  PerTransactionQueue<StaticConfig>* freed_queues_head_;
+  PerTransactionQueue<StaticConfig>* freed_queues_tail_;
+  uint64_t num_freed_queues_;
+  uint16_t id_;
+  uint16_t db_id_;
+  uint16_t lcore_;
+  volatile bool stop_;
+  std::thread thread_;
+
+  void run();
+
+  void execute_queue(Context<StaticConfig>* ctx, Transaction<StaticConfig>* tx,
+                     PerTransactionQueue<StaticConfig>* queue);
+
+  void free_queue(PerTransactionQueue<StaticConfig>* queue);
+};
+
+template <class StaticConfig>
+class KuaFu : public CCCInterface<StaticConfig> {
+  typedef typename StaticConfig::Alloc Alloc;
+
+ public:
+  KuaFu(DB<StaticConfig>* db, Alloc* alloc, uint64_t max_sched_pool_size,
+        uint64_t sched_pool_lcore, uint16_t nloggers, uint16_t nios,
+        uint16_t nschedulers, uint16_t nworkers, std::string logdir);
+  ~KuaFu();
+
+  void set_logdir(std::string logdir) { logdir_ = logdir; }
+
+  void preprocess_logs();
+
+  void start_ios();
+  void stop_ios();
+
+  void start_schedulers();
+  void stop_schedulers();
+
+  void start_snapshot_manager();
+  void stop_snapshot_manager();
+
+  void start_workers();
+  void stop_workers();
+
+  void reset();
+
+ private:
+  moodycamel::ConcurrentQueue<PerTransactionQueue<StaticConfig>*, MyTraits>
+      io_queue_;
+  moodycamel::ConcurrentQueue<PerTransactionQueue<StaticConfig>*, MyTraits>
+      scheduler_queue_;
+  moodycamel::ProducerToken io_queue_ptok_;
+  moodycamel::ProducerToken scheduler_queue_ptok_;
+  DB<StaticConfig>* db_;
+  SchedulerPool<StaticConfig, PerTransactionQueue<StaticConfig>>* pool_;
+
+  uint16_t nloggers_;
+  uint16_t nios_;
+  uint16_t nschedulers_;
+  uint16_t nworkers_;
+  uint16_t db_id_;
+  uint16_t lcore_;
+
+  std::string logdir_;
+  std::shared_ptr<MmappedLogFile<StaticConfig>> log_;
+
+  pthread_barrier_t io_barrier_;
+  std::vector<KuaFuIOThread<StaticConfig>*> ios_;
+
+  std::vector<IOLock> io_locks_;
+
+  pthread_barrier_t scheduler_barrier_;
+  KuaFuSchedulerThread<StaticConfig>* scheduler_;
+
+  std::vector<WorkerMinWTS> min_wtss_;
+  pthread_barrier_t worker_barrier_;
+  std::vector<KuaFuWorkerThread<StaticConfig>*> workers_;
+};
+
 };  // namespace transaction
 };  // namespace mica
+
+namespace std {
+template <>
+struct hash<mica::transaction::TableRowID> {
+  std::size_t operator()(
+      const mica::transaction::TableRowID& t) const noexcept {
+    std::size_t h1 = std::hash<uint64_t>{}(t.table_index);
+    std::size_t h2 = std::hash<uint64_t>{}(t.row_id);
+    return h1 ^ h2;
+  }
+};
+};  // namespace std
 
 #include "replication_impl/copycat.h"
 #include "replication_impl/io_thread.h"
@@ -535,5 +632,10 @@ class CopyCat : public CCCInterface<StaticConfig> {
 #include "replication_impl/scheduler_thread.h"
 #include "replication_impl/snapshot_thread.h"
 #include "replication_impl/worker_thread.h"
+
+#include "replication_impl/kuafu.h"
+#include "replication_impl/kuafu_io_thread.h"
+#include "replication_impl/kuafu_scheduler_thread.h"
+#include "replication_impl/kuafu_worker_thread.h"
 
 #endif

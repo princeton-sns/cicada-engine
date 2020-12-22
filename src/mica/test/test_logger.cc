@@ -17,7 +17,9 @@ using mica::util::PosixIO;
 typedef DBConfig::Alloc Alloc;
 typedef DBConfig::Logger Logger;
 typedef DBConfig::CCC CCC;
-typedef ::mica::transaction::SchedulerPool<DBConfig> SchedulerPool;
+typedef mica::transaction::LogEntryList<DBConfig> LogEntryList;
+typedef ::mica::transaction::SchedulerPool<DBConfig, LogEntryList>
+    SchedulerPool;
 typedef DBConfig::Timestamp Timestamp;
 typedef DBConfig::ConcurrentTimestamp ConcurrentTimestamp;
 typedef DBConfig::Timing Timing;
@@ -775,16 +777,12 @@ int main(int argc, const char* argv[]) {
 
   {
     auto sched_pool_size = 4 * uint64_t(1073741824);
-    std::size_t lcore = 0;
-    printf("creating sched pool\n");
-    SchedulerPool* sched_pool =
-        new SchedulerPool(&alloc, sched_pool_size, lcore);
-    printf("created sched pool\n");
-
-    // return 0;
+    std::size_t sched_pool_lcore = 0;
 
     CCC ccc{&replica,
-            sched_pool,
+            &alloc,
+            sched_pool_size,
+            sched_pool_lcore,
             static_cast<uint16_t>(num_threads),
             static_cast<uint16_t>(num_ios),
             static_cast<uint16_t>(num_schedulers),

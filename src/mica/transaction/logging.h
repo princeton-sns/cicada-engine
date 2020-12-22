@@ -147,7 +147,7 @@ class MmapLogger : public LoggerInterface<StaticConfig> {
 enum class LogEntryType : uint8_t {
   CREATE_TABLE = 0,
   CREATE_HASH_IDX,
-  INSERT_ROW,
+  BEGIN_TXN,
   WRITE_ROW,
 };
 
@@ -237,37 +237,18 @@ class CreateHashIndexLogEntry : public LogEntry<StaticConfig> {
 };
 
 template <class StaticConfig>
-class InsertRowLogEntry : public LogEntry<StaticConfig> {
- public:
-  std::size_t table_index;
-
-  uint64_t txn_ts;
-
-  uint64_t row_id;
-
-  uint64_t wts;
-  uint64_t rts;
-
-  uint32_t data_size;
-
-  uint16_t cf_id;
-
-  uint8_t tbl_type;
-
-  char data[0] __attribute__((aligned(8)));
+class BeginTxnLogEntry : public LogEntry<StaticConfig> {
+public:
+  uint64_t ts;
+  uint64_t nwrites;
 
   void print() {
     LogEntry<StaticConfig>::print();
 
     std::stringstream stream;
 
-    stream << "Table Type: " << std::to_string(tbl_type) << std::endl;
-    stream << "Column Family ID: " << cf_id << std::endl;
-    stream << "Row ID: " << row_id << std::endl;
-    stream << "Transaction TS: " << txn_ts << std::endl;
-    stream << "Write TS: " << wts << std::endl;
-    stream << "Read TS: " << rts << std::endl;
-    stream << "Data Size: " << data_size << std::endl;
+    stream << "Txn timestamp: " << std::to_string(ts) << std::endl;
+    stream << "N writes: " << std::to_string(nwrites) << std::endl;
 
     std::cout << stream.str();
   }
@@ -276,35 +257,20 @@ class InsertRowLogEntry : public LogEntry<StaticConfig> {
 template <class StaticConfig>
 class WriteRowLogEntry : public LogEntry<StaticConfig> {
  public:
-  std::size_t table_index;
-
-  uint64_t txn_ts;
-
+  uint64_t table_index;
   uint64_t row_id;
-
-  uint64_t wts;
-  uint64_t rts;
-
-  uint32_t data_size;
-
   uint16_t cf_id;
 
-  uint8_t tbl_type;
-
-  char data[0] __attribute__((aligned(8)));
+  RowVersion<StaticConfig> rv;
 
   void print() {
     LogEntry<StaticConfig>::print();
 
     std::stringstream stream;
 
-    stream << "Table Type: " << std::to_string(tbl_type) << std::endl;
-    stream << "Column Family ID: " << cf_id << std::endl;
-    stream << "Row ID: " << row_id << std::endl;
-    stream << "Transaction TS: " << txn_ts << std::endl;
-    stream << "Write TS: " << wts << std::endl;
-    stream << "Read TS: " << rts << std::endl;
-    stream << "Data Size: " << data_size << std::endl;
+    stream << "Table Index: " << std::to_string(table_index) << std::endl;
+    stream << "Row ID: " << std::to_string(row_id) << std::endl;
+    stream << "Column Family ID: " << std::to_string(cf_id) << std::endl;
 
     std::cout << stream.str();
   }

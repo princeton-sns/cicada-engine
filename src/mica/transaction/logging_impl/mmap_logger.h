@@ -230,80 +230,53 @@ template <class StaticConfig>
 bool MmapLogger<StaticConfig>::log(const Context<StaticConfig>* ctx,
                                    const Transaction<StaticConfig>* tx) {
   uint16_t thread_id = ctx->thread_id();
-
   auto accesses = tx->accesses();
-  auto iset_idx = tx->iset_idx();
-  auto wset_idx = tx->wset_idx();
 
-  for (auto j = 0; j < tx->iset_size(); j++) {
-    int i = iset_idx[j];
+  std::size_t size = sizeof(BeginTxnLogEntry<StaticConfig>);
+  char* buf = alloc_log_buf(thread_id, size);
+  BeginTxnLogEntry<StaticConfig>* btle =
+      reinterpret_cast<BeginTxnLogEntry<StaticConfig>*>(buf);
+  btle->size = size;
+  btle->type = LogEntryType::BEGIN_TXN;
+  btle->ts = tx->ts().t2;
+  btle->nwrites = tx->iset_size() + tx->wset_size();
+  release_log_buf(thread_id, size);
+
+  for (auto i = 0; i < tx->access_size(); i++) {
     RowAccessItem<StaticConfig> item = accesses[i];
+    RowAccessState state = item.state;
+    if (state == RowAccessState::kInvalid || state == RowAccessState::kPeek ||
+        state == RowAccessState::kRead) {
+      continue;
+    }
+
     RowVersion<StaticConfig>* write_rv = item.write_rv;
     uint32_t data_size = write_rv->data_size;
-    char* data = write_rv->data;
-    Table<StaticConfig>* tbl = item.tbl;
 
-    std::size_t nbytes = sizeof(InsertRowLogEntry<StaticConfig>) + data_size;
-    char* buf = alloc_log_buf(thread_id, nbytes);
-    InsertRowLogEntry<StaticConfig>* le =
-      reinterpret_cast<InsertRowLogEntry<StaticConfig>*>(buf);
-
-    std::size_t size = sizeof *le + data_size;
-
-    le->size = size;
-    le->type = LogEntryType::INSERT_ROW;
-
-    le->table_index = tbl->index();
-
-    le->txn_ts = tx->ts().t2;
-    le->cf_id = item.cf_id;
-    le->row_id = item.row_id;
-
-    le->wts = write_rv->wts.t2;
-    le->rts = write_rv->rts.get().t2;
-
-    le->data_size = data_size;
-
-    std::memcpy(le->data, data, data_size);
-
-    // le->print();
-
-    release_log_buf(thread_id, nbytes);
-  }
-
-  for (auto j = 0; j < tx->wset_size(); j++) {
-    int i = wset_idx[j];
-    RowAccessItem<StaticConfig> item = accesses[i];
-    RowVersion<StaticConfig>* write_rv = item.write_rv;
-    uint32_t data_size = write_rv->data_size;
-    char* data = write_rv->data;
-    Table<StaticConfig>* tbl = item.tbl;
-
-    std::size_t nbytes = sizeof(WriteRowLogEntry<StaticConfig>) + data_size;
-    char* buf = alloc_log_buf(thread_id, nbytes);
+    size = sizeof(WriteRowLogEntry<StaticConfig>) + data_size;
+    buf = alloc_log_buf(thread_id, size);
     WriteRowLogEntry<StaticConfig>* le =
-      reinterpret_cast<WriteRowLogEntry<StaticConfig>*>(buf);
+        reinterpret_cast<WriteRowLogEntry<StaticConfig>*>(buf);
 
-    std::size_t size = sizeof *le + data_size;
     le->size = size;
     le->type = LogEntryType::WRITE_ROW;
 
-    le->table_index = tbl->index();
-
-    le->txn_ts = tx->ts().t2;
-    le->cf_id = item.cf_id;
+    le->table_index = item.tbl->index();
     le->row_id = item.row_id;
+    le->cf_id = item.cf_id;
 
-    le->wts = write_rv->wts.t2;
-    le->rts = write_rv->rts.get().t2;
+    std::memcpy(&le->rv, write_rv, sizeof(*write_rv) + data_size);
 
-    le->data_size = data_size;
-
-    std::memcpy(le->data, data, data_size);
+    if (state == RowAccessState::kDelete ||
+        state == RowAccessState::kReadDelete) {
+      le->rv.status = RowVersionStatus::kDeleted;
+    } else {
+      le->rv.status = RowVersionStatus::kCommitted;
+    }
 
     // le->print();
 
-    release_log_buf(thread_id, nbytes);
+    release_log_buf(thread_id, size);
   }
 
   return true;

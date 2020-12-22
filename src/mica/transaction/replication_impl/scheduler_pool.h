@@ -6,9 +6,9 @@
 namespace mica {
 namespace transaction {
 
-template <class StaticConfig>
-SchedulerPool<StaticConfig>::SchedulerPool(Alloc* alloc, uint64_t size,
-                                           size_t lcore)
+template <class StaticConfig, class Class>
+SchedulerPool<StaticConfig, Class>::SchedulerPool(Alloc* alloc, uint64_t size,
+                                                  size_t lcore)
     : alloc_{alloc} {
   size_t numa_id = ::mica::util::lcore.numa_id(lcore);
   if (numa_id == ::mica::util::lcore.kUnknown) {
@@ -18,36 +18,36 @@ SchedulerPool<StaticConfig>::SchedulerPool(Alloc* alloc, uint64_t size,
 
   numa_id_ = static_cast<uint8_t>(numa_id);
 
-  uint64_t list_count = (size + list_size - 1) / list_size;
-  size_ = list_count * list_size;
+  uint64_t class_count = (size + class_size - 1) / class_size;
+  size_ = class_count * class_size;
 
-  printf("list_size: %lu\n", list_size);
-  printf("list_count: %lu\n", list_count);
+  printf("class_size: %lu\n", class_size);
+  printf("class_count: %lu\n", class_count);
   printf("size: %lu\n", size_);
 
   lock_ = 0;
-  total_lists_ = list_count;
-  free_lists_ = list_count;
+  total_classes_ = class_count;
+  free_classes_ = class_count;
 
-  list_pages_ = reinterpret_cast<char*>(
-      alloc_->malloc_contiguous(list_count * list_size, lcore));
-  if (!list_pages_) {
+  pages_ = reinterpret_cast<char*>(
+      alloc_->malloc_contiguous(class_count * class_size, lcore));
+  if (!pages_) {
     printf("failed to initialize SchedulerPool\n");
     return;
   }
 
-  next_list_ = reinterpret_cast<LogEntryList<StaticConfig>*>(list_pages_);
-  LogEntryList<StaticConfig>* list = nullptr;
-  for (uint64_t i = 0; i < list_count; i++) {
-    list = reinterpret_cast<LogEntryList<StaticConfig>*>(list_pages_ + (i * list_size));
+  next_class_ = reinterpret_cast<Class*>(pages_);
+  Class* list = nullptr;
+  for (uint64_t i = 0; i < class_count; i++) {
+    list = reinterpret_cast<Class*>(pages_ + (i * class_size));
 
-    if ((i + 1) < list_count) {
+    if ((i + 1) < class_count) {
       list->next = list + 1;
     } else {
       list->next = nullptr;
     }
 
-    if ((i + kAllocSize - 1) < list_count) {
+    if ((i + kAllocSize - 1) < class_count) {
       list->tail = list + (kAllocSize - 1);
     } else {
       list->tail = nullptr;
@@ -58,47 +58,45 @@ SchedulerPool<StaticConfig>::SchedulerPool(Alloc* alloc, uint64_t size,
          numa_id_, static_cast<double>(size) / 1000000000.);
 };
 
-template <class StaticConfig>
-SchedulerPool<StaticConfig>::~SchedulerPool() {
-  alloc_->free_contiguous(list_pages_);
+template <class StaticConfig, class Class>
+SchedulerPool<StaticConfig, Class>::~SchedulerPool() {
+  alloc_->free_contiguous(pages_);
 };
 
-template <class StaticConfig>
-std::pair<LogEntryList<StaticConfig>*, LogEntryList<StaticConfig>*>
-SchedulerPool<StaticConfig>::allocate_lists() {
+template <class StaticConfig, class Class>
+std::pair<Class*, Class*> SchedulerPool<StaticConfig,Class>::allocate_n() {
   while (__sync_lock_test_and_set(&lock_, 1) == 1) ::mica::util::pause();
 
-  if (free_lists_ < kAllocSize) {
-    printf("Cannot allocate %lu lists\n", kAllocSize);
+  if (free_classes_ < kAllocSize) {
+    printf("Cannot allocate %lu classes\n", kAllocSize);
     __sync_lock_release(&lock_);
     return {nullptr, nullptr};
   }
 
-  auto head = next_list_;
-  auto tail = head->tail;
-  next_list_ = tail->next;
+  auto head = static_cast<Class*>(next_class_);
+  auto tail = static_cast<Class*>(head->tail);
+  next_class_ = tail->next;
 
-  free_lists_ -= kAllocSize;
+  free_classes_ -= kAllocSize;
 
   __sync_lock_release(&lock_);
 
-  return {head, tail};
+  return std::make_pair(head, tail);
 };
 
-template <class StaticConfig>
-void SchedulerPool<StaticConfig>::free_lists(LogEntryList<StaticConfig>* head,
-                                             LogEntryList<StaticConfig>* tail, uint64_t n) {
+template <class StaticConfig, class Class>
+void SchedulerPool<StaticConfig,Class>::free_n(Class* head, Class* tail, uint64_t n) {
   while (__sync_lock_test_and_set(&lock_, 1) == 1) ::mica::util::pause();
 
   if (n != kAllocSize) {
-    throw std::runtime_error("free_lists: unexpect n!");
+    throw std::runtime_error("free_n: unexpect n!");
   }
 
-  tail->next = next_list_;
-  head->tail = tail;
-  next_list_ = head;
+  tail->set_next(next_class_);
+  head->set_tail(tail);
+  next_class_ = head;
 
-  free_lists_ += kAllocSize;
+  free_classes_ += kAllocSize;
 
   __sync_lock_release(&lock_);
 };

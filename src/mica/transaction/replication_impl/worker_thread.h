@@ -12,11 +12,13 @@ using std::chrono::nanoseconds;
 
 template <class StaticConfig>
 WorkerThread<StaticConfig>::WorkerThread(
-    DB<StaticConfig>* db, SchedulerPool<StaticConfig>* pool,
-    moodycamel::ConcurrentQueue<LogEntryList<StaticConfig>*, MyTraits>* scheduler_queue,
-    moodycamel::ProducerToken* scheduler_queue_ptok,
-    WorkerMinWTS* min_wts, pthread_barrier_t* start_barrier, uint16_t id,
-    uint16_t db_id, uint16_t lcore)
+    DB<StaticConfig>* db,
+    SchedulerPool<StaticConfig, LogEntryList<StaticConfig>>* pool,
+    moodycamel::ConcurrentQueue<LogEntryList<StaticConfig>*, MyTraits>*
+        scheduler_queue,
+    moodycamel::ProducerToken* scheduler_queue_ptok, WorkerMinWTS* min_wts,
+    pthread_barrier_t* start_barrier, uint16_t id, uint16_t db_id,
+    uint16_t lcore)
     : db_{db},
       pool_{pool},
       scheduler_queue_{scheduler_queue},
@@ -81,7 +83,8 @@ void WorkerThread<StaticConfig>::run() {
 
   total_start = high_resolution_clock::now();
   while (true) {
-    n = scheduler_queue_->try_dequeue_bulk_from_producer(*scheduler_queue_ptok_, queues, max);
+    n = scheduler_queue_->try_dequeue_bulk_from_producer(*scheduler_queue_ptok_,
+                                                         queues, max);
     if (n != 0) {
       npops += 1;
       nqueues += n;
@@ -148,17 +151,17 @@ void WorkerThread<StaticConfig>::run() {
           throw std::runtime_error("run: Failed to commit transaction.");
         }
 
-       if (skipped) {
-         //printf("gc'ing skipped rows!\n");
-         queue_tail->older_rv = nullptr;
-         older_rv = queue_head;
-         while (older_rv != nullptr) {
-           auto temp = older_rv->older_rv;
-           //older_rv->older_rv = nullptr;
-           ctx->deallocate_version(older_rv);
-           older_rv = temp;
-         }
-       }
+        if (skipped) {
+          //printf("gc'ing skipped rows!\n");
+          queue_tail->older_rv = nullptr;
+          older_rv = queue_head;
+          while (older_rv != nullptr) {
+            auto temp = older_rv->older_rv;
+            //older_rv->older_rv = nullptr;
+            ctx->deallocate_version(older_rv);
+            older_rv = temp;
+          }
+        }
 
         //free_list(queue);
       }
@@ -187,9 +190,9 @@ void WorkerThread<StaticConfig>::free_list(LogEntryList<StaticConfig>* list) {
   freed_lists_head_ = list;
   num_freed_lists_ += 1;
 
-  uint64_t n = SchedulerPool<StaticConfig>::kAllocSize;
+  uint64_t n = pool_.kAllocSize;
   if (num_freed_lists_ == n) {
-    pool_->free_lists(freed_lists_head_, freed_lists_tail_, n);
+    pool_->free_n(freed_lists_head_, freed_lists_tail_, n);
     freed_lists_head_ = nullptr;
     freed_lists_tail_ = nullptr;
     num_freed_lists_ = 0;

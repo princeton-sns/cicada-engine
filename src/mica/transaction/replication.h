@@ -24,7 +24,6 @@
 #include "mica/transaction/row_version_pool.h"
 #include "mica/util/concurrentqueue.h"
 #include "mica/util/posix_io.h"
-// #include "mica/util/readerwriterqueue.h"
 
 namespace mica {
 namespace transaction {
@@ -38,7 +37,7 @@ template <class StaticConfig>
 class CCCInterface {
  public:
   void set_logdir(std::string logdir);
-  void preprocess_logs();
+  void preprocess_logs(std::string srcdir, std::string dstdir);
 
   void start_ios();
   void stop_ios();
@@ -294,7 +293,7 @@ class CopyCat : public CCCInterface<StaticConfig> {
 
   void set_logdir(std::string logdir) { logdir_ = logdir; }
 
-  void preprocess_logs();
+  void preprocess_logs(std::string srcdir, std::string dstdir);
 
   void start_ios();
   void stop_ios();
@@ -562,7 +561,7 @@ class KuaFu : public CCCInterface<StaticConfig> {
 
   void set_logdir(std::string logdir) { logdir_ = logdir; }
 
-  void preprocess_logs();
+  void preprocess_logs(std::string srcdir, std::string dstdir);
 
   void start_ios();
   void stop_ios();

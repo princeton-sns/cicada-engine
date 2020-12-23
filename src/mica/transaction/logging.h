@@ -22,7 +22,10 @@
 #include "mica/common.h"
 #include "mica/transaction/context.h"
 #include "mica/transaction/hash_index.h"
+#include "mica/transaction/log_format.h"
+#include "mica/transaction/mmap_lf.h"
 #include "mica/transaction/transaction.h"
+#include "mica/util/readerwriterqueue.h"
 
 namespace mica {
 namespace transaction {
@@ -42,7 +45,6 @@ class LoggerInterface {
   void flush();
 
   void change_logdir(std::string logdir);
-  void copy_logs(std::string srcdir, std::string dstdir);
 };
 
 template <class StaticConfig>
@@ -72,10 +74,98 @@ class NullLogger : public LoggerInterface<StaticConfig> {
   void flush() {}
 
   void change_logdir(std::string logdir) { (void)logdir; }
-  void copy_logs(std::string srcdir, std::string dstdir) {
-    (void)srcdir;
-    (void)dstdir;
+};
+
+template <class StaticConfig>
+class PerThreadLog {
+ public:
+  PerThreadLog() : request_queue_{}, mlfs_{}, cur_mlf_{nullptr}, file_index_{0}, lock_{0} {}
+  ~PerThreadLog() {}
+
+  bool request_mlf() { return request_queue_.enqueue(1); }
+
+  std::size_t num_mlfs() {
+    while (__sync_lock_test_and_set(&lock_, 1) == 1) ::mica::util::pause();
+    std::size_t n = mlfs_.size();
+    __sync_lock_release(&lock_);
+    return n;
   }
+
+  void add_mlf(std::shared_ptr<MmappedLogFile<StaticConfig>> mlf) {
+    while (__sync_lock_test_and_set(&lock_, 1) == 1) ::mica::util::pause();
+    if (cur_mlf_ == nullptr) {
+      cur_mlf_ = mlf;
+    }
+
+    mlfs_.push_back(mlf);
+    __sync_lock_release(&lock_);
+  }
+
+  void advance_file_index() {
+    while (__sync_lock_test_and_set(&lock_, 1) == 1) ::mica::util::pause();
+    if (file_index_ + 1 >= mlfs_.size()) {
+      throw std::runtime_error("file_index_ >= mlfs_.size()");
+    }
+    file_index_ += 1;
+    cur_mlf_ = mlfs_[file_index_];
+    __sync_lock_release(&lock_);
+  }
+
+  bool has_space(std::size_t nbytes) {
+    return cur_mlf_->has_space_next_le(nbytes);
+  }
+
+  char* get_cur_write_ptr() {
+    return cur_mlf_->get_cur_write_ptr();
+  }
+
+  void advance_cur_write_ptr(std::size_t nbytes) {
+    cur_mlf_->advance_cur_write_ptr(nbytes);
+  }
+
+  void flush() {
+    while (__sync_lock_test_and_set(&lock_, 1) == 1) ::mica::util::pause();
+    for (auto mlf : mlfs_) {
+      mlf->flush();
+    }
+    __sync_lock_release(&lock_);
+  }
+
+  LogFile<StaticConfig>* get_lf() {
+    return cur_mlf_->get_lf(0);
+  }
+
+  moodycamel::BlockingReaderWriterQueue<uint16_t>* get_request_queue() {
+    return &request_queue_;
+  }
+
+ private:
+  moodycamel::BlockingReaderWriterQueue<uint16_t> request_queue_;
+
+  std::vector<std::shared_ptr<MmappedLogFile<StaticConfig>>> mlfs_;
+  std::shared_ptr<MmappedLogFile<StaticConfig>> cur_mlf_;
+  std::size_t file_index_;
+
+  volatile uint32_t lock_;
+} __attribute__((aligned(64)));
+
+template <class StaticConfig>
+class MmapperThread {
+ public:
+  MmapperThread(PerThreadLog<StaticConfig>* thread_log, std::string logdir, uint16_t id);
+  ~MmapperThread();
+
+  void start();
+  void stop();
+
+ private:
+  std::thread thread_;
+  std::string logdir_;
+  PerThreadLog<StaticConfig>* thread_log_;
+  uint16_t id_;
+  bool stop_;
+
+  void run();
 };
 
 template <class StaticConfig>
@@ -96,189 +186,22 @@ class MmapLogger : public LoggerInterface<StaticConfig> {
   void flush();
 
   void change_logdir(std::string logdir);
-  void copy_logs(std::string srcdir, std::string dstdir);
 
  private:
-  class Mmapping {
-   public:
-    void* addr;
-    std::size_t len;
-    int fd;
+  std::vector<PerThreadLog<StaticConfig>*> thread_logs_;
+  std::vector<MmapperThread<StaticConfig>*> mmappers_;
 
-    Mmapping(void* addr, std::size_t len, int fd)
-        : addr{addr}, len{len}, fd{fd} {}
-    ~Mmapping() {}
-  };
-
-  class LogBuffer {
-   public:
-    char* start;
-    char* end;
-    char* cur;
-    uint64_t cur_file_index;
-
-    void print() {
-      std::stringstream stream;
-
-      stream << "Log Buffer:" << std::endl;
-      stream << "Start: " << static_cast<void*>(start) << std::endl;
-      stream << "End: " << static_cast<void*>(end) << std::endl;
-      stream << "Cur: " << static_cast<void*>(cur) << std::endl;
-      stream << "Cur File Index: " << cur_file_index << std::endl;
-
-      std::cout << stream.str();
-    }
-  };
-
-  uint16_t nthreads_;
   std::string logdir_;
-
-  std::size_t len_;
-
-  std::vector<std::vector<Mmapping>> mappings_;
-  std::vector<LogBuffer> bufs_;
-
-  LogBuffer mmap_log_buf(uint16_t thread_id, uint64_t file_index);
+  uint16_t nthreads_;
 
   char* alloc_log_buf(uint16_t thread_id, std::size_t nbytes);
   void release_log_buf(uint16_t thread_id, std::size_t nbytes);
-};
-
-enum class LogEntryType : uint8_t {
-  CREATE_TABLE = 0,
-  CREATE_HASH_IDX,
-  BEGIN_TXN,
-  WRITE_ROW,
-};
-
-template <class StaticConfig>
-class LogEntry {
- public:
-  std::size_t size;
-  LogEntryType type;
-
-  void print() {
-    std::stringstream stream;
-
-    stream << std::endl;
-    stream << "Log entry:" << std::endl;
-    stream << "Size: " << size << std::endl;
-    stream << "Type: " << std::to_string(static_cast<uint8_t>(type))
-           << std::endl;
-
-    std::cout << stream.str();
-  }
-};
-
-template <class StaticConfig>
-class LogFile {
- public:
-  LogFile<StaticConfig>* next = nullptr;
-  uint64_t nentries;
-  std::size_t size;
-  LogEntry<StaticConfig> entries[0];
-
-  void print() {
-    std::stringstream stream;
-
-    stream << "Log file:" << std::endl;
-    stream << "N entries: " << nentries << std::endl;
-    stream << "Size: " << size << std::endl;
-    stream << "First entry ptr: " << &entries[0] << std::endl;
-
-    std::cout << stream.str();
-  }
-};
-
-template <class StaticConfig>
-class CreateTableLogEntry : public LogEntry<StaticConfig> {
- public:
-  uint64_t data_size_hints[StaticConfig::kMaxColumnFamilyCount];
-  char name[StaticConfig::kMaxTableNameSize];
-  uint16_t cf_count;
-
-  void print() {
-    LogEntry<StaticConfig>::print();
-
-    std::stringstream stream;
-
-    stream << "Name: " << std::string{name} << std::endl;
-    stream << "CF count: " << cf_count << std::endl;
-
-    for (uint16_t cf_id = 0; cf_id < cf_count; cf_id++) {
-      stream << "data_size_hints[" << cf_id << "]: " << data_size_hints[cf_id]
-             << std::endl;
-    }
-
-    std::cout << stream.str();
-  }
-};
-
-template <class StaticConfig>
-class CreateHashIndexLogEntry : public LogEntry<StaticConfig> {
- public:
-  uint64_t expected_num_rows;
-  char name[StaticConfig::kMaxHashIndexNameSize];
-  char main_tbl_name[StaticConfig::kMaxTableNameSize];
-  bool unique_key;
-
-  void print() {
-    LogEntry<StaticConfig>::print();
-
-    std::stringstream stream;
-
-    stream << "Name: " << std::string{name} << std::endl;
-    stream << "Main Table Name: " << std::string{main_tbl_name} << std::endl;
-    stream << "Expected Row Count: " << expected_num_rows << std::endl;
-    stream << "UniqueKey: " << unique_key << std::endl;
-
-    std::cout << stream.str();
-  }
-};
-
-template <class StaticConfig>
-class BeginTxnLogEntry : public LogEntry<StaticConfig> {
-public:
-  uint64_t ts;
-  uint64_t nwrites;
-
-  void print() {
-    LogEntry<StaticConfig>::print();
-
-    std::stringstream stream;
-
-    stream << "Txn timestamp: " << std::to_string(ts) << std::endl;
-    stream << "N writes: " << std::to_string(nwrites) << std::endl;
-
-    std::cout << stream.str();
-  }
-};
-
-template <class StaticConfig>
-class WriteRowLogEntry : public LogEntry<StaticConfig> {
- public:
-  uint64_t table_index;
-  uint64_t row_id;
-  uint16_t cf_id;
-
-  RowVersion<StaticConfig> rv;
-
-  void print() {
-    LogEntry<StaticConfig>::print();
-
-    std::stringstream stream;
-
-    stream << "Table Index: " << std::to_string(table_index) << std::endl;
-    stream << "Row ID: " << std::to_string(row_id) << std::endl;
-    stream << "Column Family ID: " << std::to_string(cf_id) << std::endl;
-
-    std::cout << stream.str();
-  }
 };
 
 }  // namespace transaction
 }  // namespace mica
 
 #include "logging_impl/mmap_logger.h"
+#include "logging_impl/mmapper_thread.h"
 
 #endif

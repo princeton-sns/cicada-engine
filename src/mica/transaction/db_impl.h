@@ -90,8 +90,10 @@ bool DB<StaticConfig>::create_table(std::string name, uint16_t cf_count,
   auto tbl = tables_[i];
   tables_index_[name] = i;
 
-  if (!logger_->log(context(0), tbl))  // TODO: Fix hardcoded thread_id
-    return false;
+  if (!is_replica_) {
+    if (!logger_->log(context(0), tbl))  // TODO: Fix hardcoded thread_id
+      return false;
+  }
 
   return true;
 }
@@ -120,8 +122,10 @@ bool DB<StaticConfig>::create_hash_index_unique_u64(
   auto idx = new HashIndexUniqueU64(this, main_tbl, tbl, expected_row_count);
   hash_idxs_unique_u64_[name] = idx;
 
-  if (!logger_->log(context(0), idx))  // TODO: Fix hardcoded thread_id
-    return false;
+  if (!is_replica_) {
+    if (!logger_->log(context(0), idx))  // TODO: Fix hardcoded thread_id
+      return false;
+  }
 
   return true;
 }

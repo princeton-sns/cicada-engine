@@ -760,18 +760,6 @@ int main(int argc, const char* argv[]) {
     if (DBConfig::kShowPoolStats) db.print_pool_status();
   }
 
-  {
-    printf("Copying log files\n");
-    logger.flush();
-
-    logger.copy_logs(std::string{MICA_LOG_INIT_DIR},
-                     std::string{MICA_RELAY_INIT_DIR});
-    logger.copy_logs(std::string{MICA_LOG_WARMUP_DIR},
-                     std::string{MICA_RELAY_WARMUP_DIR});
-    logger.copy_logs(std::string{MICA_LOG_WORKLOAD_DIR},
-                     std::string{MICA_RELAY_WORKLOAD_DIR});
-  }
-
   DB replica{page_pools, &logger, &sw,
              static_cast<uint16_t>(num_ios + num_workers), true};
 
@@ -789,18 +777,20 @@ int main(int argc, const char* argv[]) {
             static_cast<uint16_t>(num_workers),
             std::string{MICA_RELAY_INIT_DIR}};
 
-    std::vector<std::string> relaydirs = {std::string{MICA_RELAY_INIT_DIR},
-                                          std::string{MICA_RELAY_WARMUP_DIR},
-                                          std::string{MICA_RELAY_WORKLOAD_DIR}};
+    std::vector<std::pair<std::string, std::string>> logdirs = {
+      std::make_pair(MICA_LOG_INIT_DIR, MICA_RELAY_INIT_DIR),
+      std::make_pair(MICA_LOG_WARMUP_DIR, MICA_RELAY_WARMUP_DIR),
+      std::make_pair(MICA_LOG_WORKLOAD_DIR, MICA_RELAY_WORKLOAD_DIR)};
 
-    for (std::string dir : relaydirs) {
-      ccc.set_logdir(dir);
-      printf("Preprocessing logs in %s\n", dir.c_str());
-      ccc.preprocess_logs();
+    for (std::pair<std::string, std::string> pair : logdirs) {
+      std::string relaydir = pair.second;
+      printf("Preprocessing logs in %s\n", relaydir.c_str());
+      ccc.preprocess_logs(pair.first, pair.second);
     }
 
     int i = 0;
-    for (std::string dir : relaydirs) {
+    for (std::pair<std::string,std::string> pair : logdirs) {
+      std::string relaydir = pair.second;
       switch (i) {
         case 0:
           printf("Starting cloned concurrency control INIT\n");
@@ -812,10 +802,10 @@ int main(int argc, const char* argv[]) {
           printf("Starting cloned concurrency control WORKLOAD\n");
           break;
         default:
-          throw std::runtime_error("Unexpected relay dir.");
+          throw std::runtime_error("Unexpected relay dir");
       }
 
-      ccc.set_logdir(dir);
+      ccc.set_logdir(relaydir);
 
       replica.reset_stats();
       replica.reset_backoff();

@@ -221,8 +221,8 @@ void KuaFu<StaticConfig>::reset() {
 }
 
 template <class StaticConfig>
-void KuaFu<StaticConfig>::preprocess_logs() {
-  ReplicationUtils<StaticConfig>::preprocess_logs(db_, logdir_, nloggers_);
+void KuaFu<StaticConfig>::preprocess_logs(std::string srcdir, std::string dstdir) {
+  ReplicationUtils<StaticConfig>::preprocess_logs(db_, nloggers_, srcdir, dstdir);
 }
 
 }  // namespace transaction

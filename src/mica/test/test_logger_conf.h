@@ -115,6 +115,7 @@ struct DBConfig : public ::mica::transaction::BasicDBConfig {
 
   // Logging and replication
   static constexpr uint64_t kPageSize = 2 * 1048576;
+  static constexpr uint64_t kLogFileSize = 4 * kPageSize;
   // typedef ::mica::transaction::NullLogger<DBConfig> Logger;
   typedef ::mica::transaction::MmapLogger<DBConfig> Logger;
   typedef ::mica::transaction::CopyCat<DBConfig> CCC;

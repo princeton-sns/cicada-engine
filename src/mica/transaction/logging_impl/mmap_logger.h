@@ -3,27 +3,31 @@
 #define MICA_TRANSACTION_MMAPLOGGER_H_
 
 #include "mica/transaction/logging.h"
-#include "mica/util/posix_io.h"
 
 namespace mica {
 namespace transaction {
 
-using mica::util::PosixIO;
-
 template <class StaticConfig>
 MmapLogger<StaticConfig>::MmapLogger(uint16_t nthreads, std::string logdir)
-    : nthreads_{nthreads},
+    : thread_logs_{},
+      mmappers_{},
       logdir_{logdir},
-      len_{StaticConfig::kPageSize},
-      mappings_{},
-      bufs_{} {
+      nthreads_{nthreads} {
   for (uint16_t i = 0; i < nthreads_; i++) {
-    mappings_.emplace_back();
-  }
+    auto l = new PerThreadLog<StaticConfig>{};
+    thread_logs_.push_back(l);
+    auto m = new MmapperThread<StaticConfig>{l, logdir_, i};
+    m->start();
+    mmappers_.push_back(m);
 
-  for (uint16_t i = 0; i < nthreads_; i++) {
-    LogBuffer lb = mmap_log_buf(i, 0);
-    bufs_.push_back(lb);
+    // Pre-request n log bufs
+    std::size_t n = 4;
+    for (std::size_t j = 0; j < n; j++) {
+      l->request_mlf();
+    }
+
+    // Wait for mmapper thread to allocate log bufs
+    while (l->num_mlfs() != n) ::mica::util::pause();
   }
 }
 
@@ -31,139 +35,85 @@ template <class StaticConfig>
 MmapLogger<StaticConfig>::~MmapLogger() {
   flush();
 
-  for (uint16_t i = 0; i < nthreads_; i++) {
-    for (Mmapping m : mappings_[i]) {
-      PosixIO::Munmap(m.addr, m.len);
-      PosixIO::Close(m.fd);
-    }
-
-    mappings_[i].clear();
+  for (auto m : mmappers_) {
+    m->stop();
+    delete m;
   }
+  mmappers_.clear();
 
-  mappings_.clear();
+  for (auto l : thread_logs_) {
+    delete l;
+  }
+  thread_logs_.clear();
 }
 
 template <class StaticConfig>
 void MmapLogger<StaticConfig>::change_logdir(std::string logdir) {
   flush();
 
-  for (uint16_t i = 0; i < nthreads_; i++) {
-    for (Mmapping m : mappings_[i]) {
-      PosixIO::Munmap(m.addr, m.len);
-      PosixIO::Close(m.fd);
-    }
-
-    mappings_[i].clear();
+  for (auto m : mmappers_) {
+    m->stop();
+    delete m;
   }
+  mmappers_.clear();
+
+  for (auto l : thread_logs_) {
+    delete l;
+  }
+  thread_logs_.clear();
 
   // Change log dir
   logdir_ = logdir;
 
   for (uint16_t i = 0; i < nthreads_; i++) {
-    bufs_[i] = mmap_log_buf(i, 0);
-  }
-}
+    auto l = new PerThreadLog<StaticConfig>{};
+    thread_logs_.push_back(l);
+    auto m = new MmapperThread<StaticConfig>{l, logdir_, i};
+    m->start();
+    mmappers_.push_back(m);
 
-template <class StaticConfig>
-void MmapLogger<StaticConfig>::copy_logs(std::string srcdir,
-                                         std::string dstdir) {
-  for (uint16_t thread_id = 0; thread_id < nthreads_; thread_id++) {
-    for (uint64_t file_index = 0;; file_index++) {
-      std::string infname = srcdir + "/out." + std::to_string(thread_id) + "." +
-                            std::to_string(file_index) + ".log";
-
-      std::string outfname = dstdir + "/out." + std::to_string(thread_id) +
-                             "." + std::to_string(file_index) + ".log";
-
-      if (!PosixIO::Exists(infname.c_str())) break;
-
-      int infd = PosixIO::Open(infname.c_str(), O_RDONLY);
-      void* inaddr =
-          PosixIO::Mmap(nullptr, len_, PROT_READ, MAP_SHARED, infd, 0);
-
-      int outfd = PosixIO::Open(outfname.c_str(), O_RDWR | O_CREAT,
-                                S_IRUSR | S_IWUSR | S_IRGRP | S_IROTH);
-      PosixIO::Ftruncate(outfd, static_cast<off_t>(len_));
-      void* outaddr = PosixIO::Mmap(nullptr, len_, PROT_READ | PROT_WRITE,
-                                    MAP_SHARED, outfd, 0);
-
-      std::memcpy(outaddr, inaddr, len_);
-      PosixIO::Msync(outaddr, len_, MS_SYNC);
-
-      PosixIO::Munmap(inaddr, len_);
-      PosixIO::Close(infd);
-
-      PosixIO::Munmap(outaddr, len_);
-      PosixIO::Close(outfd);
+    // Pre-request n log bufs
+    std::size_t n = 4;
+    for (std::size_t j = 0; j < n; j++) {
+      l->request_mlf();
     }
+
+    // Wait for mmapper thread to allocate log bufs
+    while (l->num_mlfs() != n) ::mica::util::pause();
   }
 }
 
 template <class StaticConfig>
 void MmapLogger<StaticConfig>::flush() {
-  for (uint16_t i = 0; i < nthreads_; i++) {
-    for (Mmapping m : mappings_[i]) {
-      PosixIO::Msync(m.addr, m.len, MS_SYNC);
-    }
+  for (auto l : thread_logs_) {
+    l->flush();
   }
-}
-
-template <class StaticConfig>
-typename MmapLogger<StaticConfig>::LogBuffer
-MmapLogger<StaticConfig>::mmap_log_buf(uint16_t thread_id,
-                                       uint64_t file_index) {
-  std::string fname = logdir_ + "/out." + std::to_string(thread_id) + "." +
-                      std::to_string(file_index) + ".log";
-
-  int fd = PosixIO::Open(fname.c_str(), O_RDWR | O_CREAT,
-                         S_IRUSR | S_IWUSR | S_IRGRP | S_IROTH);
-
-  PosixIO::Ftruncate(fd, static_cast<off_t>(len_));
-
-  char* start = static_cast<char*>(PosixIO::Mmap(
-      nullptr, len_, PROT_READ | PROT_WRITE, MAP_SHARED | MAP_POPULATE, fd, 0));
-
-  mappings_[thread_id].emplace_back(start, len_, fd);
-
-  LogFile<StaticConfig>* lf = reinterpret_cast<LogFile<StaticConfig>*>(start);
-  lf->nentries = 0;
-  lf->size = sizeof(LogFile<StaticConfig>);
-
-  LogBuffer lb{start, start + len_, reinterpret_cast<char*>(&lf->entries[0]),
-               file_index};
-  return lb;
 }
 
 template <class StaticConfig>
 char* MmapLogger<StaticConfig>::alloc_log_buf(uint16_t thread_id,
                                               std::size_t nbytes) {
-  LogBuffer lb = bufs_[thread_id];
-
-  // lb.print();
+  PerThreadLog<StaticConfig>* l = thread_logs_[thread_id];
 
   // Check we have sufficient space
-  if (lb.cur + nbytes > lb.end) {
-    PosixIO::Msync(lb.start, static_cast<std::size_t>(lb.end - lb.start),
-                   MS_ASYNC);
-    LogBuffer lbnew = mmap_log_buf(thread_id, lb.cur_file_index + 1);
-    lb = lbnew;
+  if (!l->has_space(nbytes)) {
+    if (!l->request_mlf()) {
+      // TODO: error handling
+    }
+
+    l->advance_file_index();
   }
 
-  char* p = lb.cur;
-  lb.cur += nbytes;
-
-  // Write back changes
-  bufs_[thread_id] = lb;
-
-  return p;
+  return l->get_cur_write_ptr();
 }
 
 template <class StaticConfig>
 void MmapLogger<StaticConfig>::release_log_buf(uint16_t thread_id,
                                                std::size_t nbytes) {
-  LogBuffer lb = bufs_[thread_id];
-  LogFile<StaticConfig>* lf =
-      reinterpret_cast<LogFile<StaticConfig>*>(lb.start);
+  PerThreadLog<StaticConfig>* l = thread_logs_[thread_id];
+  LogFile<StaticConfig>* lf = l->get_lf();
+
+  l->advance_cur_write_ptr(nbytes);
   lf->nentries += 1;
   lf->size += nbytes;
 }

@@ -7,7 +7,7 @@
 #include <memory>
 #include <string>
 
-#include "mica/transaction/logging.h"
+#include "mica/transaction/log_format.h"
 #include "mica/util/posix_io.h"
 
 namespace mica {
@@ -83,6 +83,16 @@ class MmappedLogFile {
   ~MmappedLogFile() {
     PosixIO::Munmap(get_lf(0), len_);
     PosixIO::Close(fd_);
+  }
+
+  void flush() { PosixIO::Msync(get_lf(0), len_, MS_SYNC); }
+
+  char* get_cur_write_ptr() {
+    return cur_write_ptr_;
+  }
+
+  void advance_cur_write_ptr(std::size_t nbytes) {
+    cur_write_ptr_ += nbytes;
   }
 
   std::size_t get_nsegments() { return lfs_.size(); }
@@ -164,7 +174,7 @@ class MmappedLogFile {
   }
 };
 
-};
+};  // namespace transaction
 };  // namespace mica
 
 #endif

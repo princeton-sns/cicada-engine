@@ -91,12 +91,12 @@ class ReplicationUtils {
     }
   }
 
-  static void preprocess_logs(DB<StaticConfig>* db, std::string logdir,
-                              uint16_t nloggers) {
-    const std::string outfname = logdir + "/out.log";
+  static void preprocess_logs(DB<StaticConfig>* db, uint16_t nloggers,
+                              std::string srcdir, std::string dstdir) {
+    const std::string outfname = dstdir + "/out.log";
 
     std::size_t out_size =
-        ReplicationUtils<StaticConfig>::get_total_log_size(logdir, nloggers);
+        ReplicationUtils<StaticConfig>::get_total_log_size(srcdir, nloggers);
 
     // Add space overhead of segments
     out_size += ReplicationUtils<StaticConfig>::nsegments(out_size) *
@@ -133,14 +133,14 @@ class ReplicationUtils {
       }
     };
 
-    auto cmp = [](MLF left, MLF right) {return left.ts > right.ts ; };
+    auto cmp = [](MLF left, MLF right) { return left.ts > right.ts; };
 
     std::priority_queue<MLF, std::vector<MLF>, decltype(cmp)> pq{cmp};
     std::vector<uint64_t> cur_file_indices{};
 
     for (uint16_t thread_id = 0; thread_id < nloggers; thread_id++) {
       uint64_t file_index = 0;
-      std::string fname = logdir + "/out." + std::to_string(thread_id) + "." +
+      std::string fname = srcdir + "/out." + std::to_string(thread_id) + "." +
                           std::to_string(file_index) + ".log";
 
       auto mlf = MmappedLogFile<StaticConfig>::open_existing(fname, PROT_READ,
@@ -196,7 +196,7 @@ class ReplicationUtils {
                    thread_id);
       } else {
         uint64_t file_index = cur_file_indices[thread_id] + 1;
-        std::string fname = logdir + "/out." + std::to_string(thread_id) + "." +
+        std::string fname = srcdir + "/out." + std::to_string(thread_id) + "." +
                             std::to_string(file_index) + ".log";
 
         mlf = MmappedLogFile<StaticConfig>::open_existing(fname, PROT_READ,

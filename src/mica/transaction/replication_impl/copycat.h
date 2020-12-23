@@ -26,7 +26,6 @@ CopyCat<StaticConfig>::CopyCat(DB<StaticConfig>* db, Alloc* alloc,
       io_queue_ptok_{io_queue_},
       scheduler_queue_ptok_{scheduler_queue_},
       db_{db},
-      len_{StaticConfig::kPageSize},
       nloggers_{nloggers},
       nios_{nios},
       nschedulers_{nschedulers},
@@ -262,8 +261,8 @@ void CopyCat<StaticConfig>::reset() {
 }
 
 template <class StaticConfig>
-void CopyCat<StaticConfig>::preprocess_logs() {
-  ReplicationUtils<StaticConfig>::preprocess_logs(db_, logdir_, nloggers_);
+void CopyCat<StaticConfig>::preprocess_logs(std::string srcdir, std::string dstdir) {
+  ReplicationUtils<StaticConfig>::preprocess_logs(db_, nloggers_, srcdir, dstdir);
 }
 
 }  // namespace transaction

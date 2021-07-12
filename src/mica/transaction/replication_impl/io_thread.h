@@ -3,6 +3,8 @@
 
 #include "mica/transaction/replication.h"
 
+#include <unordered_map>
+
 namespace mica {
 namespace transaction {
 
@@ -144,6 +146,7 @@ template <class StaticConfig>
 uint64_t IOThread<StaticConfig>::build_local_lists(
     RowVersionPool<StaticConfig>* pool, std::size_t segment,
     std::vector<LogEntryList<StaticConfig>*>& lists) {
+  std::unordered_map<TableRowID, LogEntryList<StaticConfig>*> index{};
   LogFile<StaticConfig>* lf = log_->get_lf(segment);
   // lf->print();
 
@@ -197,14 +200,24 @@ uint64_t IOThread<StaticConfig>::build_local_lists(
     }
 
     if (type == LogEntryType::WRITE_ROW) {
-      LogEntryList<StaticConfig>* list = allocate_list();
-      list->table_index = table_index;
-      list->row_id = row_id;
-      list->tail_ts = ts;
+      TableRowID key{table_index, row_id};
+      LogEntryList<StaticConfig>* list = nullptr;
 
-      list->push(rv);
+      auto search = index.find(key);
+      if (search == index.end()) {  // Not found
+        list = allocate_list();
+        list->table_index = table_index;
+        list->row_id = row_id;
+        list->tail_ts = ts;
+        list->push(rv);
 
-      lists.push_back(list);
+        list->push(rv);
+
+        index[key] = list;
+        lists.push_back(list);
+      } else {
+        search->second->push(rv);
+      }
     }
 
     ptr += size;

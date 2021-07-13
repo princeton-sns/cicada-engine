@@ -322,6 +322,9 @@ class WorkerThread {
 
   void run();
 
+  RowVersion<StaticConfig>* wrle_to_rv(RowVersionPool<StaticConfig>* pool,
+                                       WriteRowLogEntry<StaticConfig>* wrle);
+
   void free_list(LogEntryList<StaticConfig>* list);
 };
 

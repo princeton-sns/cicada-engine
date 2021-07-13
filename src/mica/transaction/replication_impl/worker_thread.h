@@ -54,6 +54,21 @@ void WorkerThread<StaticConfig>::stop() {
 };
 
 template <class StaticConfig>
+RowVersion<StaticConfig>* WorkerThread<StaticConfig>::wrle_to_rv(
+    RowVersionPool<StaticConfig>* pool, WriteRowLogEntry<StaticConfig>* wrle) {
+  uint32_t data_size = wrle->rv.data_size;
+
+  auto rv = pool->allocate(
+      SharedRowVersionPool<StaticConfig>::data_size_to_class(data_size));
+
+  uint8_t numa_id = rv->numa_id;
+  std::memcpy(rv, &wrle->rv, sizeof(wrle->rv) + data_size);
+  rv->numa_id = numa_id;
+
+  return rv;
+}
+
+template <class StaticConfig>
 void WorkerThread<StaticConfig>::run() {
   printf("Starting replica worker: %u %u %u\n", id_, db_id_, lcore_);
 
@@ -92,91 +107,70 @@ void WorkerThread<StaticConfig>::run() {
       nqueues += n;
 
       for (uint64_t i = 0; i < n; i++) {
-        LogEntryList<StaticConfig>* queue = queues[i];
-        // uint64_t nentries = queue->nentries;
+        uint64_t nentries = 0;
+        RowVersion<StaticConfig>* head_rv = nullptr;
+        RowVersion<StaticConfig>* tail_rv = nullptr;
+        uint64_t tail_ts = 0;
 
+        LogEntryList<StaticConfig>* queue = queues[i];
+
+        // Handle queue head
         for (std::size_t j = 0; j < queue->nentries; ++j) {
           auto* wrle = queue->entries[j];
           // wrle->print();
 
-          uint64_t row_id = wrle->row_id;
-          uint64_t table_index = wrle->table_index;
-          uint64_t ts = wrle->rv.wts.t2;
+          auto rv = wrle_to_rv(pool, wrle);
 
-          uint32_t data_size = wrle->rv.data_size;
+          rv->older_rv = head_rv;
+          head_rv = rv;
 
-          auto rv = pool->allocate(
-              SharedRowVersionPool<StaticConfig>::data_size_to_class(
-                  data_size));
-
-          uint8_t numa_id = rv->numa_id;
-          std::memcpy(rv, &wrle->rv, sizeof(wrle->rv) + data_size);
-          rv->numa_id = numa_id;
+          if (j == 0) {
+            tail_rv = rv;
+            tail_ts = rv->wts.t2;
+          }
         }
-        queuelen += queue->nentries;
+        nentries += queue->nentries;
 
+        // Handle queue nodes
         auto node = queue->next;
         while (node != nullptr) {
           for (std::size_t j = 0; j < node->nentries; ++j) {
             auto* wrle = node->entries[j];
             // wrle->print();
 
-            uint64_t row_id = wrle->row_id;
-            uint64_t table_index = wrle->table_index;
-            uint64_t ts = wrle->rv.wts.t2;
+            auto rv = wrle_to_rv(pool, wrle);
 
-            uint32_t data_size = wrle->rv.data_size;
-
-            auto rv = pool->allocate(
-                SharedRowVersionPool<StaticConfig>::data_size_to_class(
-                    data_size));
-
-            uint8_t numa_id = rv->numa_id;
-            std::memcpy(rv, &wrle->rv, sizeof(wrle->rv) + data_size);
-            rv->numa_id = numa_id;
+            rv->older_rv = head_rv;
+            head_rv = rv;
           }
 
-          queuelen += node->nentries;
+          nentries += queue->nentries;
           node = node->next;
         }
-        // wrle = static_cast<WriteRowLogEntry<StaticConfig>*>(le);
-        // row_id = wrle->row_id;
-        // table_index = wrle->table_index;
-        // ts = wrle->rv.wts.t2;
 
-        // data_size = wrle->rv.data_size;
-        // size_cls =
-        //     SharedRowVersionPool<StaticConfig>::data_size_to_class(data_size);
+        queuelen += nentries;
 
-        // rv = pool->allocate(size_cls);
+        Table<StaticConfig>* tbl = db_->get_table_by_index(queue->table_index);
+        uint16_t cf_id = 0;  // TODO: fix hardcoded column family
+        uint64_t row_id = queue->row_id;
+        uint64_t min_min_wts = 0;
 
-        // numa_id = rv->numa_id;
-        // std::memcpy(rv, &wrle->rv, sizeof(wrle->rv) + data_size);
-        // rv->numa_id = numa_id;
-        // rv->size_cls = size_cls;
+        printf("executing queue: %lu %lu %lu\n", row_id, tail_ts, nentries);
 
-        // Table<StaticConfig>* tbl = db_->get_table_by_index(queue->table_index);
-        // uint16_t cf_id = 0;  // TODO: fix hardcoded column family
-        // uint64_t row_id = queue->row_id;
-        // uint64_t tail_ts = queue->tail_ts;
-        // uint64_t min_min_wts = 0;
+        if (!tx.begin_replica()) {
+          throw std::runtime_error("run: Failed to begin transaction.");
+        }
 
-        // // printf("executing queue: %lu %lu %lu\n", row_id, tail_ts, nentries);
+        row_id = ctx->allocate_row(tbl, row_id);
+        if (row_id == static_cast<uint64_t>(-1)) {
+          throw std::runtime_error("run: Unable to allocate row ID.");
+        }
 
-        // if (!tx.begin_replica()) {
-        //   throw std::runtime_error("run: Failed to begin transaction.");
-        // }
-
-        // row_id = ctx->allocate_row(tbl, row_id);
-        // if (row_id == static_cast<uint64_t>(-1)) {
-        //   throw std::runtime_error("run: Unable to allocate row ID.");
-        // }
-
-        // RowHead<StaticConfig>* row_head = tbl->head(cf_id, row_id);
-        // RowVersion<StaticConfig>* queue_head = queue->head_rv;
-        // RowVersion<StaticConfig>* queue_tail = queue->tail_rv;
-        // RowVersion<StaticConfig>* older_rv = nullptr;
-        // bool skipped = false;
+        RowHead<StaticConfig>* row_head = tbl->head(cf_id, row_id);
+        RowVersion<StaticConfig>* queue_head = head_rv;
+        RowVersion<StaticConfig>* queue_tail = tail_rv;
+        RowVersion<StaticConfig>* older_rv = nullptr;
+        bool skipped = false;
 
         // // RowVersion<StaticConfig>* temp = queue_head;
         // // while (temp != nullptr) {
@@ -184,46 +178,46 @@ void WorkerThread<StaticConfig>::run() {
         // //   temp = temp->older_rv;
         // // }
 
-        // do {
-        //   older_rv = row_head->older_rv;
-        //   if (older_rv != nullptr && older_rv->wts.t2 > tail_ts) {
-        //     skipped = true;
-        //     min_min_wts = std::max(min_min_wts, older_rv->wts.t2);
-        //     break;
-        //   }
+        do {
+          older_rv = row_head->older_rv;
+          if (older_rv != nullptr && older_rv->wts.t2 > tail_ts) {
+            skipped = true;
+            min_min_wts = std::max(min_min_wts, older_rv->wts.t2);
+            break;
+          }
 
-        //   queue_tail->older_rv = older_rv;
+          queue_tail->older_rv = older_rv;
 
-        // } while (!__sync_bool_compare_and_swap(&row_head->older_rv, older_rv,
-        //                                        queue_head));
+        } while (!__sync_bool_compare_and_swap(&row_head->older_rv, older_rv,
+                                               queue_head));
 
-        // ::mica::util::memory_barrier();
+        ::mica::util::memory_barrier();
 
-        // if (!skipped && queue_tail->older_rv != nullptr) {
-        //   uint8_t deleted = false;  // TODO: Handle deleted rows
-        //   ctx->schedule_gc({tail_ts}, tbl, cf_id, deleted, row_id, row_head,
-        //                    queue_tail);
-        // }
+        if (!skipped && queue_tail->older_rv != nullptr) {
+          uint8_t deleted = false;  // TODO: Handle deleted rows
+          ctx->schedule_gc({tail_ts}, tbl, cf_id, deleted, row_id, row_head,
+                           queue_tail);
+        }
 
-        // if (tail_ts >= min_min_wts) {
-        //   min_wts_->min_wts = tail_ts;
-        // }
+        if (tail_ts >= min_min_wts) {
+          min_wts_->min_wts = tail_ts;
+        }
 
-        // if (!tx.commit_replica(nentries)) {
-        //   throw std::runtime_error("run: Failed to commit transaction.");
-        // }
+        if (!tx.commit_replica(nentries)) {
+          throw std::runtime_error("run: Failed to commit transaction.");
+        }
 
-        // if (skipped) {
-        //   //printf("gc'ing skipped rows!\n");
-        //   queue_tail->older_rv = nullptr;
-        //   older_rv = queue_head;
-        //   while (older_rv != nullptr) {
-        //     auto temp = older_rv->older_rv;
-        //     //older_rv->older_rv = nullptr;
-        //     ctx->deallocate_version(older_rv);
-        //     older_rv = temp;
-        //   }
-        // }
+        if (skipped) {
+          //printf("gc'ing skipped rows!\n");
+          queue_tail->older_rv = nullptr;
+          older_rv = queue_head;
+          while (older_rv != nullptr) {
+            auto temp = older_rv->older_rv;
+            //older_rv->older_rv = nullptr;
+            ctx->deallocate_version(older_rv);
+            older_rv = temp;
+          }
+        }
 
         //free_list(queue);
       }

@@ -17,6 +17,8 @@
 #include <utility>
 #include <vector>
 
+#include <absl/container/flat_hash_map.h>
+
 #include "mica/transaction/db.h"
 #include "mica/transaction/logging.h"
 #include "mica/transaction/mmap_lf.h"
@@ -128,6 +130,20 @@ class SchedulerPool {
   volatile uint32_t lock_;
 } __attribute__((aligned(64)));
 
+struct TableRowID {
+  uint64_t table_index;
+  uint64_t row_id;
+
+  bool operator==(const TableRowID& t) const {
+    return table_index == t.table_index && row_id == t.row_id;
+  }
+
+  bool operator<(const TableRowID& t) const {
+    return table_index < t.table_index ||
+           (table_index == t.table_index && row_id < t.row_id);
+  }
+};
+
 struct IOLock {
   volatile IOLock* next;
   volatile bool locked;
@@ -177,9 +193,11 @@ class IOThread {
 
   LogEntryList<StaticConfig>* allocate_list();
 
-  uint64_t build_local_lists(RowVersionPool<StaticConfig>* pool,
-                             std::size_t segment,
-                             std::vector<LogEntryList<StaticConfig>*>& lists);
+  uint64_t build_local_lists(
+      RowVersionPool<StaticConfig>* pool, std::size_t segment,
+      std::vector<LogEntryList<StaticConfig>*>& lists,
+      absl::flat_hash_map<TableRowID, LogEntryList<StaticConfig>*>&
+          local_lists_index);
 };
 
 template <class StaticConfig>
@@ -343,20 +361,6 @@ class CopyCat : public CCCInterface<StaticConfig> {
 
   pthread_barrier_t snapshot_barrier_;
   SnapshotThread<StaticConfig>* snapshot_manager_;
-};
-
-struct TableRowID {
-  uint64_t table_index;
-  uint64_t row_id;
-
-  bool operator==(const TableRowID& t) const {
-    return table_index == t.table_index && row_id == t.row_id;
-  }
-
-  bool operator<(const TableRowID& t) const {
-    return table_index < t.table_index ||
-           (table_index == t.table_index && row_id < t.row_id);
-  }
 };
 
 template <class StaticConfig>

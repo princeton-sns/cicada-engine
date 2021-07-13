@@ -3,8 +3,6 @@
 
 #include "mica/transaction/replication.h"
 
-#include "absl/container/flat_hash_map.h"
-
 #include <unordered_map>
 
 namespace mica {
@@ -75,7 +73,11 @@ void IOThread<StaticConfig>::run() {
 
   std::size_t nsegments = log_->get_nsegments();
   RowVersionPool<StaticConfig>* pool = db_->row_version_pool(db_id_);
-  std::vector<LogEntryList<StaticConfig>*> local_lists{};
+
+  // TODO: Remove hardcoded, pre-allocated sizes
+  std::vector<LogEntryList<StaticConfig>*> local_lists{32768};
+  absl::flat_hash_map<TableRowID, LogEntryList<StaticConfig>*>
+      local_lists_index{32768};
 
   nanoseconds time_total{0};
 
@@ -92,22 +94,22 @@ void IOThread<StaticConfig>::run() {
 
   for (std::size_t cur_segment = id_; cur_segment < nsegments;
        cur_segment += nios_) {
-    build_local_lists(pool, cur_segment, local_lists);
+    uint64_t n_lists =
+        build_local_lists(pool, cur_segment, local_lists, local_lists_index);
 
     acquire_io_lock();
 
-    for (i = 0; local_lists.size() - i >= max; i += max) {
+    for (i = 0; n_lists - i >= max; i += max) {
       io_queue_->enqueue_bulk(*io_queue_ptok_, &local_lists[i], max);
     }
 
-    if (local_lists.size() - i > 0) {
-      io_queue_->enqueue_bulk(*io_queue_ptok_, &local_lists[i],
-                              local_lists.size() - i);
+    if (n_lists - i > 0) {
+      io_queue_->enqueue_bulk(*io_queue_ptok_, &local_lists[i], n_lists - i);
     }
 
     release_io_lock();
 
-    local_lists.clear();
+    // local_lists.clear();
   }
 
   run_end = high_resolution_clock::now();
@@ -147,16 +149,17 @@ LogEntryList<StaticConfig>* IOThread<StaticConfig>::allocate_list() {
 template <class StaticConfig>
 uint64_t IOThread<StaticConfig>::build_local_lists(
     RowVersionPool<StaticConfig>* pool, std::size_t segment,
-    std::vector<LogEntryList<StaticConfig>*>& lists) {
-  absl::flat_hash_map<TableRowID, LogEntryList<StaticConfig>*> index{32768};
-  //std::unordered_map<TableRowID, LogEntryList<StaticConfig>*> index{32768};
+    std::vector<LogEntryList<StaticConfig>*>& lists,
+    absl::flat_hash_map<TableRowID, LogEntryList<StaticConfig>*>&
+        local_lists_index) {
+  uint64_t n_lists = 0;
   LogFile<StaticConfig>* lf = log_->get_lf(segment);
   // lf->print();
 
   char* ptr = reinterpret_cast<char*>(&lf->entries[0]);
 
-  BeginTxnLogEntry<StaticConfig>* btle = nullptr;
-  WriteRowLogEntry<StaticConfig>* wrle = nullptr;
+  // BeginTxnLogEntry<StaticConfig>* btle = nullptr;
+  // WriteRowLogEntry<StaticConfig>* wrle = nullptr;
 
   for (uint64_t i = 0; i < lf->nentries; i++) {
     LogEntry<StaticConfig>* le = reinterpret_cast<LogEntry<StaticConfig>*>(ptr);
@@ -164,51 +167,56 @@ uint64_t IOThread<StaticConfig>::build_local_lists(
     std::size_t size = le->size;
     // le->print();
 
-    uint64_t row_id;
-    uint64_t table_index;
-    uint64_t ts;
+    // uint64_t row_id;
+    // uint64_t table_index;
+    // uint64_t ts;
     RowVersion<StaticConfig>* rv;
-    uint32_t data_size;
-    uint16_t size_cls;
-    uint8_t numa_id;
-    switch (type) {
-      case LogEntryType::BEGIN_TXN:
-        btle = static_cast<BeginTxnLogEntry<StaticConfig>*>(le);
-        // btle->print();
-        break;
+    // uint32_t data_size;
+    // uint16_t size_cls;
+    // uint8_t numa_id;
+    // switch (type) {
+    //   case LogEntryType::BEGIN_TXN:
+    //     btle = static_cast<BeginTxnLogEntry<StaticConfig>*>(le);
+    //     // btle->print();
+    //     break;
 
-      case LogEntryType::WRITE_ROW:
-        wrle = static_cast<WriteRowLogEntry<StaticConfig>*>(le);
-        row_id = wrle->row_id;
-        table_index = wrle->table_index;
-        ts = wrle->rv.wts.t2;
+    //   case LogEntryType::WRITE_ROW:
+    //     wrle = static_cast<WriteRowLogEntry<StaticConfig>*>(le);
+    //     row_id = wrle->row_id;
+    //     table_index = wrle->table_index;
+    //     ts = wrle->rv.wts.t2;
 
-        data_size = wrle->rv.data_size;
-        size_cls =
-            SharedRowVersionPool<StaticConfig>::data_size_to_class(data_size);
+    //     data_size = wrle->rv.data_size;
+    //     size_cls =
+    //         SharedRowVersionPool<StaticConfig>::data_size_to_class(data_size);
 
-        //rv = pool->allocate(size_cls);
+    //     rv = pool->allocate(size_cls);
 
-        //numa_id = rv->numa_id;
-        //std::memcpy(rv, &wrle->rv, sizeof(wrle->rv) + data_size);
-        //rv->numa_id = numa_id;
-        //rv->size_cls = size_cls;
+    //     numa_id = rv->numa_id;
+    //     std::memcpy(rv, &wrle->rv, sizeof(wrle->rv) + data_size);
+    //     rv->numa_id = numa_id;
+    //     rv->size_cls = size_cls;
 
-        // wrle->print();
-        break;
+    //     wrle->print();
+    //     break;
 
-      default:
-        throw std::runtime_error(
-            "build_local_lists: Unexpected log entry type.");
-    }
+    //   default:
+    //     throw std::runtime_error(
+    //         "build_local_lists: Unexpected log entry type.");
+    // }
 
     if (type == LogEntryType::WRITE_ROW) {
-      TableRowID key{table_index, row_id};
-      LogEntryList<StaticConfig>* list = nullptr;
+      WriteRowLogEntry<StaticConfig>* wrle =
+          static_cast<WriteRowLogEntry<StaticConfig>*>(le);
+      uint64_t row_id = wrle->row_id;
+      uint64_t table_index = wrle->table_index;
+      uint64_t ts = wrle->rv.wts.t2;
 
-      auto search = index.find(key);
-      if (search == index.end()) {  // Not found
-        list = allocate_list();
+      TableRowID key{table_index, row_id};
+
+      auto search = local_lists_index.find(key);
+      if (search == local_lists_index.end()) {  // Not found
+        LogEntryList<StaticConfig>* list = allocate_list();
         list->table_index = table_index;
         list->row_id = row_id;
         list->tail_ts = ts;
@@ -216,8 +224,9 @@ uint64_t IOThread<StaticConfig>::build_local_lists(
 
         //list->push(rv);
 
-        index.emplace(key, list);
+        local_lists_index.emplace(key, list);
         lists.push_back(list);
+        n_lists++;
       } else {
         search->second->push(rv);
       }
@@ -226,9 +235,9 @@ uint64_t IOThread<StaticConfig>::build_local_lists(
     ptr += size;
   }
 
-//  std::cout << "Index size: " << std::to_string(index.size()) << std::endl;
+  //  std::cout << "Index size: " << std::to_string(index.size()) << std::endl;
 
-  return lf->nentries;
+  return n_lists;
 };
 
 };  // namespace transaction

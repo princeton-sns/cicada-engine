@@ -63,6 +63,8 @@ void WorkerThread<StaticConfig>::run() {
   db_->activate(db_id_);
 
   Context<StaticConfig>* ctx = db_->context(db_id_);
+  RowVersionPool<StaticConfig>* pool = db_->row_version_pool(db_id_);
+
   Transaction<StaticConfig> tx{ctx};
   RowAccessHandle<StaticConfig> rah{&tx};
 
@@ -93,17 +95,45 @@ void WorkerThread<StaticConfig>::run() {
         LogEntryList<StaticConfig>* queue = queues[i];
         // uint64_t nentries = queue->nentries;
 
-        for (std::size_t j = 0; i < queue->nentries; ++j) {
+        for (std::size_t j = 0; j < queue->nentries; ++j) {
           auto* wrle = queue->entries[j];
-          wrle->print();
+          // wrle->print();
+
+          uint64_t row_id = wrle->row_id;
+          uint64_t table_index = wrle->table_index;
+          uint64_t ts = wrle->rv.wts.t2;
+
+          uint32_t data_size = wrle->rv.data_size;
+
+          auto rv = pool->allocate(
+              SharedRowVersionPool<StaticConfig>::data_size_to_class(
+                  data_size));
+
+          uint8_t numa_id = rv->numa_id;
+          std::memcpy(rv, &wrle->rv, sizeof(wrle->rv) + data_size);
+          rv->numa_id = numa_id;
         }
         queuelen += queue->nentries;
 
         auto node = queue->next;
         while (node != nullptr) {
-          for (std::size_t j = 0; i < node->nentries; ++j) {
+          for (std::size_t j = 0; j < node->nentries; ++j) {
             auto* wrle = node->entries[j];
-            wrle->print();
+            // wrle->print();
+
+            uint64_t row_id = wrle->row_id;
+            uint64_t table_index = wrle->table_index;
+            uint64_t ts = wrle->rv.wts.t2;
+
+            uint32_t data_size = wrle->rv.data_size;
+
+            auto rv = pool->allocate(
+                SharedRowVersionPool<StaticConfig>::data_size_to_class(
+                    data_size));
+
+            uint8_t numa_id = rv->numa_id;
+            std::memcpy(rv, &wrle->rv, sizeof(wrle->rv) + data_size);
+            rv->numa_id = numa_id;
           }
 
           queuelen += node->nentries;

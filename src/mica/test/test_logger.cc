@@ -18,8 +18,8 @@ typedef DBConfig::Alloc Alloc;
 typedef DBConfig::Logger Logger;
 typedef DBConfig::CCC CCC;
 typedef mica::transaction::LogEntryList<DBConfig> LogEntryList;
-typedef ::mica::transaction::SchedulerPool<DBConfig, LogEntryList>
-    SchedulerPool;
+// typedef ::mica::transaction::SchedulerPool<DBConfig, LogEntryList>
+//     SchedulerPool;
 typedef DBConfig::Timestamp Timestamp;
 typedef DBConfig::ConcurrentTimestamp ConcurrentTimestamp;
 typedef DBConfig::Timing Timing;
@@ -778,9 +778,9 @@ int main(int argc, const char* argv[]) {
             std::string{MICA_RELAY_INIT_DIR}};
 
     std::vector<std::pair<std::string, std::string>> logdirs = {
-      std::make_pair(MICA_LOG_INIT_DIR, MICA_RELAY_INIT_DIR),
-      std::make_pair(MICA_LOG_WARMUP_DIR, MICA_RELAY_WARMUP_DIR),
-      std::make_pair(MICA_LOG_WORKLOAD_DIR, MICA_RELAY_WORKLOAD_DIR)};
+        std::make_pair(MICA_LOG_INIT_DIR, MICA_RELAY_INIT_DIR),
+        std::make_pair(MICA_LOG_WARMUP_DIR, MICA_RELAY_WARMUP_DIR),
+        std::make_pair(MICA_LOG_WORKLOAD_DIR, MICA_RELAY_WORKLOAD_DIR)};
 
     for (std::pair<std::string, std::string> pair : logdirs) {
       std::string relaydir = pair.second;
@@ -789,7 +789,7 @@ int main(int argc, const char* argv[]) {
     }
 
     int i = 0;
-    for (std::pair<std::string,std::string> pair : logdirs) {
+    for (std::pair<std::string, std::string> pair : logdirs) {
       std::string relaydir = pair.second;
       switch (i) {
         case 0:

@@ -40,9 +40,8 @@ CopyCat<StaticConfig>::CopyCat(DB<StaticConfig>* db, Alloc* alloc,
       min_wtss_{},
       workers_{},
       snapshot_manager_{nullptr} {
-
-  pool_ = new SchedulerPool<StaticConfig, LogEntryList<StaticConfig>>(
-      alloc, max_sched_pool_size, sched_pool_lcore);
+  // pool_ = new SchedulerPool<StaticConfig, LogEntryList<StaticConfig>>(
+  //     alloc, max_sched_pool_size, sched_pool_lcore);
 
   int ret = pthread_barrier_init(&io_barrier_, nullptr, nios_ + 1);
   if (ret != 0) {
@@ -67,7 +66,7 @@ CopyCat<StaticConfig>::CopyCat(DB<StaticConfig>* db, Alloc* alloc,
 
 template <class StaticConfig>
 CopyCat<StaticConfig>::~CopyCat() {
-  delete pool_;
+  // delete pool_;
 
   int ret = pthread_barrier_destroy(&io_barrier_);
   if (ret != 0) {
@@ -123,17 +122,11 @@ void CopyCat<StaticConfig>::start_ios() {
   db_id_ = std::max(db_id_, lcore1);
   lcore_ = std::max(lcore_, lcore1);
   for (uint16_t iid = 0; iid < nios_; iid++) {
-    auto i = new IOThread<StaticConfig>{db_,
-                                        log_,
-                                        pool_,
-                                        &io_barrier_,
-                                        &io_queue_,
-                                        &io_queue_ptok_,
-                                        &io_locks_[iid],
-                                        iid,
-                                        nios_,
-                                        db_id_++,
-                                        lcore_++};
+    auto i = new IOThread<StaticConfig>{db_, log_,
+                                        // pool_,
+                                        &io_barrier_, &io_queue_,
+                                        &io_queue_ptok_, &io_locks_[iid], iid,
+                                        nios_, db_id_++, lcore_++};
 
     i->start();
 
@@ -199,11 +192,13 @@ void CopyCat<StaticConfig>::stop_snapshot_manager() {
 template <class StaticConfig>
 void CopyCat<StaticConfig>::start_workers() {
   for (uint16_t wid = 0; wid < nworkers_; wid++) {
-    auto w = new WorkerThread<StaticConfig>{
-        db_, pool_, &io_queue_, &io_queue_ptok_,
-        //&scheduler_queue_,
-        //&scheduler_queue_ptok_,
-        &min_wtss_[wid], &worker_barrier_, wid, db_id_++, lcore_++};
+    auto w = new WorkerThread<StaticConfig>{db_,
+                                            // pool_,
+                                            &io_queue_, &io_queue_ptok_,
+                                            //&scheduler_queue_,
+                                            //&scheduler_queue_ptok_,
+                                            &min_wtss_[wid], &worker_barrier_,
+                                            wid, db_id_++, lcore_++};
 
     w->start();
 
@@ -256,13 +251,14 @@ void CopyCat<StaticConfig>::reset() {
 
   snapshot_manager_ = nullptr;
 
-
   min_wtss_.clear();
 }
 
 template <class StaticConfig>
-void CopyCat<StaticConfig>::preprocess_logs(std::string srcdir, std::string dstdir) {
-  ReplicationUtils<StaticConfig>::preprocess_logs(db_, nloggers_, srcdir, dstdir);
+void CopyCat<StaticConfig>::preprocess_logs(std::string srcdir,
+                                            std::string dstdir) {
+  ReplicationUtils<StaticConfig>::preprocess_logs(db_, nloggers_, srcdir,
+                                                  dstdir);
 }
 
 }  // namespace transaction

@@ -13,14 +13,14 @@ using std::chrono::nanoseconds;
 template <class StaticConfig>
 WorkerThread<StaticConfig>::WorkerThread(
     DB<StaticConfig>* db,
-    SchedulerPool<StaticConfig, LogEntryList<StaticConfig>>* pool,
+    // SchedulerPool<StaticConfig, LogEntryList<StaticConfig>>* pool,
     moodycamel::ConcurrentQueue<LogEntryList<StaticConfig>*, MyTraits>*
         scheduler_queue,
     moodycamel::ProducerToken* scheduler_queue_ptok, WorkerMinWTS* min_wts,
     pthread_barrier_t* start_barrier, uint16_t id, uint16_t db_id,
     uint16_t lcore)
     : db_{db},
-      pool_{pool},
+      // pool_{pool},
       scheduler_queue_{scheduler_queue},
       scheduler_queue_ptok_{scheduler_queue_ptok},
       min_wts_{min_wts},
@@ -88,80 +88,112 @@ void WorkerThread<StaticConfig>::run() {
     if (n != 0) {
       npops += 1;
       nqueues += n;
+
       for (uint64_t i = 0; i < n; i++) {
         LogEntryList<StaticConfig>* queue = queues[i];
-        uint64_t nentries = queue->nentries;
-        queuelen += nentries;
+        // uint64_t nentries = queue->nentries;
 
-        Table<StaticConfig>* tbl = db_->get_table_by_index(queue->table_index);
-        uint16_t cf_id = 0;  // TODO: fix hardcoded column family
-        uint64_t row_id = queue->row_id;
-        uint64_t tail_ts = queue->tail_ts;
-        uint64_t min_min_wts = 0;
-
-        // printf("executing queue: %lu %lu %lu\n", row_id, tail_ts, nentries);
-
-        if (!tx.begin_replica()) {
-          throw std::runtime_error("run: Failed to begin transaction.");
+        for (std::size_t j = 0; i < queue->nentries; ++j) {
+          auto* wrle = queue->entries[j];
+          wrle->print();
         }
+        queuelen += queue->nentries;
 
-        row_id = ctx->allocate_row(tbl, row_id);
-        if (row_id == static_cast<uint64_t>(-1)) {
-          throw std::runtime_error("run: Unable to allocate row ID.");
+        auto node = queue->next;
+        while (node != nullptr) {
+          for (std::size_t j = 0; i < node->nentries; ++j) {
+            auto* wrle = node->entries[j];
+            wrle->print();
+          }
+
+          queuelen += node->nentries;
+          node = node->next;
         }
+        // wrle = static_cast<WriteRowLogEntry<StaticConfig>*>(le);
+        // row_id = wrle->row_id;
+        // table_index = wrle->table_index;
+        // ts = wrle->rv.wts.t2;
 
-        RowHead<StaticConfig>* row_head = tbl->head(cf_id, row_id);
-        RowVersion<StaticConfig>* queue_head = queue->head_rv;
-        RowVersion<StaticConfig>* queue_tail = queue->tail_rv;
-        RowVersion<StaticConfig>* older_rv = nullptr;
-        bool skipped = false;
+        // data_size = wrle->rv.data_size;
+        // size_cls =
+        //     SharedRowVersionPool<StaticConfig>::data_size_to_class(data_size);
 
-        // RowVersion<StaticConfig>* temp = queue_head;
-        // while (temp != nullptr) {
-        //   printf("rv wts: %lu\n", temp->wts.t2);
-        //   temp = temp->older_rv;
+        // rv = pool->allocate(size_cls);
+
+        // numa_id = rv->numa_id;
+        // std::memcpy(rv, &wrle->rv, sizeof(wrle->rv) + data_size);
+        // rv->numa_id = numa_id;
+        // rv->size_cls = size_cls;
+
+        // Table<StaticConfig>* tbl = db_->get_table_by_index(queue->table_index);
+        // uint16_t cf_id = 0;  // TODO: fix hardcoded column family
+        // uint64_t row_id = queue->row_id;
+        // uint64_t tail_ts = queue->tail_ts;
+        // uint64_t min_min_wts = 0;
+
+        // // printf("executing queue: %lu %lu %lu\n", row_id, tail_ts, nentries);
+
+        // if (!tx.begin_replica()) {
+        //   throw std::runtime_error("run: Failed to begin transaction.");
         // }
 
-        do {
-          older_rv = row_head->older_rv;
-          if (older_rv != nullptr && older_rv->wts.t2 > tail_ts) {
-            skipped = true;
-            min_min_wts = std::max(min_min_wts, older_rv->wts.t2);
-            break;
-          }
+        // row_id = ctx->allocate_row(tbl, row_id);
+        // if (row_id == static_cast<uint64_t>(-1)) {
+        //   throw std::runtime_error("run: Unable to allocate row ID.");
+        // }
 
-          queue_tail->older_rv = older_rv;
+        // RowHead<StaticConfig>* row_head = tbl->head(cf_id, row_id);
+        // RowVersion<StaticConfig>* queue_head = queue->head_rv;
+        // RowVersion<StaticConfig>* queue_tail = queue->tail_rv;
+        // RowVersion<StaticConfig>* older_rv = nullptr;
+        // bool skipped = false;
 
-        } while (!__sync_bool_compare_and_swap(&row_head->older_rv, older_rv,
-                                               queue_head));
+        // // RowVersion<StaticConfig>* temp = queue_head;
+        // // while (temp != nullptr) {
+        // //   printf("rv wts: %lu\n", temp->wts.t2);
+        // //   temp = temp->older_rv;
+        // // }
 
-        ::mica::util::memory_barrier();
+        // do {
+        //   older_rv = row_head->older_rv;
+        //   if (older_rv != nullptr && older_rv->wts.t2 > tail_ts) {
+        //     skipped = true;
+        //     min_min_wts = std::max(min_min_wts, older_rv->wts.t2);
+        //     break;
+        //   }
 
-        if (!skipped && queue_tail->older_rv != nullptr) {
-          uint8_t deleted = false;  // TODO: Handle deleted rows
-          ctx->schedule_gc({tail_ts}, tbl, cf_id, deleted, row_id, row_head,
-                           queue_tail);
-        }
+        //   queue_tail->older_rv = older_rv;
 
-        if (tail_ts >= min_min_wts) {
-          min_wts_->min_wts = tail_ts;
-        }
+        // } while (!__sync_bool_compare_and_swap(&row_head->older_rv, older_rv,
+        //                                        queue_head));
 
-        if (!tx.commit_replica(nentries)) {
-          throw std::runtime_error("run: Failed to commit transaction.");
-        }
+        // ::mica::util::memory_barrier();
 
-        if (skipped) {
-          //printf("gc'ing skipped rows!\n");
-          queue_tail->older_rv = nullptr;
-          older_rv = queue_head;
-          while (older_rv != nullptr) {
-            auto temp = older_rv->older_rv;
-            //older_rv->older_rv = nullptr;
-            ctx->deallocate_version(older_rv);
-            older_rv = temp;
-          }
-        }
+        // if (!skipped && queue_tail->older_rv != nullptr) {
+        //   uint8_t deleted = false;  // TODO: Handle deleted rows
+        //   ctx->schedule_gc({tail_ts}, tbl, cf_id, deleted, row_id, row_head,
+        //                    queue_tail);
+        // }
+
+        // if (tail_ts >= min_min_wts) {
+        //   min_wts_->min_wts = tail_ts;
+        // }
+
+        // if (!tx.commit_replica(nentries)) {
+        //   throw std::runtime_error("run: Failed to commit transaction.");
+        // }
+
+        // if (skipped) {
+        //   //printf("gc'ing skipped rows!\n");
+        //   queue_tail->older_rv = nullptr;
+        //   older_rv = queue_head;
+        //   while (older_rv != nullptr) {
+        //     auto temp = older_rv->older_rv;
+        //     //older_rv->older_rv = nullptr;
+        //     ctx->deallocate_version(older_rv);
+        //     older_rv = temp;
+        //   }
+        // }
 
         //free_list(queue);
       }
@@ -183,20 +215,20 @@ void WorkerThread<StaticConfig>::run() {
 };
 
 template <class StaticConfig>
-void WorkerThread<StaticConfig>::free_list(LogEntryList<StaticConfig>* list) {
-  if (freed_lists_tail_ == nullptr) freed_lists_tail_ = list;
+void WorkerThread<StaticConfig>::free_list(LogEntryList<StaticConfig>* list){
+    // if (freed_lists_tail_ == nullptr) freed_lists_tail_ = list;
 
-  list->next = freed_lists_head_;
-  freed_lists_head_ = list;
-  num_freed_lists_ += 1;
+    // list->next = freed_lists_head_;
+    // freed_lists_head_ = list;
+    // num_freed_lists_ += 1;
 
-  uint64_t n = pool_.kAllocSize;
-  if (num_freed_lists_ == n) {
-    pool_->free_n(freed_lists_head_, freed_lists_tail_, n);
-    freed_lists_head_ = nullptr;
-    freed_lists_tail_ = nullptr;
-    num_freed_lists_ = 0;
-  }
+    // uint64_t n = pool_.kAllocSize;
+    // if (num_freed_lists_ == n) {
+    //   pool_->free_n(freed_lists_head_, freed_lists_tail_, n);
+    //   freed_lists_head_ = nullptr;
+    //   freed_lists_tail_ = nullptr;
+    //   num_freed_lists_ = 0;
+    // }
 };
 
 };  // namespace transaction

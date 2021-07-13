@@ -61,26 +61,70 @@ class ListNode {
 };
 
 template <class StaticConfig>
-class LogEntryList : public ListNode {
+class LogEntryListNode {
  public:
+  LogEntryListNode() : next{nullptr}, nentries{0} {}
+
+  LogEntryListNode<StaticConfig>* next;
+
+  uint64_t nentries;
+  WriteRowLogEntry<StaticConfig>* entries[6];
+
+  bool push(WriteRowLogEntry<StaticConfig>* wrle) {
+    if (nentries < 6) {
+      entries[nentries] = wrle;
+      nentries++;
+
+      return true;
+    }
+
+    return false;
+  }
+} __attribute__((aligned(64)));
+
+template <class StaticConfig>
+class LogEntryList {
+ public:
+  LogEntryList()
+      : next{nullptr},
+        tail{nullptr},
+        table_index{0},
+        row_id{0},
+        tail_ts{0},
+        nentries{0} {}
+
+  LogEntryListNode<StaticConfig>* next;
+  LogEntryListNode<StaticConfig>* tail;
   uint64_t table_index;
   uint64_t row_id;
   uint64_t tail_ts;
 
   uint64_t nentries;
+  WriteRowLogEntry<StaticConfig>* entries[2];
 
-  RowVersion<StaticConfig>* head_rv;
-  RowVersion<StaticConfig>* tail_rv;
+  void append(LogEntryListNode<StaticConfig>* n) {
+    n->next = nullptr;
+    tail->next = n;
+    tail = n;
+  }
 
-  void push(RowVersion<StaticConfig>* rv) {
-    if (tail_rv == nullptr) {
-      tail_rv = rv;
+  bool push(WriteRowLogEntry<StaticConfig>* wrle) {
+    if (nentries < 2) {
+      entries[nentries] = wrle;
+      nentries++;
+
+      return true;
     }
 
-    rv->older_rv = head_rv;
-    head_rv = rv;
+    if (tail == nullptr || !tail->push(wrle)) {
+      auto n = new LogEntryListNode<StaticConfig>();
+      tail->next = n;
+      tail = n;
 
-    nentries += 1;
+      n->push(wrle);
+    }
+
+    return true;
   }
 
 } __attribute__((aligned(64)));
@@ -143,7 +187,7 @@ class IOThread {
  public:
   IOThread(DB<StaticConfig>* db,
            std::shared_ptr<MmappedLogFile<StaticConfig>> log,
-           SchedulerPool<StaticConfig, LogEntryList<StaticConfig>>* pool,
+           //  SchedulerPool<StaticConfig, LogEntryList<StaticConfig>>* pool,
            pthread_barrier_t* start_barrier,
            moodycamel::ConcurrentQueue<LogEntryList<StaticConfig>*, MyTraits>*
                io_queue,
@@ -159,7 +203,7 @@ class IOThread {
   std::shared_ptr<MmappedLogFile<StaticConfig>> log_;
   std::thread thread_;
   pthread_barrier_t* start_barrier_;
-  SchedulerPool<StaticConfig, LogEntryList<StaticConfig>>* pool_;
+  // SchedulerPool<StaticConfig, LogEntryList<StaticConfig>>* pool_;
   LogEntryList<StaticConfig>* allocated_lists_;
   moodycamel::ConcurrentQueue<LogEntryList<StaticConfig>*, MyTraits>* io_queue_;
   moodycamel::ProducerToken* io_queue_ptok_;
@@ -245,13 +289,14 @@ class SnapshotThread {
 template <class StaticConfig>
 class WorkerThread {
  public:
-  WorkerThread(DB<StaticConfig>* db,
-               SchedulerPool<StaticConfig, LogEntryList<StaticConfig>>* pool,
-               moodycamel::ConcurrentQueue<LogEntryList<StaticConfig>*,
-                                           MyTraits>* scheduler_queue,
-               moodycamel::ProducerToken* scheduler_queue_ptok,
-               WorkerMinWTS* min_wts, pthread_barrier_t* start_barrier,
-               uint16_t id, uint16_t db_id, uint16_t lcore);
+  WorkerThread(
+      DB<StaticConfig>* db,
+      //  SchedulerPool<StaticConfig, LogEntryList<StaticConfig>>* pool,
+      moodycamel::ConcurrentQueue<LogEntryList<StaticConfig>*, MyTraits>*
+          scheduler_queue,
+      moodycamel::ProducerToken* scheduler_queue_ptok, WorkerMinWTS* min_wts,
+      pthread_barrier_t* start_barrier, uint16_t id, uint16_t db_id,
+      uint16_t lcore);
 
   ~WorkerThread();
 
@@ -260,7 +305,7 @@ class WorkerThread {
 
  private:
   DB<StaticConfig>* db_;
-  SchedulerPool<StaticConfig, LogEntryList<StaticConfig>>* pool_;
+  // SchedulerPool<StaticConfig, LogEntryList<StaticConfig>>* pool_;
   moodycamel::ConcurrentQueue<LogEntryList<StaticConfig>*, MyTraits>*
       scheduler_queue_;
   moodycamel::ProducerToken* scheduler_queue_ptok_;
@@ -316,7 +361,7 @@ class CopyCat : public CCCInterface<StaticConfig> {
   moodycamel::ProducerToken io_queue_ptok_;
   moodycamel::ProducerToken scheduler_queue_ptok_;
   DB<StaticConfig>* db_;
-  SchedulerPool<StaticConfig, LogEntryList<StaticConfig>>* pool_;
+  // SchedulerPool<StaticConfig, LogEntryList<StaticConfig>>* pool_;
 
   std::size_t len_;
 

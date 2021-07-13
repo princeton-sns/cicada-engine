@@ -149,7 +149,6 @@ uint64_t IOThread<StaticConfig>::build_local_lists(
     RowVersionPool<StaticConfig>* pool, std::size_t segment,
     std::vector<LogEntryList<StaticConfig>*>& lists) {
   absl::flat_hash_map<TableRowID, LogEntryList<StaticConfig>*> index{32768};
-  //std::unordered_map<TableRowID, LogEntryList<StaticConfig>*> index{32768};
   LogFile<StaticConfig>* lf = log_->get_lf(segment);
   // lf->print();
 
@@ -164,45 +163,51 @@ uint64_t IOThread<StaticConfig>::build_local_lists(
     std::size_t size = le->size;
     // le->print();
 
-    uint64_t row_id;
-    uint64_t table_index;
-    uint64_t ts;
+    // uint64_t row_id;
+    // uint64_t table_index;
+    // uint64_t ts;
     RowVersion<StaticConfig>* rv;
-    uint32_t data_size;
-    uint16_t size_cls;
-    uint8_t numa_id;
-    switch (type) {
-      case LogEntryType::BEGIN_TXN:
-        btle = static_cast<BeginTxnLogEntry<StaticConfig>*>(le);
-        // btle->print();
-        break;
+    // uint32_t data_size;
+    // uint16_t size_cls;
+    // uint8_t numa_id;
+    // switch (type) {
+    //   case LogEntryType::BEGIN_TXN:
+    //     btle = static_cast<BeginTxnLogEntry<StaticConfig>*>(le);
+    //     // btle->print();
+    //     break;
 
-      case LogEntryType::WRITE_ROW:
-        wrle = static_cast<WriteRowLogEntry<StaticConfig>*>(le);
-        row_id = wrle->row_id;
-        table_index = wrle->table_index;
-        ts = wrle->rv.wts.t2;
+    //   case LogEntryType::WRITE_ROW:
+    //     wrle = static_cast<WriteRowLogEntry<StaticConfig>*>(le);
+    //     row_id = wrle->row_id;
+    //     table_index = wrle->table_index;
+    //     ts = wrle->rv.wts.t2;
 
-        data_size = wrle->rv.data_size;
-        size_cls =
-            SharedRowVersionPool<StaticConfig>::data_size_to_class(data_size);
+    //     data_size = wrle->rv.data_size;
+    //     size_cls =
+    //         SharedRowVersionPool<StaticConfig>::data_size_to_class(data_size);
 
-        //rv = pool->allocate(size_cls);
+    //     //rv = pool->allocate(size_cls);
 
-        //numa_id = rv->numa_id;
-        //std::memcpy(rv, &wrle->rv, sizeof(wrle->rv) + data_size);
-        //rv->numa_id = numa_id;
-        //rv->size_cls = size_cls;
+    //     //numa_id = rv->numa_id;
+    //     //std::memcpy(rv, &wrle->rv, sizeof(wrle->rv) + data_size);
+    //     //rv->numa_id = numa_id;
+    //     //rv->size_cls = size_cls;
 
-        // wrle->print();
-        break;
+    //     // wrle->print();
+    //     break;
 
-      default:
-        throw std::runtime_error(
-            "build_local_lists: Unexpected log entry type.");
-    }
+    //   default:
+    //     throw std::runtime_error(
+    //         "build_local_lists: Unexpected log entry type.");
+    // }
 
     if (type == LogEntryType::WRITE_ROW) {
+      WriteRowLogEntry<StaticConfig>* wrle =
+          static_cast<WriteRowLogEntry<StaticConfig>*>(le);
+      uint64_t row_id = wrle->row_id;
+      uint64_t table_index = wrle->table_index;
+      uint64_t ts = wrle->rv.wts.t2;
+
       TableRowID key{table_index, row_id};
       LogEntryList<StaticConfig>* list = nullptr;
 
@@ -226,7 +231,7 @@ uint64_t IOThread<StaticConfig>::build_local_lists(
     ptr += size;
   }
 
-//  std::cout << "Index size: " << std::to_string(index.size()) << std::endl;
+  //  std::cout << "Index size: " << std::to_string(index.size()) << std::endl;
 
   return lf->nentries;
 };

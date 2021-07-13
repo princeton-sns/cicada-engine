@@ -87,7 +87,9 @@ SET(SOURCES ${SOURCES} src/mica/util/lcore.cc)
 SET(SOURCES ${SOURCES} src/mica/util/stopwatch.cc)
 SET(SOURCES ${SOURCES} src/mica/util/zipf.cc)
 
-SET(LIBRARIES ${LIBRARIES} rt numa pthread)
+add_subdirectory(./third_party/abseil-cpp/)
+
+SET(LIBRARIES ${LIBRARIES} rt numa pthread absl::flat_hash_map)
 
 IF(LTO)
 

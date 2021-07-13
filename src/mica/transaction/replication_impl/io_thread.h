@@ -3,6 +3,8 @@
 
 #include "mica/transaction/replication.h"
 
+#include "absl/container/flat_hash_map.h"
+
 #include <unordered_map>
 
 namespace mica {
@@ -146,7 +148,8 @@ template <class StaticConfig>
 uint64_t IOThread<StaticConfig>::build_local_lists(
     RowVersionPool<StaticConfig>* pool, std::size_t segment,
     std::vector<LogEntryList<StaticConfig>*>& lists) {
-  std::unordered_map<TableRowID, LogEntryList<StaticConfig>*> index{};
+  absl::flat_hash_map<TableRowID, LogEntryList<StaticConfig>*> index{32768};
+  //std::unordered_map<TableRowID, LogEntryList<StaticConfig>*> index{32768};
   LogFile<StaticConfig>* lf = log_->get_lf(segment);
   // lf->print();
 
@@ -184,12 +187,12 @@ uint64_t IOThread<StaticConfig>::build_local_lists(
         size_cls =
             SharedRowVersionPool<StaticConfig>::data_size_to_class(data_size);
 
-        rv = pool->allocate(size_cls);
+        //rv = pool->allocate(size_cls);
 
-        numa_id = rv->numa_id;
-        std::memcpy(rv, &wrle->rv, sizeof(wrle->rv) + data_size);
-        rv->numa_id = numa_id;
-        rv->size_cls = size_cls;
+        //numa_id = rv->numa_id;
+        //std::memcpy(rv, &wrle->rv, sizeof(wrle->rv) + data_size);
+        //rv->numa_id = numa_id;
+        //rv->size_cls = size_cls;
 
         // wrle->print();
         break;
@@ -209,11 +212,11 @@ uint64_t IOThread<StaticConfig>::build_local_lists(
         list->table_index = table_index;
         list->row_id = row_id;
         list->tail_ts = ts;
-        list->push(rv);
+        //list->push(rv);
 
-        list->push(rv);
+        //list->push(rv);
 
-        index[key] = list;
+        index.emplace(key, list);
         lists.push_back(list);
       } else {
         search->second->push(rv);
@@ -222,6 +225,8 @@ uint64_t IOThread<StaticConfig>::build_local_lists(
 
     ptr += size;
   }
+
+//  std::cout << "Index size: " << std::to_string(index.size()) << std::endl;
 
   return lf->nentries;
 };
